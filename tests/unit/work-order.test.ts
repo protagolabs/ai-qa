@@ -129,4 +129,38 @@ describe("exploratory work orders", () => {
       }),
     ).toThrow();
   });
+
+  it("keeps non-exploratory work orders available for future regression execution", () => {
+    const input = exploratoryRunInputSchema.parse({
+      goal: "Verify login",
+      acceptanceCriteria: [
+        { id: "home", description: "Home", requiredEvidence: ["screenshot"] },
+      ],
+      readiness: { platform: "web", status: "ready", checks: [] },
+    });
+    const exploratory = createExploratoryWorkOrder({
+      projectId: "sample-web",
+      runId: "run-1",
+      input,
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(
+      workOrderSchema.parse({
+        ...exploratory,
+        kind: "regression",
+        execution: "ci",
+        readiness: { ...exploratory.readiness, status: "not_ready" },
+        budget: {
+          maxToolCalls: 25,
+          maxRecoveryActions: 2,
+          deadline: "2026-07-13T02:00:00.000Z",
+        },
+      }),
+    ).toMatchObject({ kind: "regression", execution: "ci" });
+  });
 });

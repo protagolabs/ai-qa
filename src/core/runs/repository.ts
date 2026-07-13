@@ -27,6 +27,9 @@ function startedWorkOrderHash(events: RunEvent[], runId: string): string {
     event.sequence !== 1 ||
     event.runId !== runId ||
     event.actor !== "ai-qa" ||
+    event.tool !== "ai-qa" ||
+    event.idempotencyKey !== `start-${runId}` ||
+    event.relatedIds.length !== 0 ||
     payloadKeys.length !== 2 ||
     payloadKeys[0] !== "phase" ||
     payloadKeys[1] !== "workOrderHash" ||

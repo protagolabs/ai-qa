@@ -287,6 +287,111 @@ describe("strict work-order integrity", () => {
     expect(Object.isFrozen(verified.readiness.checks)).toBe(true);
     expect(Object.isFrozen(verified.budget)).toBe(true);
   });
+
+  it.each([
+    [
+      "ci execution",
+      (workOrder: WorkOrder) =>
+        ({ ...workOrder, execution: "ci" }) as WorkOrder,
+    ],
+    [
+      "not-ready status",
+      (workOrder: WorkOrder) =>
+        ({
+          ...workOrder,
+          readiness: { ...workOrder.readiness, status: "not_ready" },
+        }) as WorkOrder,
+    ],
+    [
+      "non-default tool-call count",
+      (workOrder: WorkOrder) =>
+        ({
+          ...workOrder,
+          budget: { ...workOrder.budget, maxToolCalls: 101 },
+        }) as WorkOrder,
+    ],
+    [
+      "non-default recovery count",
+      (workOrder: WorkOrder) =>
+        ({
+          ...workOrder,
+          budget: { ...workOrder.budget, maxRecoveryActions: 11 },
+        }) as WorkOrder,
+    ],
+    [
+      "wrong deadline",
+      (workOrder: WorkOrder) =>
+        ({
+          ...workOrder,
+          budget: {
+            ...workOrder.budget,
+            deadline: "2026-07-13T00:29:59.999Z",
+          },
+        }) as WorkOrder,
+    ],
+  ])(
+    "rejects exploratory %s before creating run state",
+    async (_name, mutate) => {
+      const projectRoot = await mkdtemp(
+        join(tmpdir(), "ai-qa-order-invariant-"),
+      );
+      await expect(
+        new RunRepository(projectRoot, fixedNow).create(
+          mutate(makeWorkOrder()),
+        ),
+      ).rejects.toBeDefined();
+      await expectMissing(runDirectory(projectRoot));
+    },
+  );
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["infinity", Number.POSITIVE_INFINITY],
+    ["bigint", 1n],
+    ["Date", new Date("2026-07-13T00:00:00.000Z")],
+    [
+      "class instance",
+      new (class Box {
+        value = "box";
+      })(),
+    ],
+    ["function", () => "function"],
+    ["symbol", Symbol("symbol")],
+  ])(
+    "rejects non-JSON required steps containing %s before persistence",
+    async (_name, invalid) => {
+      const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-order-json-"));
+      const workOrder = {
+        ...makeWorkOrder(),
+        requiredSteps: [invalid],
+      } as WorkOrder;
+
+      await expect(
+        new RunRepository(projectRoot, fixedNow).create(workOrder),
+      ).rejects.toBeDefined();
+      await expectMissing(runDirectory(projectRoot));
+    },
+  );
+
+  it("rejects cyclic and non-JSON readiness checks before persistence", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-order-checks-"));
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const workOrder = {
+      ...makeWorkOrder(),
+      readiness: {
+        platform: "web",
+        status: "ready",
+        checks: [cyclic, new Date("2026-07-13T00:00:00.000Z")],
+      },
+    } as WorkOrder;
+
+    await expect(
+      new RunRepository(projectRoot, fixedNow).create(workOrder),
+    ).rejects.toBeDefined();
+    await expectMissing(runDirectory(projectRoot));
+  });
 });
 
 describe("journal and start-anchor integrity", () => {
@@ -396,6 +501,29 @@ describe("journal and start-anchor integrity", () => {
       code: "work_order.integrity_error",
     });
   });
+
+  it.each([
+    ["tool", (event: RunEvent) => ({ ...event, tool: "browser" })],
+    [
+      "idempotency key",
+      (event: RunEvent) => ({ ...event, idempotencyKey: "wrong-start-key" }),
+    ],
+    ["related IDs", (event: RunEvent) => ({ ...event, relatedIds: ["other"] })],
+  ])("rejects start-anchor tampering of %s", async (_name, tamper) => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-anchor-fields-"));
+    const { repository } = await createRepositoryRun(projectRoot);
+    const path = join(runDirectory(projectRoot), "events.jsonl");
+    const anchor = JSON.parse(
+      (await readFile(path, "utf8")).trim(),
+    ) as RunEvent;
+    await writeFile(path, `${JSON.stringify(tamper(anchor))}\n`);
+
+    await expect(
+      repository.readVerifiedWorkOrder("run-1"),
+    ).rejects.toMatchObject({
+      code: "work_order.integrity_error",
+    });
+  });
 });
 
 describe("recoverable exclusive run creation", () => {
@@ -496,12 +624,20 @@ describe("durable journal concurrency", () => {
       platform: "web",
       tool: "agent",
       idempotencyKey: "decision-1",
-      payload: { phase: "continue", nested: { left: 1, right: 2 } },
+      payload: {
+        phase: "continue",
+        nested: { left: 1, right: 2 },
+        values: [null, true, "ok", { finite: 1.5 }],
+      },
       relatedIds: ["one", "two"],
     });
     const retry = await journal.append({
       relatedIds: ["one", "two"],
-      payload: { nested: { right: 2, left: 1 }, phase: "continue" },
+      payload: {
+        values: [null, true, "ok", { finite: 1.5 }],
+        nested: { right: 2, left: 1 },
+        phase: "continue",
+      },
       idempotencyKey: "decision-1",
       tool: "agent",
       platform: "web",
@@ -511,5 +647,60 @@ describe("durable journal concurrency", () => {
 
     expect(retry.id).toBe(first.id);
     expect(await journal.readAll()).toHaveLength(1);
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["infinity", Number.POSITIVE_INFINITY],
+    ["bigint", 1n],
+    ["Date", new Date("2026-07-13T00:00:00.000Z")],
+    [
+      "class instance",
+      new (class Box {
+        value = "box";
+      })(),
+    ],
+    ["function", () => "function"],
+    ["symbol", Symbol("symbol")],
+  ])(
+    "rejects event payload %s without appending bytes",
+    async (_name, invalid) => {
+      const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-event-json-"));
+      const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+      const path = join(runDirectory(projectRoot), "events.jsonl");
+
+      await expect(
+        journal.append({
+          type: "observation",
+          actor: "agent",
+          platform: "web",
+          tool: "browser",
+          payload: invalid as never,
+          relatedIds: [],
+        }),
+      ).rejects.toBeDefined();
+      await expect(readFile(path, "utf8")).resolves.toBe("");
+    },
+  );
+
+  it("rejects cyclic event payloads without appending bytes", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-event-cycle-"));
+    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const path = join(runDirectory(projectRoot), "events.jsonl");
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    await expect(
+      journal.append({
+        type: "observation",
+        actor: "agent",
+        platform: "web",
+        tool: "browser",
+        payload: cyclic as never,
+        relatedIds: [],
+      }),
+    ).rejects.toBeDefined();
+    await expect(readFile(path, "utf8")).resolves.toBe("");
   });
 });

@@ -4,6 +4,7 @@ import {
   WORK_ORDER_SCHEMA_VERSION,
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
+import { jsonValueSchema } from "../json-value.js";
 
 export const acceptanceCriterionSchema = z
   .object({
@@ -36,7 +37,7 @@ export const readinessSchema = z
   .object({
     platform: z.literal("web"),
     status: z.enum(["ready", "not_ready"]),
-    checks: z.array(z.unknown()),
+    checks: z.array(jsonValueSchema),
   })
   .strict();
 
@@ -60,7 +61,7 @@ export const executionBudgetSchema = z
 
 export type ExecutionBudget = z.infer<typeof executionBudgetSchema>;
 
-export const workOrderSchema = z
+const workOrderBaseSchema = z
   .object({
     schemaVersion: z.literal(WORK_ORDER_SCHEMA_VERSION),
     protocolVersion: z.literal(WORK_PROTOCOL_VERSION),
@@ -72,7 +73,7 @@ export const workOrderSchema = z
     startedAt: z.string().datetime(),
     goal: goalSchema,
     acceptanceCriteria: acceptanceCriteriaSchema,
-    requiredSteps: z.array(z.unknown()),
+    requiredSteps: z.array(jsonValueSchema),
     readiness: readinessSchema,
     evidencePolicy: z
       .object({
@@ -92,6 +93,49 @@ export const workOrderSchema = z
       .optional(),
   })
   .strict();
+
+export const workOrderSchema = workOrderBaseSchema.superRefine(
+  (workOrder, context) => {
+    if (workOrder.kind !== "exploratory") return;
+    if (workOrder.execution !== "local") {
+      context.addIssue({
+        code: "custom",
+        path: ["execution"],
+        message: "Exploratory work orders require local execution",
+      });
+    }
+    if (workOrder.readiness.status !== "ready") {
+      context.addIssue({
+        code: "custom",
+        path: ["readiness", "status"],
+        message: "Exploratory work orders require ready status",
+      });
+    }
+    if (workOrder.budget.maxToolCalls !== 100) {
+      context.addIssue({
+        code: "custom",
+        path: ["budget", "maxToolCalls"],
+        message: "Exploratory work orders require 100 tool calls",
+      });
+    }
+    if (workOrder.budget.maxRecoveryActions !== 10) {
+      context.addIssue({
+        code: "custom",
+        path: ["budget", "maxRecoveryActions"],
+        message: "Exploratory work orders require 10 recovery actions",
+      });
+    }
+    const expectedDeadline =
+      new Date(workOrder.startedAt).getTime() + 30 * 60 * 1000;
+    if (new Date(workOrder.budget.deadline).getTime() !== expectedDeadline) {
+      context.addIssue({
+        code: "custom",
+        path: ["budget", "deadline"],
+        message: "Exploratory work orders require a 30-minute deadline",
+      });
+    }
+  },
+);
 
 export type WorkOrder = z.infer<typeof workOrderSchema>;
 
@@ -161,7 +205,7 @@ export const runEventSchema = z
       "recovery",
     ]),
     idempotencyKey: z.string().optional(),
-    payload: z.unknown(),
+    payload: jsonValueSchema,
     relatedIds: z.array(z.string()),
   })
   .strict();
