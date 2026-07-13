@@ -26,3 +26,28 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+
+  minimum-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.0.0
+      - run: node --version
+      - run: node node_modules/prettier/bin/prettier.cjs --check .
+      - run: node node_modules/eslint/bin/eslint.js .
+      - run: node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+      - run: node node_modules/vitest/vitest.mjs run
+      - run: node scripts/clean.mjs
+      - run: node node_modules/typescript/bin/tsc -p tsconfig.build.json
+      - run: node dist/cli/main.js --help

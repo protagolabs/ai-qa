@@ -1,6 +1,7 @@
 import { Command, CommanderError } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCli } from "../../src/cli/program.js";
+import type { CliContext } from "../../src/cli/context.js";
+import { createProgram, runCli } from "../../src/cli/program.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 describe("ai-qa CLI shell", () => {
@@ -17,6 +18,29 @@ describe("ai-qa CLI shell", () => {
     expect(captured.stdout.join("")).toContain("Usage: ai-qa");
   });
 
+  it("preserves the caller context identity in program output closures", async () => {
+    const captured = createCapturedCli();
+    let usedOriginalContext = false;
+    captured.context.writeStdout = function (this: CliContext, value: string) {
+      usedOriginalContext = this === captured.context;
+      captured.stdout.push(value);
+    };
+
+    const exitCode = await runCli(["--help"], captured.context);
+
+    expect(exitCode).toBe(0);
+    expect(usedOriginalContext).toBe(true);
+  });
+
+  it("keeps non-error program output injected through the caller context", () => {
+    const captured = createCapturedCli();
+    const program = createProgram(captured.context);
+
+    program.outputHelp({ error: true });
+
+    expect(captured.stderr.join("")).toContain("Usage: ai-qa");
+  });
+
   it("returns a stable structured error for an unknown command", async () => {
     const captured = createCapturedCli();
 
@@ -24,7 +48,7 @@ describe("ai-qa CLI shell", () => {
 
     expect(exitCode).toBe(1);
     expect(captured.stderr).toEqual([
-      '{"error":{"code":"commander.unknownCommand","message":"error: too many arguments. Expected 0 arguments but got 1: unknown-command."}}\n',
+      '{"error":{"code":"commander.unknownCommand","message":"error: too many arguments. Expected 0 arguments but got 1."}}\n',
     ]);
   });
 

@@ -11,6 +11,7 @@ export function createProgram(context: CliContext): Command {
     .configureOutput({
       writeOut: (value) => context.writeStdout(value),
       writeErr: (value) => context.writeStderr(value),
+      outputError: () => undefined,
     });
 }
 
@@ -18,10 +19,7 @@ export async function runCli(
   args: readonly string[],
   context: CliContext,
 ): Promise<number> {
-  const program = createProgram({
-    ...context,
-    writeStderr: () => undefined,
-  });
+  const program = createProgram(context);
   try {
     await program.parseAsync([...args], { from: "user" });
     return 0;
