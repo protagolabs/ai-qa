@@ -588,6 +588,60 @@ describe("run lifecycle", () => {
         now,
       }),
     ).rejects.toMatchObject({ code: "run.interrupted" });
+    await expect(
+      cancelRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        reason: "Cancel the durably interrupted run",
+        now,
+      }),
+    ).resolves.toEqual({
+      runId: "run-1",
+      status: "cancelled",
+      verdict: "not_verified",
+    });
+  });
+
+  it("rejects interrupted to completed lifecycle history", async () => {
+    const fixture = await createRun();
+    const action = await fixture.protocol.planAction({
+      idempotencyKey: "before-invalid-completion",
+      kind: "observation",
+      intent: "Complete one action before interruption",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: action.id,
+      phase: "completed",
+      toolResult: { summary: "Observed before interruption" },
+    });
+    const verdict = await fixture.verdicts.set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "Coverage remained incomplete",
+      criterionResults: [],
+    });
+    await appendInterrupted(fixture);
+    await fixture.repository.journal("run-1").append({
+      type: "run",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "finish:run-1",
+      payload: { phase: "completed", verdictId: verdict.id },
+      relatedIds: [verdict.id],
+    });
+
+    await expect(
+      readRunState({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
   it("verifies immutable evidence before resuming", async () => {

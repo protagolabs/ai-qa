@@ -132,19 +132,55 @@ export class VerdictService {
     });
   }
 
+  async recordCancellation(reason: string): Promise<RunEvent> {
+    const summary = reason.trim();
+    if (summary.length === 0) {
+      throw new AiQaError(
+        "run.cancel_reason_required",
+        "Cancel reason is required",
+      );
+    }
+    return this.appendValidated(
+      (_workOrder, events, verdicts) => {
+        requireMutableRun(events);
+        const current = effectiveVerdictFrom(verdicts);
+        if (
+          current?.payload.classification === "not_verified" &&
+          current.payload.reasonCode === "cancelled" &&
+          current.payload.summary === summary
+        ) {
+          return appendInput(current.event);
+        }
+        const payload = verdictPayloadSchema.parse({
+          classification: "not_verified",
+          reasonCode: "cancelled",
+          summary,
+          criterionResults: [],
+          ...(current === undefined ? {} : { supersedes: current.event.id }),
+        });
+        return verdictAppendInput(payload);
+      },
+      { allowInterrupted: true },
+    );
+  }
+
   private async appendValidated(
     prepare: (
       workOrder: WorkOrder,
       events: readonly RunEvent[],
       verdicts: readonly VerdictEntry[],
     ) => AppendRunEvent,
+    options: { allowInterrupted?: boolean } = {},
   ): Promise<RunEvent> {
     const repository = await this.trustedRepository();
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
       const lifecycle = validateRunLifecycleHistory(events, this.runId);
-      if (lifecycle.current.payload.phase === "interrupted") {
+      if (
+        lifecycle.current.payload.phase === "interrupted" &&
+        options.allowInterrupted !== true
+      ) {
         throw new AiQaError(
           "run.interrupted",
           "Interrupted runs must be resumed or cancelled before verdict mutation",
@@ -270,6 +306,20 @@ function verdictAppendInput(payload: VerdictPayload): AppendRunEvent {
     payload,
     verdictRelatedIds(payload),
   );
+}
+
+function appendInput(event: RunEvent): AppendRunEvent {
+  return {
+    type: event.type,
+    actor: event.actor,
+    platform: event.platform,
+    tool: event.tool,
+    ...(event.idempotencyKey === undefined
+      ? {}
+      : { idempotencyKey: event.idempotencyKey }),
+    payload: event.payload,
+    relatedIds: event.relatedIds,
+  };
 }
 
 function typedAppendInput(

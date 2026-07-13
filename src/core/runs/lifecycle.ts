@@ -90,9 +90,8 @@ export function validateRunLifecycleHistory(
           break;
         case "completed":
           requireLifecycle(
-            current !== undefined &&
-              current.payload.phase !== "completed" &&
-              current.payload.phase !== "cancelled",
+            current?.payload.phase === "started" ||
+              current?.payload.phase === "resumed",
           );
           requireMetadata(event, `finish:${runId}`, [payload.verdictId]);
           break;

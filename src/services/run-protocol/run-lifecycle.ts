@@ -14,7 +14,6 @@ import {
   type AppendRunEvent,
   type RunEvent,
 } from "../../core/runs/schema.js";
-import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 import {
@@ -123,23 +122,7 @@ export async function cancelRun(input: {
     runId,
     input.now,
   );
-  const current = await verdictService.effectiveVerdict();
-  let verdict: RunEvent;
-  if (current !== undefined && isCancelledVerdict(current, reason)) {
-    verdict = current;
-  } else {
-    const payload: VerdictPayload = {
-      classification: "not_verified",
-      reasonCode: "cancelled",
-      summary: reason,
-      criterionResults: [],
-      ...(current === undefined ? {} : { supersedes: current.id }),
-    };
-    verdict =
-      current === undefined
-        ? await verdictService.set(payload)
-        : await verdictService.revise({ ...payload, supersedes: current.id });
-  }
+  const verdict = await verdictService.recordCancellation(reason);
 
   await journal.appendPrepared(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
@@ -231,15 +214,6 @@ function requireMutableLifecycle(entry: LifecycleEntry): void {
 
 function isRunPhase(event: RunEvent, phase: string): boolean {
   return isRecord(event.payload) && event.payload.phase === phase;
-}
-
-function isCancelledVerdict(event: RunEvent, reason: string): boolean {
-  return (
-    isRecord(event.payload) &&
-    event.payload.classification === "not_verified" &&
-    event.payload.reasonCode === "cancelled" &&
-    event.payload.summary === reason
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
