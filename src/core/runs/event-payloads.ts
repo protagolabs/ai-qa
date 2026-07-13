@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { evidenceRecordSchema } from "../evidence/schema.js";
+import { evidenceIdSchema, evidenceRecordSchema } from "../evidence/schema.js";
 import { jsonValueSchema } from "../json-value.js";
 import {
   actionIdSchema,
@@ -56,6 +56,42 @@ export const observationPayloadSchema = z
   .strict();
 
 export type ObservationPayload = z.infer<typeof observationPayloadSchema>;
+
+export const assertionPayloadSchema = z
+  .object({
+    criterionId: criterionIdSchema,
+    status: z.enum(["satisfied", "violated", "indeterminate"]),
+    assertionKinds: z.array(z.string().trim().min(1)).min(1),
+    actual: z.string().trim().min(1),
+    expected: z.string().trim().min(1),
+    observationIds: z.array(eventIdSchema),
+    evidenceIds: z.array(evidenceIdSchema),
+    stepId: stepIdSchema.optional(),
+  })
+  .strict();
+
+export type AssertionPayload = z.infer<typeof assertionPayloadSchema>;
+
+export const decisionPayloadSchema = z
+  .object({
+    kind: z.enum(["semantic", "recovery-policy"]),
+    rationale: z.string().trim().min(1),
+    relatedIds: z.array(z.string().trim().min(1)),
+  })
+  .strict();
+
+export type DecisionPayload = z.infer<typeof decisionPayloadSchema>;
+
+export const recoveryPayloadSchema = z
+  .object({
+    actionId: actionIdSchema,
+    resolution: z.enum(["applied", "not_applied", "indeterminate"]),
+    observationId: eventIdSchema,
+    rationale: z.string().trim().min(1),
+  })
+  .strict();
+
+export type RecoveryPayload = z.infer<typeof recoveryPayloadSchema>;
 
 export const evidenceEventPayloadSchema = evidenceRecordSchema.safeExtend({
   criterionIds: z.array(criterionIdSchema),

@@ -1,9 +1,14 @@
 import { Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
+import { registerActionCommands } from "./commands/action.js";
+import { registerAssertionCommands } from "./commands/assertion.js";
+import { registerDecisionCommands } from "./commands/decision.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerEvidenceCommands } from "./commands/evidence.js";
 import { registerInitCommands } from "./commands/init.js";
+import { registerObservationCommands } from "./commands/observation.js";
+import { registerRecoveryCommands } from "./commands/recovery.js";
 import { registerRunCommands } from "./commands/run.js";
 import { registerSkillCommands } from "./commands/skill.js";
 import { registerTrustCommands } from "./commands/trust.js";
@@ -23,9 +28,14 @@ export function createProgram(context: CliContext): Command {
       writeErr: (value) => context.writeStderr(value),
       outputError: () => undefined,
     });
+  registerActionCommands(program, context);
+  registerAssertionCommands(program, context);
+  registerDecisionCommands(program, context);
   registerDoctorCommand(program, context);
   registerEvidenceCommands(program, context);
   registerInitCommands(program, context);
+  registerObservationCommands(program, context);
+  registerRecoveryCommands(program, context);
   registerRunCommands(program, context);
   registerSkillCommands(program, context, (exitCode) => {
     requestedExitCodes.set(program, exitCode);
