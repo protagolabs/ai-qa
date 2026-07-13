@@ -34,6 +34,29 @@ describe("canonical JSON", () => {
     );
   });
 
+  it("preserves code-unit order for root and nested integer-like keys", () => {
+    const value = {
+      é: "accent",
+      "2": "two",
+      nested: { ä: "umlaut", "2": 2, _: "underscore", "10": 10 },
+      "!": "bang",
+      "10": "ten",
+    };
+
+    expect(canonicalJson(value)).toBe(
+      '{"!":"bang","10":"ten","2":"two","nested":{"10":10,"2":2,"_":"underscore","ä":"umlaut"},"é":"accent"}',
+    );
+    expect(sha256Canonical(value)).toBe(
+      sha256Canonical({
+        "!": "bang",
+        "10": "ten",
+        "2": "two",
+        nested: { "10": 10, _: "underscore", "2": 2, ä: "umlaut" },
+        é: "accent",
+      }),
+    );
+  });
+
   it("accepts nested JSON and rejects every unsupported runtime value", () => {
     const valid = {
       array: [null, true, false, 0, 1.5, "value", { nested: ["ok"] }],

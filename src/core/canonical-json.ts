@@ -1,21 +1,40 @@
 import { createHash } from "node:crypto";
 import { assertJsonValue, type JsonValue } from "./json-value.js";
 
-function normalize(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(normalize);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, child]) => [key, normalize(child as JsonValue)]),
-    ) as { [key: string]: JsonValue };
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function encodePrimitive(value: null | boolean | number | string): string {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new TypeError("JSON primitive could not be encoded");
   }
-  return value;
+  return encoded;
+}
+
+function serialize(value: JsonValue): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((child) => serialize(child)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.keys(value)
+      .sort(compareCodeUnits)
+      .map((key) => {
+        const child = value[key];
+        if (child === undefined) {
+          throw new TypeError("JSON object property could not be encoded");
+        }
+        return `${encodePrimitive(key)}:${serialize(child)}`;
+      });
+    return `{${entries.join(",")}}`;
+  }
+  return encodePrimitive(value);
 }
 
 export function canonicalJson(value: unknown): string {
   assertJsonValue(value);
-  return JSON.stringify(normalize(value));
+  return serialize(value);
 }
 
 export function sha256Canonical(value: unknown): string {
