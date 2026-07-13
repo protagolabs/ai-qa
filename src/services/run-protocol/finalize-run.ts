@@ -134,17 +134,6 @@ export async function finalizeRun(input: {
           verdict: effective,
           completionTime: new Date(timestamp),
         });
-        if (
-          effective.payload.classification === "pass" &&
-          new Date(timestamp).getTime() >
-            new Date(workOrder.budget.deadline).getTime()
-        ) {
-          throw new AiQaError(
-            "run.deadline_exceeded",
-            "A pass verdict cannot complete after the frozen deadline",
-            { runId, deadline: workOrder.budget.deadline },
-          );
-        }
       },
       resolve: (event: RunEvent) =>
         completionResult(runId, effective.payload, event.timestamp),
@@ -152,7 +141,7 @@ export async function finalizeRun(input: {
   });
 }
 
-function validateFinalization(input: {
+export function validateFinalization(input: {
   workOrder: WorkOrder;
   events: readonly RunEvent[];
   evidence: readonly EvidenceRecord[];
@@ -283,6 +272,20 @@ function validateFinalization(input: {
     input.verdict.payload.criterionResults,
     evidenceById,
   );
+  if (
+    input.verdict.payload.classification === "pass" &&
+    input.completionTime.getTime() >
+      new Date(input.workOrder.budget.deadline).getTime()
+  ) {
+    throw new AiQaError(
+      "run.deadline_exceeded",
+      "A pass verdict cannot complete after the frozen deadline",
+      {
+        runId: input.workOrder.runId,
+        deadline: input.workOrder.budget.deadline,
+      },
+    );
+  }
 }
 
 async function validatePinnedRegressionCase(
