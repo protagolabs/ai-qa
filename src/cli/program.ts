@@ -2,8 +2,11 @@ import { Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
 import { registerInitCommands } from "./commands/init.js";
+import { registerSkillCommands } from "./commands/skill.js";
 import { registerTrustCommands } from "./commands/trust.js";
 import type { CliContext } from "./context.js";
+
+const requestedExitCodes = new WeakMap<Command, number>();
 
 export function createProgram(context: CliContext): Command {
   const program = new Command()
@@ -18,6 +21,9 @@ export function createProgram(context: CliContext): Command {
       outputError: () => undefined,
     });
   registerInitCommands(program, context);
+  registerSkillCommands(program, context, (exitCode) => {
+    requestedExitCodes.set(program, exitCode);
+  });
   registerTrustCommands(program, context);
   return program;
 }
@@ -29,7 +35,7 @@ export async function runCli(
   const program = createProgram(context);
   try {
     await program.parseAsync([...args], { from: "user" });
-    return 0;
+    return requestedExitCodes.get(program) ?? 0;
   } catch (error: unknown) {
     if (error instanceof CommanderError) {
       if (

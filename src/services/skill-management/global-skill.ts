@@ -1,0 +1,329 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import { createTwoFilesPatch } from "diff";
+import { satisfies } from "semver";
+import { parse } from "yaml";
+import { AiQaError } from "../../core/errors.js";
+import { atomicWriteFile } from "../../core/fs/atomic-write.js";
+import { mergeManagedSkill } from "./managed-skill.js";
+
+const WORK_PROTOCOL_VERSION = "1.0.0";
+
+export interface SyncGlobalSkillInput {
+  agentsHome: string;
+  sourcePath: string;
+  confirmManagedReplacement: boolean;
+}
+
+export interface GlobalSkillStatus {
+  destination: string;
+  changed: boolean;
+  managedChecksum: string;
+}
+
+interface ReferenceAsset {
+  relativePath: string;
+  content: string;
+  hash: string;
+}
+
+interface InstalledMetadata {
+  aiQaSkillVersion: string;
+  aiQaProtocolRange: string;
+}
+
+function destinationFor(agentsHome: string): string {
+  return join(agentsHome, "skills", "ai-qa", "SKILL.md");
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function readOptional(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function listFiles(root: string, current = root): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(current, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(root, path)));
+    } else if (entry.isFile()) {
+      files.push(relative(root, path));
+    }
+  }
+  return files.sort();
+}
+
+async function readReferenceAssets(
+  sourcePath: string,
+): Promise<ReferenceAsset[]> {
+  const referenceRoot = join(dirname(sourcePath), "references");
+  const relativePaths = await listFiles(referenceRoot);
+  return Promise.all(
+    relativePaths.map(async (relativePath) => {
+      const assetPath = join(referenceRoot, relativePath);
+      const content = await readFile(assetPath, "utf8");
+      return {
+        relativePath,
+        content,
+        hash: sha256(content),
+      };
+    }),
+  );
+}
+
+function referenceDestination(
+  skillDestination: string,
+  asset: ReferenceAsset,
+): string {
+  return join(dirname(skillDestination), "references", asset.relativePath);
+}
+
+function isManagedConflict(error: unknown): boolean {
+  return error instanceof AiQaError && error.code === "skill.managed_conflict";
+}
+
+function parseInstalledMetadata(content: string): InstalledMetadata {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(content);
+  if (match?.[1] === undefined) {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md requires YAML frontmatter",
+    );
+  }
+  const frontmatter: unknown = parse(match[1]);
+  if (typeof frontmatter !== "object" || frontmatter === null) {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md frontmatter must be a mapping",
+    );
+  }
+  const metadata = (frontmatter as Record<string, unknown>).metadata;
+  if (typeof metadata !== "object" || metadata === null) {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md requires compatibility metadata",
+    );
+  }
+  const aiQaSkillVersion = (metadata as Record<string, unknown>)
+    .aiQaSkillVersion;
+  const aiQaProtocolRange = (metadata as Record<string, unknown>)
+    .aiQaProtocolRange;
+  if (
+    typeof aiQaSkillVersion !== "string" ||
+    typeof aiQaProtocolRange !== "string"
+  ) {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md compatibility metadata must be strings",
+    );
+  }
+  return { aiQaSkillVersion, aiQaProtocolRange };
+}
+
+export async function previewGlobalSkillSync(input: {
+  agentsHome: string;
+  sourcePath: string;
+}): Promise<{
+  destination: string;
+  changed: boolean;
+  requiresConfirmation: boolean;
+  unifiedDiff: string;
+}> {
+  const destination = destinationFor(input.agentsHome);
+  const [source, existing, references] = await Promise.all([
+    readFile(input.sourcePath, "utf8"),
+    readOptional(destination),
+    readReferenceAssets(input.sourcePath),
+  ]);
+
+  let requiresConfirmation = false;
+  if (existing !== undefined) {
+    try {
+      mergeManagedSkill({
+        source,
+        existing,
+        confirmManagedReplacement: false,
+      });
+    } catch (error: unknown) {
+      if (!isManagedConflict(error)) {
+        throw error;
+      }
+      requiresConfirmation = true;
+    }
+  }
+  const proposed = mergeManagedSkill({
+    source,
+    ...(existing === undefined ? {} : { existing }),
+    confirmManagedReplacement: true,
+  });
+  const diffs: string[] = [];
+  if (proposed.changed) {
+    diffs.push(
+      createTwoFilesPatch(
+        destination,
+        `${destination} (proposed)`,
+        existing ?? "",
+        proposed.content,
+      ),
+    );
+  }
+
+  let referencesChanged = false;
+  for (const reference of references) {
+    const installedPath = referenceDestination(destination, reference);
+    const installed = await readOptional(installedPath);
+    if (installed === undefined || sha256(installed) !== reference.hash) {
+      referencesChanged = true;
+      diffs.push(
+        createTwoFilesPatch(
+          installedPath,
+          `${installedPath} (proposed)`,
+          installed ?? "",
+          reference.content,
+        ),
+      );
+      if (installed !== undefined) {
+        requiresConfirmation = true;
+      }
+    }
+  }
+
+  return {
+    destination,
+    changed: proposed.changed || referencesChanged,
+    requiresConfirmation,
+    unifiedDiff: diffs.join("\n"),
+  };
+}
+
+export async function syncGlobalSkill(
+  input: SyncGlobalSkillInput,
+): Promise<GlobalSkillStatus> {
+  const destination = destinationFor(input.agentsHome);
+  const [source, existing, references] = await Promise.all([
+    readFile(input.sourcePath, "utf8"),
+    readOptional(destination),
+    readReferenceAssets(input.sourcePath),
+  ]);
+  const merged = mergeManagedSkill({
+    source,
+    ...(existing === undefined ? {} : { existing }),
+    confirmManagedReplacement: input.confirmManagedReplacement,
+  });
+
+  const referenceWrites: Array<{ path: string; content: string }> = [];
+  for (const reference of references) {
+    const installedPath = referenceDestination(destination, reference);
+    const installed = await readOptional(installedPath);
+    if (installed === undefined) {
+      referenceWrites.push({ path: installedPath, content: reference.content });
+      continue;
+    }
+    if (sha256(installed) !== reference.hash) {
+      if (!input.confirmManagedReplacement) {
+        throw new AiQaError(
+          "skill.reference_conflict",
+          "Installed CLI-managed skill reference differs from the bundled reference",
+          {
+            path: installedPath,
+            installed: sha256(installed),
+            proposed: reference.hash,
+          },
+        );
+      }
+      referenceWrites.push({ path: installedPath, content: reference.content });
+    }
+  }
+
+  await mkdir(dirname(destination), { recursive: true });
+  if (merged.changed) {
+    await atomicWriteFile(destination, merged.content);
+  }
+  await Promise.all(
+    referenceWrites.map(({ path, content }) => atomicWriteFile(path, content)),
+  );
+  return {
+    destination,
+    changed: merged.changed || referenceWrites.length > 0,
+    managedChecksum: merged.managedChecksum,
+  };
+}
+
+export async function checkGlobalSkill(input: {
+  agentsHome: string;
+  sourcePath: string;
+}): Promise<{
+  status: "compatible" | "missing" | "stale" | "conflict";
+  destination: string;
+}> {
+  const destination = destinationFor(input.agentsHome);
+  const existing = await readOptional(destination);
+  if (existing === undefined) {
+    return { status: "missing", destination };
+  }
+  const [source, references] = await Promise.all([
+    readFile(input.sourcePath, "utf8"),
+    readReferenceAssets(input.sourcePath),
+  ]);
+
+  let proposed;
+  try {
+    proposed = mergeManagedSkill({
+      source,
+      existing,
+      confirmManagedReplacement: false,
+    });
+  } catch {
+    return { status: "conflict", destination };
+  }
+
+  let sourceMetadata: InstalledMetadata;
+  let installedMetadata: InstalledMetadata;
+  try {
+    sourceMetadata = parseInstalledMetadata(source);
+    installedMetadata = parseInstalledMetadata(existing);
+  } catch {
+    return { status: "conflict", destination };
+  }
+  if (
+    sourceMetadata.aiQaSkillVersion !== installedMetadata.aiQaSkillVersion ||
+    !satisfies(WORK_PROTOCOL_VERSION, installedMetadata.aiQaProtocolRange) ||
+    proposed.changed
+  ) {
+    return { status: "stale", destination };
+  }
+
+  for (const reference of references) {
+    const installed = await readOptional(
+      referenceDestination(destination, reference),
+    );
+    if (installed === undefined) {
+      return { status: "stale", destination };
+    }
+    if (sha256(installed) !== reference.hash) {
+      return { status: "conflict", destination };
+    }
+  }
+  return { status: "compatible", destination };
+}
