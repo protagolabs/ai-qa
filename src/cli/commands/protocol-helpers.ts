@@ -42,9 +42,9 @@ function permittedNextActions(event: RunEvent): string[] {
         : undefined;
     if (phase === "planned") return ["invoke-tool", "action.complete"];
     if (phase === "unknown") {
-      return ["action.plan-observation", "recovery.resolve"];
+      return ["action.plan", "decision.record"];
     }
-    return ["observation.add", "assertion.record", "action.plan"];
+    return ["action.plan", "assertion.record", "decision.record"];
   }
   if (event.type === "observation") {
     return ["assertion.record", "recovery.resolve", "action.plan"];

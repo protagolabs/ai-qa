@@ -237,23 +237,15 @@ describe("typed run protocol", () => {
   });
 
   it("makes action planning and completion idempotent and rejects conflicts", async () => {
-    const { service, repository } = await createTrustedRun();
-    await repository.journal("run-1").append({
-      type: "decision",
-      actor: "agent",
-      platform: "web",
-      tool: "ai-qa",
-      idempotencyKey: "reserved-plan-key",
-      payload: {
-        kind: "semantic",
-        rationale: "Reserve a plan key adversarially",
-        relatedIds: [],
-      },
+    const { service } = await createTrustedRun();
+    const reserved = await service.recordDecision({
+      kind: "semantic",
+      rationale: "Reserve a plan key adversarially",
       relatedIds: [],
     });
     await expect(
       service.planAction({
-        idempotencyKey: "reserved-plan-key",
+        idempotencyKey: reserved.idempotencyKey!,
         kind: "interaction",
         intent: "Must collide before planning",
         tool: "chrome-devtools-mcp",
@@ -295,18 +287,12 @@ describe("typed run protocol", () => {
       ...input,
       idempotencyKey: "another-action",
     });
-    await repository.journal("run-1").append({
-      type: "decision",
-      actor: "agent",
-      platform: "web",
-      tool: "ai-qa",
+    await service.planAction({
       idempotencyKey: `complete:${another.id}`,
-      payload: {
-        kind: "semantic",
-        rationale: "Reserve the key adversarially",
-        relatedIds: [],
-      },
-      relatedIds: [],
+      kind: "interaction",
+      intent: "Reserve the completion key adversarially",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Another button" },
     });
     await expect(
       service.completeAction({
@@ -428,6 +414,11 @@ describe("typed run protocol", () => {
     const base = await recoveryBudget.service.planAction({
       ...firstInput,
       idempotencyKey: "base-step",
+    });
+    await recoveryBudget.service.completeAction({
+      actionId: base.id,
+      phase: "completed",
+      toolResult: { summary: "Base step completed before recovery" },
     });
     const stepId = (base.payload as { stepId: string }).stepId;
     await recoveryBudget.service.planAction({
@@ -670,6 +661,118 @@ describe("typed run protocol", () => {
     ).rejects.toMatchObject({ code: "recovery.retry_not_permitted" });
   });
 
+  it("consumes not_applied permission and tracks unknown recovery attempts on the original step", async () => {
+    const { service } = await createTrustedRun();
+    const original = await service.planAction({
+      idempotencyKey: "original-ambiguous-action",
+      kind: "interaction",
+      intent: "Submit the original action",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Submit button" },
+    });
+    const originalStepId = (original.payload as { stepId: string }).stepId;
+    await service.completeAction({
+      actionId: original.id,
+      phase: "unknown",
+      toolResult: { summary: "Original result is unknown" },
+    });
+    const originalObservation = await addCurrentObservation(
+      service,
+      "observe-original-unknown",
+    );
+    await service.resolveUnknownAction({
+      actionId: original.id,
+      resolution: "not_applied",
+      observationId: originalObservation.eventId,
+      rationale: "The original action was not applied",
+    });
+    await expect(
+      service.planAction({
+        idempotencyKey: "marker-omission",
+        kind: "interaction",
+        intent: "Do not bypass the recovery marker",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Submit button" },
+        stepId: originalStepId,
+      }),
+    ).rejects.toMatchObject({ code: "recovery.marker_required" });
+
+    const retry = await service.planAction({
+      idempotencyKey: "first-retry",
+      kind: "interaction",
+      intent: "Retry after not_applied",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Submit button" },
+      recoveryForStepId: originalStepId,
+    });
+    expect((retry.payload as { stepId: string }).stepId).toBe(originalStepId);
+    await service.completeAction({
+      actionId: retry.id,
+      phase: "unknown",
+      toolResult: { summary: "Retry result is also unknown" },
+    });
+    await expect(
+      service.planAction({
+        idempotencyKey: "blind-second-retry",
+        kind: "interaction",
+        intent: "Must observe the unknown retry first",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Submit button" },
+        recoveryForStepId: originalStepId,
+      }),
+    ).rejects.toMatchObject({ code: "recovery.retry_not_permitted" });
+
+    const retryObservation = await addCurrentObservation(
+      service,
+      "observe-unknown-retry",
+    );
+    await service.resolveUnknownAction({
+      actionId: retry.id,
+      resolution: "not_applied",
+      observationId: retryObservation.eventId,
+      rationale: "The retry was also not applied",
+    });
+    await expect(
+      service.planAction({
+        idempotencyKey: "resolved-second-retry",
+        kind: "interaction",
+        intent: "Retry only after resolving the latest unknown",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Submit button" },
+        recoveryForStepId: originalStepId,
+      }),
+    ).resolves.toMatchObject({ type: "action" });
+  });
+
+  it("rejects schema-valid orphan observations before they can support assertions", async () => {
+    const { service, repository } = await createTrustedRun();
+    const forged = await repository.journal("run-1").append({
+      type: "observation",
+      actor: "agent",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      idempotencyKey: "observation:event-missing-action",
+      payload: {
+        actionId: "event-missing-action",
+        stepId: "step-forged",
+        summary: "Forged but schema-valid observation",
+        state: { visible: true },
+      },
+      relatedIds: ["event-missing-action"],
+    });
+    await expect(
+      service.recordAssertion({
+        criterionId: "authenticated-home-visible",
+        status: "satisfied",
+        assertionKinds: ["semantic-ui"],
+        actual: "Forged observation claims success",
+        expected: "Authenticated home is visible",
+        observationIds: [forged.id],
+        evidenceIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+  });
+
   it("rejects malformed typed events before appending more protocol state", async () => {
     const { service, repository } = await createTrustedRun();
     await repository.journal("run-1").append({
@@ -737,9 +840,8 @@ describe("typed run protocol", () => {
 
   it("does not expose a generic event command", () => {
     const captured = createCapturedCli();
-    const commandNames = createProgram(captured.context).commands.map(
-      (command) => command.name(),
-    );
+    const program = createProgram(captured.context);
+    const commandNames = program.commands.map((command) => command.name());
     expect(commandNames).toEqual(
       expect.arrayContaining([
         "action",
@@ -749,6 +851,15 @@ describe("typed run protocol", () => {
         "recovery",
       ]),
     );
+    const subcommands = (name: string) =>
+      program.commands
+        .find((command) => command.name() === name)!
+        .commands.map((command) => command.name());
+    expect(subcommands("action")).toEqual(["plan", "complete"]);
+    expect(subcommands("observation")).toEqual(["add"]);
+    expect(subcommands("assertion")).toEqual(["record"]);
+    expect(subcommands("decision")).toEqual(["record"]);
+    expect(subcommands("recovery")).toEqual(["resolve"]);
     expect(commandNames.some((commandName) => commandName === "event")).toBe(
       false,
     );

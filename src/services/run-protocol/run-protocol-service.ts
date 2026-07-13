@@ -123,8 +123,27 @@ export class RunProtocolService {
         );
       }
       if (parsed.recoveryForStepId !== undefined) {
+        if (parsed.kind !== "interaction") {
+          throw new AiQaError(
+            "recovery.interaction_required",
+            "Recovery actions must be state-changing interactions",
+            { recoveryForStepId: parsed.recoveryForStepId },
+          );
+        }
+        if (
+          parsed.stepId !== undefined &&
+          parsed.stepId !== parsed.recoveryForStepId
+        ) {
+          throw new AiQaError(
+            "recovery.step_mismatch",
+            "A recovery action must stay on the affected step",
+            {
+              stepId: parsed.stepId,
+              recoveryForStepId: parsed.recoveryForStepId,
+            },
+          );
+        }
         requireKnownStep(planned, parsed.recoveryForStepId);
-        requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
         const recoveryCount = planned.filter(
           ({ payload }) => payload.recoveryForStepId !== undefined,
         ).length;
@@ -138,13 +157,27 @@ export class RunProtocolService {
             },
           );
         }
+        requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
+      } else if (
+        parsed.kind === "interaction" &&
+        parsed.stepId !== undefined &&
+        planned.some(
+          ({ payload }) =>
+            payload.kind === "interaction" && payload.stepId === parsed.stepId,
+        )
+      ) {
+        throw new AiQaError(
+          "recovery.marker_required",
+          "A repeated interaction step must declare recoveryForStepId",
+          { stepId: parsed.stepId },
+        );
       }
 
       const payload = actionPayloadSchema.parse({
         phase: "planned",
         kind: parsed.kind,
         intent: parsed.intent,
-        stepId: parsed.stepId ?? createId("step"),
+        stepId: parsed.stepId ?? parsed.recoveryForStepId ?? createId("step"),
         target: parsed.target,
         ...(parsed.recoveryForStepId === undefined
           ? {}
@@ -321,8 +354,8 @@ export class RunProtocolService {
     });
     const repository = new RunRepository(trusted.projectRoot, this.now);
     return repository.journal(this.runId).appendPrepared(async (events) => {
-      validateProtocolEvents(events);
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
+      validateProtocolEvents(events, workOrder, this.runId);
       return {
         input: prepare(workOrder, events),
         resolve: (event: RunEvent) => event,
@@ -476,39 +509,44 @@ function requireRecoveryRetryPermitted(
   events: readonly RunEvent[],
   stepId: string,
 ): void {
-  const stepActionIds = new Set(
-    plannedActions(events)
-      .filter(({ payload }) => payload.stepId === stepId)
-      .map(({ event }) => event.id),
+  const lineage = plannedActions(events).filter(
+    ({ payload }) =>
+      payload.kind === "interaction" &&
+      (payload.stepId === stepId || payload.recoveryForStepId === stepId),
   );
-  const latestUnknown = events
-    .flatMap((event) => {
-      if (event.type !== "action") return [];
-      const payload = actionPayloadSchema.parse(event.payload);
-      return payload.phase === "unknown" && stepActionIds.has(payload.actionId)
-        ? [{ event, payload }]
-        : [];
-    })
-    .at(-1);
-  if (latestUnknown === undefined) return;
+  const latest = lineage.at(-1);
+  if (latest === undefined) {
+    throw retryNotPermitted(stepId);
+  }
+  const terminals = terminalActions(events, latest.event.id);
+  if (terminals.length !== 1) {
+    throw retryNotPermitted(stepId, latest.event.id);
+  }
+  const terminal = terminals[0]!;
+  if (terminal.payload.phase === "completed") {
+    if (latest.payload.recoveryForStepId === undefined) return;
+    throw retryNotPermitted(stepId, latest.event.id);
+  }
 
   const resolutions = events.flatMap((event) => {
     if (event.type !== "recovery") return [];
     const payload = recoveryPayloadSchema.parse(event.payload);
-    return payload.actionId === latestUnknown.payload.actionId
-      ? [{ event, payload }]
-      : [];
+    return payload.actionId === latest.event.id ? [{ event, payload }] : [];
   });
   if (
     resolutions.length !== 1 ||
     resolutions[0]!.payload.resolution !== "not_applied"
   ) {
-    throw new AiQaError(
-      "recovery.retry_not_permitted",
-      "A retry requires a not_applied resolution for the latest unknown action",
-      { stepId, actionId: latestUnknown.payload.actionId },
-    );
+    throw retryNotPermitted(stepId, latest.event.id);
   }
+}
+
+function retryNotPermitted(stepId: string, actionId?: string): AiQaError {
+  return new AiQaError(
+    "recovery.retry_not_permitted",
+    "A retry requires the latest step interaction to resolve as not_applied",
+    { stepId, ...(actionId === undefined ? {} : { actionId }) },
+  );
 }
 
 function requireObservation(
@@ -586,28 +624,187 @@ function requireCanonicalRetryOrNoExisting(
   }
 }
 
-function validateProtocolEvents(events: readonly RunEvent[]): void {
+function validateProtocolEvents(
+  events: readonly RunEvent[],
+  workOrder: WorkOrder,
+  runId: string,
+): void {
   try {
-    for (const event of events) {
+    const eventIds = new Set<string>();
+    const idempotencyKeys = new Set<string>();
+    const plans = new Map<string, PlannedAction>();
+    const terminals = new Map<string, TerminalAction>();
+    const observations = new Map<string, RunEvent>();
+    const observationActions = new Set<string>();
+    const evidenceIds = new Set<string>();
+    const recoveryActions = new Set<string>();
+    const interactionSteps = new Set<string>();
+    const knownCriteria = new Set(
+      workOrder.acceptanceCriteria.map((criterion) => criterion.id),
+    );
+    let plannedCount = 0;
+    let recoveryCount = 0;
+
+    for (const [index, event] of events.entries()) {
+      requireSemantic(!eventIds.has(event.id));
+      eventIds.add(event.id);
+      if (event.idempotencyKey !== undefined) {
+        requireSemantic(!idempotencyKeys.has(event.idempotencyKey));
+        idempotencyKeys.add(event.idempotencyKey);
+      }
+
       switch (event.type) {
-        case "action":
-          actionPayloadSchema.parse(event.payload);
+        case "action": {
+          const payload = actionPayloadSchema.parse(event.payload);
+          if (payload.phase === "planned") {
+            requireProtocolMetadata(event, {
+              actor: "agent",
+              tool: event.tool,
+              idempotencyKey: event.idempotencyKey,
+              relatedIds: [],
+            });
+            requireSemantic(event.tool.trim().length > 0);
+            requireSemantic(
+              typeof event.idempotencyKey === "string" &&
+                event.idempotencyKey.trim().length > 0,
+            );
+            requireSemantic(
+              new Date(event.timestamp).getTime() <
+                new Date(workOrder.budget.deadline).getTime(),
+            );
+            requireSemantic(plannedCount < workOrder.budget.maxToolCalls);
+            if (payload.recoveryForStepId !== undefined) {
+              requireSemantic(payload.kind === "interaction");
+              requireSemantic(payload.stepId === payload.recoveryForStepId);
+              requireSemantic(
+                [...plans.values()].some(
+                  ({ payload: planned }) =>
+                    planned.stepId === payload.recoveryForStepId,
+                ),
+              );
+              requireSemantic(
+                recoveryCount < workOrder.budget.maxRecoveryActions,
+              );
+              requireRecoveryRetryPermitted(
+                events.slice(0, index),
+                payload.recoveryForStepId,
+              );
+              recoveryCount += 1;
+            } else if (payload.kind === "interaction") {
+              requireSemantic(!interactionSteps.has(payload.stepId));
+            }
+            if (payload.kind === "interaction") {
+              interactionSteps.add(payload.stepId);
+            }
+            plans.set(event.id, { event, payload });
+            plannedCount += 1;
+            break;
+          }
+
+          const plan = plans.get(payload.actionId);
+          requireSemantic(plan !== undefined);
+          requireSemantic(!terminals.has(payload.actionId));
+          requireProtocolMetadata(event, {
+            actor: "agent",
+            tool: plan.event.tool,
+            idempotencyKey: `complete:${payload.actionId}`,
+            relatedIds: [payload.actionId],
+          });
+          terminals.set(payload.actionId, { event, payload });
           break;
-        case "observation":
-          observationPayloadSchema.parse(event.payload);
+        }
+        case "observation": {
+          const payload = observationPayloadSchema.parse(event.payload);
+          const plan = plans.get(payload.actionId);
+          const terminal = terminals.get(payload.actionId);
+          requireSemantic(plan?.payload.kind === "observation");
+          requireSemantic(terminal?.payload.phase === "completed");
+          requireSemantic(!observationActions.has(payload.actionId));
+          requireSemantic(payload.stepId === plan.payload.stepId);
+          requireProtocolMetadata(event, {
+            actor: "agent",
+            tool: plan.event.tool,
+            idempotencyKey: `observation:${payload.actionId}`,
+            relatedIds: [payload.actionId],
+          });
+          observations.set(event.id, event);
+          observationActions.add(payload.actionId);
           break;
-        case "assertion":
-          assertionPayloadSchema.parse(event.payload);
+        }
+        case "assertion": {
+          const payload = assertionPayloadSchema.parse(event.payload);
+          requireSemantic(knownCriteria.has(payload.criterionId));
+          requireSemantic(
+            payload.observationIds.every((id) => observations.has(id)),
+          );
+          requireSemantic(
+            payload.evidenceIds.every((id) => evidenceIds.has(id)),
+          );
+          if (payload.stepId !== undefined) {
+            requireSemantic(
+              [...plans.values()].some(
+                ({ payload: planned }) => planned.stepId === payload.stepId,
+              ),
+            );
+          }
+          requireProtocolMetadata(event, {
+            actor: "agent",
+            tool: "ai-qa",
+            idempotencyKey: `assertion:${sha256Canonical(payload)}`,
+            relatedIds: [...payload.observationIds, ...payload.evidenceIds],
+          });
           break;
-        case "evidence":
-          evidenceEventPayloadSchema.parse(event.payload);
+        }
+        case "evidence": {
+          const payload = evidenceEventPayloadSchema.parse(event.payload);
+          const plan = plans.get(payload.captureActionId);
+          const terminal = terminals.get(payload.captureActionId);
+          requireSemantic(payload.runId === runId);
+          requireSemantic(plan?.payload.kind === "evidence-capture");
+          requireSemantic(terminal?.payload.phase === "completed");
+          requireSemantic(
+            payload.criterionIds.every((id) => knownCriteria.has(id)),
+          );
+          requireSemantic(
+            payload.observationIds.every((id) => observations.has(id)),
+          );
+          requireSemantic(!evidenceIds.has(payload.id));
+          requireProtocolMetadata(event, {
+            actor: "ai-qa",
+            tool: "ai-qa",
+            idempotencyKey: payload.idempotencyKey,
+            relatedIds: [payload.captureActionId, ...payload.observationIds],
+          });
+          evidenceIds.add(payload.id);
           break;
-        case "decision":
-          decisionPayloadSchema.parse(event.payload);
+        }
+        case "decision": {
+          const payload = decisionPayloadSchema.parse(event.payload);
+          requireProtocolMetadata(event, {
+            actor: "agent",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(payload)}`,
+            relatedIds: payload.relatedIds,
+          });
           break;
-        case "recovery":
-          recoveryPayloadSchema.parse(event.payload);
+        }
+        case "recovery": {
+          const payload = recoveryPayloadSchema.parse(event.payload);
+          const terminal = terminals.get(payload.actionId);
+          const observation = observations.get(payload.observationId);
+          requireSemantic(terminal?.payload.phase === "unknown");
+          requireSemantic(observation !== undefined);
+          requireSemantic(observation.sequence > terminal.event.sequence);
+          requireSemantic(!recoveryActions.has(payload.actionId));
+          requireProtocolMetadata(event, {
+            actor: "ai-qa",
+            tool: "ai-qa",
+            idempotencyKey: `recovery:${payload.actionId}`,
+            relatedIds: [payload.actionId, payload.observationId],
+          });
+          recoveryActions.add(payload.actionId);
           break;
+        }
       }
     }
   } catch {
@@ -616,6 +813,27 @@ function validateProtocolEvents(events: readonly RunEvent[]): void {
       "Typed run protocol event validation failed",
     );
   }
+}
+
+function requireProtocolMetadata(
+  event: RunEvent,
+  expected: {
+    actor: RunEvent["actor"];
+    tool: string;
+    idempotencyKey: string | undefined;
+    relatedIds: readonly string[];
+  },
+): void {
+  requireSemantic(event.actor === expected.actor);
+  requireSemantic(event.tool === expected.tool);
+  requireSemantic(event.idempotencyKey === expected.idempotencyKey);
+  requireSemantic(
+    canonicalJson(event.relatedIds) === canonicalJson(expected.relatedIds),
+  );
+}
+
+function requireSemantic(condition: boolean): asserts condition {
+  if (!condition) throw new Error("semantic protocol invariant failed");
 }
 
 function idempotencyConflict(idempotencyKey: string): AiQaError {
