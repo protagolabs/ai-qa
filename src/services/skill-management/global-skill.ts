@@ -6,9 +6,8 @@ import { satisfies } from "semver";
 import { parse } from "yaml";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
+import { WORK_PROTOCOL_VERSION } from "../../schemas/versions.js";
 import { mergeManagedSkill } from "./managed-skill.js";
-
-const WORK_PROTOCOL_VERSION = "1.0.0";
 
 export interface SyncGlobalSkillInput {
   agentsHome: string;

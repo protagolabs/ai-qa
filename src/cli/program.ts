@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerInitCommands } from "./commands/init.js";
+import { registerRunCommands } from "./commands/run.js";
 import { registerSkillCommands } from "./commands/skill.js";
 import { registerTrustCommands } from "./commands/trust.js";
 import type { CliContext } from "./context.js";
@@ -23,6 +24,7 @@ export function createProgram(context: CliContext): Command {
     });
   registerDoctorCommand(program, context);
   registerInitCommands(program, context);
+  registerRunCommands(program, context);
   registerSkillCommands(program, context, (exitCode) => {
     requestedExitCodes.set(program, exitCode);
   });
