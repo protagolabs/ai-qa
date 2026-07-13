@@ -5,6 +5,7 @@ export interface CliContext {
   env: NodeJS.ProcessEnv;
   homeDir: string;
   now: () => Date;
+  fetchImpl: typeof fetch;
   readStdin: () => Promise<string>;
   writeStdout: (value: string) => void;
   writeStderr: (value: string) => void;
@@ -28,6 +29,7 @@ export function createDefaultContext(): CliContext {
     env: process.env,
     homeDir: homedir(),
     now: () => new Date(),
+    fetchImpl: globalThis.fetch,
     readStdin: readProcessStdin,
     writeStdout: (value) => process.stdout.write(value),
     writeStderr: (value) => process.stderr.write(value),

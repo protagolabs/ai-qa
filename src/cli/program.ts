@@ -1,6 +1,7 @@
 import { Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerInitCommands } from "./commands/init.js";
 import { registerSkillCommands } from "./commands/skill.js";
 import { registerTrustCommands } from "./commands/trust.js";
@@ -20,6 +21,7 @@ export function createProgram(context: CliContext): Command {
       writeErr: (value) => context.writeStderr(value),
       outputError: () => undefined,
     });
+  registerDoctorCommand(program, context);
   registerInitCommands(program, context);
   registerSkillCommands(program, context, (exitCode) => {
     requestedExitCodes.set(program, exitCode);
