@@ -7,6 +7,7 @@ const MANAGED_START = "<!-- ai-qa:managed:start -->";
 const MANAGED_END = "<!-- ai-qa:managed:end -->";
 const USER_START = "<!-- ai-qa:user:start -->";
 const USER_END = "<!-- ai-qa:user:end -->";
+const MARKERS = [MANAGED_START, MANAGED_END, USER_START, USER_END] as const;
 
 const skillFrontmatterSchema = z
   .object({
@@ -31,6 +32,13 @@ interface SkillParts {
   user: string;
 }
 
+interface MarkerPositions {
+  managedStart: number;
+  managedEnd: number;
+  userStart: number;
+  userEnd: number;
+}
+
 export interface MergeManagedSkillInput {
   source: string;
   existing?: string;
@@ -43,20 +51,41 @@ export interface MergeManagedSkillResult {
   changed: boolean;
 }
 
-function between(content: string, start: string, end: string): string {
-  const startIndex = content.indexOf(start);
-  const endIndex = content.indexOf(end);
-  if (startIndex < 0 || endIndex < startIndex) {
+function markerPositions(content: string): MarkerPositions {
+  const positions = MARKERS.map((marker) => {
+    const position = content.indexOf(marker);
+    if (
+      position < 0 ||
+      content.indexOf(marker, position + marker.length) !== -1
+    ) {
+      throw new AiQaError(
+        "skill.invalid_markers",
+        "SKILL.md requires each managed and user marker exactly once in order",
+      );
+    }
+    return position;
+  });
+  const [managedStart, managedEnd, userStart, userEnd] = positions;
+  if (
+    managedStart === undefined ||
+    managedEnd === undefined ||
+    userStart === undefined ||
+    userEnd === undefined ||
+    managedStart >= managedEnd ||
+    managedEnd >= userStart ||
+    userStart >= userEnd
+  ) {
     throw new AiQaError(
       "skill.invalid_markers",
-      `Missing or misordered ${start} and ${end}`,
+      "SKILL.md requires each managed and user marker exactly once in order",
     );
   }
-  return content.slice(startIndex + start.length, endIndex);
+  return { managedStart, managedEnd, userStart, userEnd };
 }
 
 function parseSkill(content: string): SkillParts {
-  const match = /^---\n([\s\S]*?)\n---\n/.exec(content);
+  const positions = markerPositions(content);
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
   if (match?.[1] === undefined) {
     throw new AiQaError(
       "skill.invalid_frontmatter",
@@ -68,8 +97,14 @@ function parseSkill(content: string): SkillParts {
       string,
       unknown
     >,
-    managed: between(content, MANAGED_START, MANAGED_END),
-    user: between(content, USER_START, USER_END),
+    managed: content.slice(
+      positions.managedStart + MANAGED_START.length,
+      positions.managedEnd,
+    ),
+    user: content.slice(
+      positions.userStart + USER_START.length,
+      positions.userEnd,
+    ),
   };
 }
 
@@ -127,6 +162,8 @@ export function mergeManagedSkill(
   return {
     content,
     managedChecksum,
-    changed: content !== input.existing,
+    changed:
+      input.existing === undefined ||
+      content.replace(/\r\n/g, "\n") !== input.existing.replace(/\r\n/g, "\n"),
   };
 }

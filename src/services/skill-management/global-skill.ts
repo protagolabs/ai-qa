@@ -104,7 +104,7 @@ function isManagedConflict(error: unknown): boolean {
 }
 
 function parseInstalledMetadata(content: string): InstalledMetadata {
-  const match = /^---\n([\s\S]*?)\n---\n/.exec(content);
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
   if (match?.[1] === undefined) {
     throw new AiQaError(
       "skill.invalid_frontmatter",
