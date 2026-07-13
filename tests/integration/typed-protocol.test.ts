@@ -97,6 +97,22 @@ async function createSmallBudgetRun(input: {
   const replacement = workOrderSchema.parse({
     ...existing,
     kind: "regression",
+    requiredSteps: [
+      {
+        id: "step-budget",
+        order: 0,
+        intent: "Use the only call",
+        tool: "chrome-devtools-mcp",
+        target: {
+          description: "Page",
+          stability: "stable",
+          stabilityRationale: "Stable synthetic budget-test target",
+        },
+        expectedState: "The budgeted interaction completes",
+        assertionStrategy: "Inspect the terminal action result",
+        evidenceCheckpoints: ["post-action-screenshot"],
+      },
+    ],
     budget: {
       ...input,
       deadline: "2026-07-13T00:10:00.000Z",
@@ -385,6 +401,7 @@ describe("typed run protocol", () => {
       intent: "Use the only call",
       tool: "chrome-devtools-mcp",
       target: { description: "Page" },
+      stepId: "step-budget",
     };
     const first = await toolBudget.service.planAction(firstInput);
     expect(await toolBudget.service.planAction(firstInput)).toEqual(first);
@@ -435,8 +452,11 @@ describe("typed run protocol", () => {
     ).rejects.toMatchObject({ code: "run.recovery_budget_exhausted" });
     await expect(
       recoveryBudget.service.planAction({
-        ...firstInput,
         idempotencyKey: "unknown-step-recovery",
+        kind: "interaction",
+        intent: "Use the only call",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Page" },
         recoveryForStepId: "step-missing",
       }),
     ).rejects.toMatchObject({ code: "action.step_not_found" });

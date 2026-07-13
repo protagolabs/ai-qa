@@ -1,4 +1,9 @@
 import { AiQaError } from "../../core/errors.js";
+import { CaseRepository } from "../../core/cases/repository.js";
+import {
+  calculateCaseContentHash,
+  calculateWebVariantHash,
+} from "../../core/cases/schema.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import { assertJsonValue } from "../../core/json-value.js";
@@ -27,6 +32,7 @@ import {
 } from "../../core/verdicts/schema.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
+import { validateRegressionFidelity } from "./regression-fidelity.js";
 import {
   effectiveVerdictFrom,
   validateVerdictHistory,
@@ -95,6 +101,15 @@ export async function finalizeRun(input: {
       };
     }
 
+    if (workOrder.kind === "regression") {
+      await validatePinnedRegressionCase(
+        trusted.projectRoot,
+        workOrder,
+        input.now,
+      );
+      validateRegressionFidelity(workOrder, [...events]);
+    }
+
     const evidence = await new EvidenceRepository(
       trusted.projectRoot,
       runId,
@@ -144,6 +159,21 @@ function validateFinalization(input: {
   verdict: VerdictEntry;
   completionTime: Date;
 }): void {
+  if (
+    input.workOrder.kind === "regression" &&
+    input.workOrder.preflightResult !== true
+  ) {
+    const fidelity = validateRegressionFidelity(input.workOrder, [
+      ...input.events,
+    ]);
+    if (input.verdict.payload.classification === "pass" && !fidelity.valid) {
+      throw new AiQaError(
+        "replay.fidelity_incomplete",
+        "Regression replay does not satisfy the pinned required-step protocol",
+        { ...fidelity },
+      );
+    }
+  }
   const plans = input.events.flatMap((event) => {
     if (event.type !== "action") return [];
     const payload = actionPayloadSchema.parse(event.payload);
@@ -253,6 +283,45 @@ function validateFinalization(input: {
     input.verdict.payload.criterionResults,
     evidenceById,
   );
+}
+
+async function validatePinnedRegressionCase(
+  projectRoot: string,
+  workOrder: WorkOrder,
+  now: () => Date,
+): Promise<void> {
+  const pinned = workOrder.pinnedCase;
+  if (pinned === undefined) {
+    throw new AiQaError(
+      "work_order.integrity_error",
+      "Regression work order is missing its pinned case",
+      { runId: workOrder.runId },
+    );
+  }
+  const revision = await new CaseRepository(projectRoot, now).readRevision(
+    pinned.caseId,
+    pinned.revision,
+  );
+  const caseContentHash = calculateCaseContentHash(revision);
+  const platformVariantHash = calculateWebVariantHash(revision);
+  if (
+    revision.contentHash !== caseContentHash ||
+    pinned.caseContentHash !== caseContentHash ||
+    pinned.platformVariantHash !== platformVariantHash
+  ) {
+    throw new AiQaError(
+      "case.content_hash_mismatch",
+      "Pinned regression case or Web variant hash verification failed",
+      {
+        caseId: pinned.caseId,
+        revision: pinned.revision,
+        expectedCaseContentHash: pinned.caseContentHash,
+        actualCaseContentHash: caseContentHash,
+        expectedPlatformVariantHash: pinned.platformVariantHash,
+        actualPlatformVariantHash: platformVariantHash,
+      },
+    );
+  }
 }
 
 function validateVerdictCitations(

@@ -3,6 +3,7 @@ import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
+import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -27,6 +28,7 @@ import {
   type WorkOrder,
 } from "../../core/runs/schema.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { validateRegressionFidelity } from "./regression-fidelity.js";
 
 export const planActionInputSchema = z
   .object({
@@ -156,6 +158,7 @@ export class RunProtocolService {
           }
           requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
         } else if (
+          workOrder.kind !== "regression" &&
           parsed.kind === "interaction" &&
           parsed.stepId !== undefined &&
           planned.some(
@@ -181,7 +184,18 @@ export class RunProtocolService {
             ? {}
             : { recoveryForStepId: parsed.recoveryForStepId }),
         });
-        return actionAppendInput(parsed.tool, parsed.idempotencyKey, payload);
+        const candidate = actionAppendInput(
+          parsed.tool,
+          parsed.idempotencyKey,
+          payload,
+        );
+        if (workOrder.kind === "regression") {
+          validateRegressionFidelity(workOrder, [
+            ...events,
+            prospectiveEvent(workOrder, events, candidate),
+          ]);
+        }
+        return candidate;
       },
       (workOrder, timestamp) => {
         if (
@@ -372,6 +386,9 @@ export class RunProtocolService {
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
+      if (workOrder.kind === "regression") {
+        validateRegressionFidelity(workOrder, [...events]);
+      }
       const lifecycle = validateRunLifecycleHistory(events, this.runId);
       if (lifecycle.current.payload.phase === "interrupted") {
         throw new AiQaError(
@@ -461,6 +478,21 @@ function actionAppendInput(
     payload,
     relatedIds: payload.phase === "planned" ? [] : [payload.actionId],
   });
+}
+
+function prospectiveEvent(
+  workOrder: WorkOrder,
+  events: readonly RunEvent[],
+  input: AppendRunEvent,
+): RunEvent {
+  return {
+    schemaVersion: EVENT_SCHEMA_VERSION,
+    id: `event-prospective-${String(events.length + 1)}`,
+    runId: workOrder.runId,
+    sequence: events.length + 1,
+    timestamp: workOrder.startedAt,
+    ...input,
+  };
 }
 
 function appendInput(event: RunEvent): AppendRunEvent {
@@ -754,7 +786,10 @@ export function validateProtocolEvents(
                 payload.recoveryForStepId,
               );
               recoveryCount += 1;
-            } else if (payload.kind === "interaction") {
+            } else if (
+              payload.kind === "interaction" &&
+              workOrder.kind !== "regression"
+            ) {
               requireSemantic(!interactionSteps.has(payload.stepId));
             }
             if (payload.kind === "interaction") {

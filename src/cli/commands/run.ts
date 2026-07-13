@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
+import { caseIdSchema } from "../../core/cases/schema.js";
 import { exploratoryRunInputSchema } from "../../core/runs/schema.js";
 import type { WebDoctorResult } from "../../services/doctor/web-doctor.js";
 import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
@@ -13,15 +14,25 @@ import {
   resumeRun,
 } from "../../services/run-protocol/run-lifecycle.js";
 import { startExploratoryRun } from "../../services/run-protocol/start-exploratory-run.js";
+import { startRegressionRun } from "../../services/run-protocol/start-regression-run.js";
 import { checkGlobalSkill } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
-const startOptionsSchema = z.object({
-  kind: z.literal("exploratory"),
-  platform: z.literal("web"),
-  execution: z.literal("local"),
-});
+const startOptionsSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("exploratory"),
+    platform: z.literal("web"),
+    execution: z.literal("local"),
+    case: z.undefined().optional(),
+  }),
+  z.object({
+    kind: z.literal("regression"),
+    platform: z.literal("web"),
+    execution: z.enum(["local", "ci"]),
+    case: caseIdSchema,
+  }),
+]);
 
 const doctorCheckSchema = z
   .object({
@@ -73,13 +84,19 @@ export function registerRunCommands(
     .command("start")
     .description("create an immutable run work order")
     .requiredOption("--kind <kind>", "run kind")
+    .option("--case <case-id>", "active regression case ID")
     .requiredOption("--platform <platform>", "target platform")
     .requiredOption("--execution <execution>", "execution mode")
     .requiredOption("--stdin-json", "read confirmed run input from stdin");
 
   startCommand.action(
-    async (options: { kind: string; platform: string; execution: string }) => {
-      startOptionsSchema.parse(options);
+    async (options: {
+      kind: string;
+      platform: string;
+      execution: string;
+      case?: string;
+    }) => {
+      const parsedOptions = startOptionsSchema.parse(options);
       const project = explicitProject(startCommand);
       const home = aiQaHome(context);
       const resolved = await resolveTrustedProject({
@@ -87,8 +104,18 @@ export function registerRunCommands(
         aiQaHome: home,
         ...(project === undefined ? {} : { explicitProject: project }),
       });
-      const supplied = await readJsonInput(context, exploratoryRunInputSchema);
-      const readiness = webReadinessSchema.parse(supplied.readiness);
+      const suppliedExploratory =
+        parsedOptions.kind === "exploratory"
+          ? await readJsonInput(context, exploratoryRunInputSchema)
+          : undefined;
+      const suppliedRegression =
+        parsedOptions.kind === "regression"
+          ? await readJsonInput(context, webReadinessSchema)
+          : undefined;
+      const readiness =
+        parsedOptions.kind === "exploratory"
+          ? webReadinessSchema.parse(suppliedExploratory!.readiness)
+          : suppliedRegression!;
       const globalSkill = await checkGlobalSkill({
         agentsHome: agentsHome(context),
         sourcePath: bundledSourcePath(),
@@ -113,8 +140,38 @@ export function registerRunCommands(
           : "not_ready",
         checks,
       };
+      if (parsedOptions.kind === "regression") {
+        if (verifiedReadiness.status === "ready") {
+          writeJson(
+            context,
+            await startRegressionRun({
+              projectRoot: resolved.projectRoot,
+              aiQaHome: home,
+              caseId: parsedOptions.case,
+              execution: parsedOptions.execution,
+              readiness: verifiedReadiness,
+              now: context.now,
+            }),
+          );
+          return;
+        }
+        writeJson(
+          context,
+          await createPreflightResultRun({
+            projectRoot: resolved.projectRoot,
+            aiQaHome: home,
+            kind: "regression",
+            caseId: parsedOptions.case,
+            execution: parsedOptions.execution,
+            readiness: { ...verifiedReadiness, status: "not_ready" },
+            now: context.now,
+          }),
+        );
+        return;
+      }
+
       const payload = exploratoryRunInputSchema.parse({
-        ...supplied,
+        ...suppliedExploratory,
         readiness: verifiedReadiness,
       });
       if (verifiedReadiness.status === "ready") {

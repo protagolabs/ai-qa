@@ -71,6 +71,28 @@ export const executionBudgetSchema = z
 
 export type ExecutionBudget = z.infer<typeof executionBudgetSchema>;
 
+export const requiredStepSchema = z
+  .object({
+    id: stepIdSchema,
+    order: z.number().int().nonnegative(),
+    intent: z.string().trim().min(1),
+    tool: z.literal("chrome-devtools-mcp"),
+    target: z
+      .object({
+        description: z.string().trim().min(1),
+        selector: z.string().trim().min(1).optional(),
+        stability: z.literal("stable"),
+        stabilityRationale: z.string().trim().min(1),
+      })
+      .strict(),
+    expectedState: z.string().trim().min(1),
+    assertionStrategy: z.string().trim().min(1),
+    evidenceCheckpoints: z.array(z.string().trim().min(1)).min(1),
+  })
+  .strict();
+
+export type RequiredStep = z.infer<typeof requiredStepSchema>;
+
 const workOrderBaseSchema = z
   .object({
     schemaVersion: z.literal(WORK_ORDER_SCHEMA_VERSION),
@@ -83,7 +105,7 @@ const workOrderBaseSchema = z
     startedAt: z.string().datetime(),
     goal: goalSchema,
     acceptanceCriteria: acceptanceCriteriaSchema,
-    requiredSteps: z.array(jsonValueSchema),
+    requiredSteps: z.array(requiredStepSchema),
     readiness: readinessSchema,
     preflightResult: z.literal(true).optional(),
     evidencePolicy: z
@@ -107,7 +129,51 @@ const workOrderBaseSchema = z
 
 export const workOrderSchema = workOrderBaseSchema.superRefine(
   (workOrder, context) => {
-    if (workOrder.kind !== "exploratory") return;
+    if (workOrder.kind === "regression") {
+      if (workOrder.pinnedCase === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["pinnedCase"],
+          message: "Regression work orders require a pinned case revision",
+        });
+      }
+      if (workOrder.requiredSteps.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["requiredSteps"],
+          message: "Regression work orders require at least one ordered step",
+        });
+      }
+      const stepIds = workOrder.requiredSteps.map((step) => step.id);
+      if (new Set(stepIds).size !== stepIds.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["requiredSteps"],
+          message: "Regression required-step IDs must be unique",
+        });
+      }
+      if (
+        !workOrder.requiredSteps.every((step, index) => step.order === index)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["requiredSteps"],
+          message: "Regression required steps must use contiguous array order",
+        });
+      }
+      if (
+        (workOrder.readiness.status === "not_ready") !==
+        (workOrder.preflightResult === true)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["preflightResult"],
+          message:
+            "Not-ready regression work orders require the preflight-result marker",
+        });
+      }
+      return;
+    }
     if (workOrder.execution !== "local") {
       context.addIssue({
         code: "custom",

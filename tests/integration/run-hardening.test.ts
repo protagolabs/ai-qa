@@ -365,7 +365,7 @@ describe("strict work-order integrity", () => {
       const workOrder = {
         ...makeWorkOrder(),
         requiredSteps: [invalid],
-      } as WorkOrder;
+      } as unknown as WorkOrder;
 
       await expect(
         new RunRepository(projectRoot, fixedNow).create(workOrder),

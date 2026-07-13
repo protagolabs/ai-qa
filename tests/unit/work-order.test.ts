@@ -154,7 +154,28 @@ describe("exploratory work orders", () => {
         ...exploratory,
         kind: "regression",
         execution: "ci",
-        readiness: { ...exploratory.readiness, status: "not_ready" },
+        requiredSteps: [
+          {
+            id: "step-login",
+            order: 0,
+            intent: "Submit login",
+            tool: "chrome-devtools-mcp",
+            target: {
+              description: "Login button",
+              stability: "stable",
+              stabilityRationale: "Unique application-owned target",
+            },
+            expectedState: "Home is visible",
+            assertionStrategy: "Observe the home page",
+            evidenceCheckpoints: ["screenshot"],
+          },
+        ],
+        pinnedCase: {
+          caseId: "login-success",
+          revision: 1,
+          caseContentHash: `sha256:${"a".repeat(64)}`,
+          platformVariantHash: `sha256:${"b".repeat(64)}`,
+        },
         budget: {
           maxToolCalls: 25,
           maxRecoveryActions: 2,

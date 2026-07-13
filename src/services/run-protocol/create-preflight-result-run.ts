@@ -7,10 +7,12 @@ import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
   type ExploratoryRunInput,
+  type WorkOrder,
 } from "../../core/runs/schema.js";
 import type { DoctorCheck, WebDoctorResult } from "../doctor/web-doctor.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 import { finalizeRun } from "./finalize-run.js";
+import { prepareRegressionWorkOrder } from "./start-regression-run.js";
 import { VerdictService } from "./verdict-service.js";
 
 type NotReadyWebDoctorResult = WebDoctorResult & { status: "not_ready" };
@@ -29,50 +31,77 @@ export type PreflightResult =
       reasonCode: "incomplete_coverage";
     };
 
-export async function createPreflightResultRun(input: {
+type PreflightResultRunInput = {
   projectRoot: string;
   aiQaHome: string;
-  kind: "exploratory";
-  exploratoryPayload: ExploratoryRunInput;
-  execution: "local";
   readiness: NotReadyWebDoctorResult;
   now: () => Date;
-}): Promise<PreflightResult> {
-  if (input.kind !== "exploratory" || input.execution !== "local") {
-    throw new AiQaError(
-      "preflight.unsupported_run",
-      "Increment 1 preflight results require local exploratory execution",
-    );
-  }
+} & (
+  | {
+      kind: "exploratory";
+      exploratoryPayload: ExploratoryRunInput;
+      execution: "local";
+    }
+  | {
+      kind: "regression";
+      caseId: string;
+      execution: "local" | "ci";
+    }
+);
+
+export async function createPreflightResultRun(
+  input: PreflightResultRunInput,
+): Promise<PreflightResult> {
   const trusted = await resolveTrustedProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
     aiQaHome: input.aiQaHome,
   });
-  const config = await readProjectConfig(trusted.projectRoot);
-  const payload = exploratoryRunInputSchema.parse(input.exploratoryPayload);
-  if (
-    payload.readiness.status !== "not_ready" ||
-    canonicalJson(payload.readiness) !== canonicalJson(input.readiness)
-  ) {
+  if (input.readiness.status !== "not_ready") {
     throw new AiQaError(
       "preflight.readiness_mismatch",
-      "Preflight payload must contain the same not-ready doctor result",
+      "Preflight requires a not-ready doctor result",
     );
   }
 
-  const runId = createId("run");
-  const workOrder = createExploratoryWorkOrder({
-    projectId: config.project.id,
-    runId,
-    input: payload,
-    evidencePolicy: {
-      screenshots: config.evidencePolicy.screenshots,
-      defaultSensitivity: config.evidencePolicy.defaultSensitivity,
-    },
-    startedAt: input.now(),
-    preflightResult: true,
-  });
+  let workOrder: WorkOrder;
+  if (input.kind === "exploratory") {
+    const config = await readProjectConfig(trusted.projectRoot);
+    const payload = exploratoryRunInputSchema.parse(input.exploratoryPayload);
+    if (
+      payload.readiness.status !== "not_ready" ||
+      canonicalJson(payload.readiness) !== canonicalJson(input.readiness)
+    ) {
+      throw new AiQaError(
+        "preflight.readiness_mismatch",
+        "Preflight payload must contain the same not-ready doctor result",
+      );
+    }
+    workOrder = createExploratoryWorkOrder({
+      projectId: config.project.id,
+      runId: createId("run"),
+      input: payload,
+      evidencePolicy: {
+        screenshots: config.evidencePolicy.screenshots,
+        defaultSensitivity: config.evidencePolicy.defaultSensitivity,
+      },
+      startedAt: input.now(),
+      preflightResult: true,
+    }) as WorkOrder;
+  } else {
+    workOrder = (
+      await prepareRegressionWorkOrder({
+        projectRoot: trusted.projectRoot,
+        aiQaHome: input.aiQaHome,
+        caseId: input.caseId,
+        execution: input.execution,
+        readiness: input.readiness,
+        now: input.now,
+        preflightResult: true,
+      })
+    ).workOrder;
+  }
+  const runId = workOrder.runId;
   const repository = new RunRepository(trusted.projectRoot, input.now);
   const { journal } = await repository.create(workOrder);
   const started = (await journal.readAll())[0];
