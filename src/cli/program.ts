@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
 import { registerActionCommands } from "./commands/action.js";
 import { registerAssertionCommands } from "./commands/assertion.js";
+import { registerBlockerCommands } from "./commands/blocker.js";
 import { registerDecisionCommands } from "./commands/decision.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerEvidenceCommands } from "./commands/evidence.js";
@@ -12,6 +13,7 @@ import { registerRecoveryCommands } from "./commands/recovery.js";
 import { registerRunCommands } from "./commands/run.js";
 import { registerSkillCommands } from "./commands/skill.js";
 import { registerTrustCommands } from "./commands/trust.js";
+import { registerVerdictCommands } from "./commands/verdict.js";
 import type { CliContext } from "./context.js";
 
 const requestedExitCodes = new WeakMap<Command, number>();
@@ -30,6 +32,7 @@ export function createProgram(context: CliContext): Command {
     });
   registerActionCommands(program, context);
   registerAssertionCommands(program, context);
+  registerBlockerCommands(program, context);
   registerDecisionCommands(program, context);
   registerDoctorCommand(program, context);
   registerEvidenceCommands(program, context);
@@ -41,6 +44,7 @@ export function createProgram(context: CliContext): Command {
     requestedExitCodes.set(program, exitCode);
   });
   registerTrustCommands(program, context);
+  registerVerdictCommands(program, context);
   return program;
 }
 

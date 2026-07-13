@@ -25,6 +25,11 @@ export function registerDecisionCommands(
       context,
       options.run,
     );
-    writeProtocolEvent(context, await service.recordDecision(body));
+    await writeProtocolEvent(
+      recordCommand,
+      context,
+      options.run,
+      await service.recordDecision(body),
+    );
   });
 }

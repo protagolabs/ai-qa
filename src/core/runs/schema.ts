@@ -85,6 +85,7 @@ const workOrderBaseSchema = z
     acceptanceCriteria: acceptanceCriteriaSchema,
     requiredSteps: z.array(jsonValueSchema),
     readiness: readinessSchema,
+    preflightResult: z.literal(true).optional(),
     evidencePolicy: z
       .object({
         screenshots: z.enum(["required", "on-failure", "optional"]),
@@ -114,11 +115,15 @@ export const workOrderSchema = workOrderBaseSchema.superRefine(
         message: "Exploratory work orders require local execution",
       });
     }
-    if (workOrder.readiness.status !== "ready") {
+    if (
+      (workOrder.readiness.status === "not_ready") !==
+      (workOrder.preflightResult === true)
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["readiness", "status"],
-        message: "Exploratory work orders require ready status",
+        path: ["preflightResult"],
+        message:
+          "Not-ready exploratory work orders require the preflight-result marker",
       });
     }
     if (workOrder.budget.maxToolCalls !== 100) {
@@ -170,6 +175,7 @@ export function createExploratoryWorkOrder(input: {
     defaultSensitivity: "public" | "internal" | "sensitive";
   };
   startedAt: Date;
+  preflightResult?: true;
 }): Readonly<WorkOrder> {
   const deadline = new Date(
     input.startedAt.getTime() + 30 * 60 * 1000,
@@ -187,6 +193,9 @@ export function createExploratoryWorkOrder(input: {
     acceptanceCriteria: input.input.acceptanceCriteria,
     requiredSteps: [],
     readiness: input.input.readiness,
+    ...(input.preflightResult === undefined
+      ? {}
+      : { preflightResult: input.preflightResult }),
     evidencePolicy: input.evidencePolicy,
     budget: { maxToolCalls: 100, maxRecoveryActions: 10, deadline },
   });

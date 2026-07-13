@@ -32,6 +32,6 @@ export function registerAssertionCommands(
       ...body,
       ...(options.step === undefined ? {} : { stepId: options.step }),
     });
-    writeProtocolEvent(context, event);
+    await writeProtocolEvent(recordCommand, context, options.run, event);
   });
 }

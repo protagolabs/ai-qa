@@ -830,7 +830,7 @@ describe("typed run protocol", () => {
 
   it("exposes typed CLI output for protocol commands", async () => {
     const { projectRoot, aiQaHome } = await createTrustedRun();
-    const body = JSON.stringify({
+    let body = JSON.stringify({
       idempotencyKey: "cli-observe",
       kind: "observation",
       intent: "Observe through CLI",
@@ -869,6 +869,30 @@ describe("typed run protocol", () => {
       payload: { phase: "planned" },
       permittedNextActions: ["invoke-tool", "action.complete"],
     });
+
+    body = JSON.stringify({
+      phase: "completed",
+      toolResult: { summary: "Observed current page" },
+    });
+    captured.stdout.length = 0;
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "action",
+          "complete",
+          output.eventId,
+          "--run",
+          "run-1",
+          "--stdin-json",
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(captured.stdout[0]!)).toMatchObject({
+      permittedNextActions: ["observation.add"],
+    });
   });
 
   it("does not expose a generic event command", () => {
@@ -880,8 +904,10 @@ describe("typed run protocol", () => {
         "action",
         "observation",
         "assertion",
+        "blocker",
         "decision",
         "recovery",
+        "verdict",
       ]),
     );
     const subcommands = (name: string) =>
@@ -893,6 +919,9 @@ describe("typed run protocol", () => {
     expect(subcommands("assertion")).toEqual(["record"]);
     expect(subcommands("decision")).toEqual(["record"]);
     expect(subcommands("recovery")).toEqual(["resolve"]);
+    expect(subcommands("blocker")).toEqual(["record"]);
+    expect(subcommands("verdict")).toEqual(["set", "revise"]);
+    expect(subcommands("run")).toEqual(["start", "resume", "cancel", "finish"]);
     expect(commandNames.some((commandName) => commandName === "event")).toBe(
       false,
     );

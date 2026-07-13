@@ -240,6 +240,7 @@ describe("exploratory run start", () => {
   it("starts through the trusted CLI and emits the immutable work order", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
     await confirmProjectTrust({
       projectRoot,
       aiQaHome,
@@ -249,9 +250,13 @@ describe("exploratory run start", () => {
     await initializeProject({ projectRoot, aiQaHome, config });
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
+      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
       readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
     });
+    expect(
+      await runCli(["skill", "install", "--global"], captured.context),
+    ).toBe(0);
+    captured.stdout.length = 0;
 
     const exitCode = await runCli(
       [
@@ -284,5 +289,68 @@ describe("exploratory run start", () => {
         "utf8",
       ),
     ).toBe(JSON.stringify(workOrder));
+  });
+
+  it("creates a blocked preflight result when the global skill is missing", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeProject({ projectRoot, aiQaHome, config });
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
+    });
+
+    const exitCode = await runCli(
+      [
+        "run",
+        "start",
+        "--kind",
+        "exploratory",
+        "--platform",
+        "web",
+        "--execution",
+        "local",
+        "--stdin-json",
+      ],
+      captured.context,
+    );
+
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(captured.stdout.join("")) as {
+      runId: string;
+      status: string;
+      verdict: string;
+      blockerSubtype: string;
+    };
+    expect(result).toMatchObject({
+      status: "completed",
+      verdict: "blocked",
+      blockerSubtype: "tool",
+    });
+    expect(result).not.toHaveProperty("workOrder");
+    const workOrder = await new RunRepository(
+      projectRoot,
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    ).readVerifiedWorkOrder(result.runId);
+    expect(workOrder.preflightResult).toBe(true);
+    expect(workOrder.readiness.status).toBe("not_ready");
+    expect(
+      workOrder.readiness.checks.some(
+        (check) =>
+          typeof check === "object" &&
+          check !== null &&
+          !Array.isArray(check) &&
+          check.code === "agent.global_skill" &&
+          check.status === "fail",
+      ),
+    ).toBe(true);
   });
 });

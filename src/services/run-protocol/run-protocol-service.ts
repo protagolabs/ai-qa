@@ -16,6 +16,7 @@ import {
   type ObservationPayload,
   type RecoveryPayload,
 } from "../../core/runs/event-payloads.js";
+import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
   actionIdSchema,
@@ -104,6 +105,8 @@ export class RunProtocolService {
           enforceDeadline = false;
           return appendInput(existing);
         }
+
+        requireFreshObservationAfterResume(events, parsed.kind);
 
         const planned = plannedActions(events);
         if (planned.length >= workOrder.budget.maxToolCalls) {
@@ -369,6 +372,17 @@ export class RunProtocolService {
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
+      const lifecycle = validateRunLifecycleHistory(events, this.runId);
+      if (
+        lifecycle.current.payload.phase === "completed" ||
+        lifecycle.current.payload.phase === "cancelled"
+      ) {
+        throw new AiQaError(
+          "run.terminal",
+          "Completed or cancelled runs cannot accept protocol events",
+          { runEventId: lifecycle.current.event.id },
+        );
+      }
       return {
         input: prepare(workOrder, events),
         ...(validateTimestamp === undefined
@@ -380,6 +394,30 @@ export class RunProtocolService {
         resolve: (event: RunEvent) => event,
       };
     });
+  }
+}
+
+function requireFreshObservationAfterResume(
+  events: readonly RunEvent[],
+  actionKind: PlanActionInput["kind"],
+): void {
+  if (actionKind === "observation") return;
+  const resumed = events.findLast((event) => {
+    if (event.type !== "run" || !isRecord(event.payload)) return false;
+    return event.payload.phase === "resumed";
+  });
+  if (
+    resumed !== undefined &&
+    !events.some(
+      (event) =>
+        event.type === "observation" && event.sequence > resumed.sequence,
+    )
+  ) {
+    throw new AiQaError(
+      "run.fresh_observation_required",
+      "A fresh observation is required before continuing after resume",
+      { resumedEventId: resumed.id },
+    );
   }
 }
 
@@ -643,7 +681,7 @@ function requireCanonicalRetryOrNoExisting(
   }
 }
 
-function validateProtocolEvents(
+export function validateProtocolEvents(
   events: readonly RunEvent[],
   workOrder: WorkOrder,
   runId: string,
@@ -861,4 +899,8 @@ function idempotencyConflict(idempotencyKey: string): AiQaError {
     "Idempotency key was already used for a different event",
     { idempotencyKey },
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

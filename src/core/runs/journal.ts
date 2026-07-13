@@ -94,6 +94,20 @@ export class RunJournal {
     );
   }
 
+  async readLocked<T>(
+    inspect: (events: readonly RunEvent[]) => T | Promise<T>,
+  ): Promise<T> {
+    const release = await lockfile.lock(this.path, {
+      realpath: false,
+      retries: { retries: 3, minTimeout: 50 },
+    });
+    try {
+      return await inspect(await this.readAll());
+    } finally {
+      await release();
+    }
+  }
+
   async appendPrepared<T>(
     prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
   ): Promise<T> {
