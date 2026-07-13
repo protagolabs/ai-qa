@@ -59,11 +59,11 @@ The main skill plans the QA flow, discusses settings with the user, invokes exte
 
 ### 4.2 Durable CLI state
 
-The CLI owns the canonical project configuration, event log, evidence registry, case lifecycle, verdict validation, and report/export lifecycle. Skills and reports are views or workflows around this state; they are not alternate sources of truth.
+The CLI owns the canonical project configuration, event log, per-run evidence indexes, case lifecycle, verdict validation, and report/export lifecycle. Skills and reports are views or workflows around this state; they are not alternate sources of truth.
 
 ### 4.3 Project isolation
 
-The executable is global, but every target project has an independent `.ai-qa/` directory. Commands must resolve and confirm the project root before mutation. Data from two projects must never share a run, case, evidence registry, or report directory.
+The executable is global, but every target project has an independent `.ai-qa/` directory. Commands must resolve and confirm the project root before mutation. Data from two projects must never share a run, case, evidence index, or report directory.
 
 ### 4.4 Mandatory write-back
 
@@ -89,8 +89,8 @@ User
         `-- global ai-qa CLI
               |-- Project resolution
               |-- Configuration
-              |-- Sessions and event logs
-              |-- Evidence registry
+              |-- Runs and event logs
+              |-- Per-run evidence indexes
               |-- Regression cases
               |-- Assertions and verdicts
               `-- Report exporters and storage adapters
@@ -128,8 +128,16 @@ target-project/
 `-- .ai-qa/
     |-- config.yaml
     |-- cases/
+    |   `-- <case-id>/
+    |       |-- case.yaml
+    |       `-- revisions/
     |-- runs/
+    |   `-- <run-id>/
+    |       `-- events.jsonl
     |-- evidence/
+    |   `-- <run-id>/
+    |       |-- index.jsonl
+    |       `-- files/
     `-- reports/
 ```
 
@@ -190,6 +198,18 @@ The main skill recommends project-skill generation only when at least one stable
 - Refuse silent overwrite when the existing skill differs.
 - Present a diff and require confirmation before replacement.
 
+Generated project skills separate CLI-managed and user-managed content with explicit markers:
+
+```html
+<!-- ai-qa:managed:start -->
+<!-- ai-qa:managed:end -->
+
+<!-- ai-qa:user:start -->
+<!-- ai-qa:user:end -->
+```
+
+`skill sync` updates only the managed region and preserves the user region byte-for-byte. Frontmatter metadata stores a checksum over the normalized CLI-managed frontmatter fields and managed body region. If either managed area was edited manually, sync shows a diff and requires confirmation instead of merging or replacing it silently.
+
 ## 8. Configuration dialogue and storage selection
 
 `ai-qa init` is driven by the global skill, not by a fixed CLI wizard. The AI discusses the project with the user and writes only confirmed decisions.
@@ -237,15 +257,31 @@ secretReferences: {}
 
 The schema permits platform-specific configuration without putting platform-tool logic in the core domain.
 
-### 9.2 Scenario and platform variants
+### 9.2 Scenario, revisions, and platform variants
 
-One case shares intent and acceptance criteria while keeping platform steps separate:
+One logical case shares intent and acceptance criteria while keeping platform steps separate. Each saved revision is immutable:
 
 ```yaml
 schemaVersion: 1
 id: login-success
 title: 使用者成功登入
-status: active
+activeRevision: 2
+revisions:
+  - revision: 1
+    status: superseded
+    contentHash: sha256:previous-content
+  - revision: 2
+    status: active
+    contentHash: sha256:current-content
+```
+
+The immutable revision file contains the executable scenario:
+
+```yaml
+schemaVersion: 1
+caseId: login-success
+revision: 2
+contentHash: sha256:current-content
 acceptance:
   - 使用者進入首頁
   - 畫面顯示目前帳號
@@ -259,6 +295,8 @@ variants:
 ```
 
 Each step contains an intent, tool action record, stable target description, expected state, assertion strategy, and evidence checkpoint. Platform-specific selectors remain inside that platform variant.
+
+An active revision is never edited in place. Editing creates the next draft revision. Activating that draft marks the previous active revision as `superseded` but retains it for historical reports. `contentHash` is calculated from the canonical revision content with the `contentHash` field omitted; the platform-variant hash is calculated from the canonical selected variant. Every regression run pins `caseId`, `caseRevision`, `caseContentHash`, and the selected platform-variant hash in its work order and event log.
 
 ### 9.3 Run event log
 
@@ -286,6 +324,8 @@ Required event types are:
 
 An `action` event has a `phase` of `planned`, `completed`, or `unknown`. Before invoking an external platform tool, the agent appends the `planned` event and receives the action ID and idempotency key. After the tool returns, it appends a second `action` event with `completed` or `unknown` phase referencing the planned action. This makes a crash between intent and write-back visible instead of silently losing the operation.
 
+Regression events reference the required `stepId`. Additional recovery actions reference `recoveryForStepId`; they cannot replace, skip, or reorder a required step.
+
 ### 9.4 Evidence
 
 Evidence metadata includes:
@@ -300,19 +340,27 @@ Evidence metadata includes:
 
 Raw evidence is immutable. Redacted and annotated files are new derived artifacts and never overwrite the raw file.
 
+Evidence files and their append-only index live under `.ai-qa/evidence/<run-id>/`. Each run owns its evidence index and lock, so parallel platform runs never contend on a shared mutable registry. A project-wide evidence view is derived from per-run indexes and can be rebuilt; it is not another source of truth.
+
 ### 9.5 State machines
 
-Case status:
+Case-revision status:
 
 ```text
-draft -> active -> retired
+draft -> active -> superseded
+              `-> retired
 ```
 
-Run execution status:
+Run execution status transitions:
 
 ```text
-created -> running -> completed
-                  `-> interrupted -> running
+created -> running
+created -> cancelled
+running -> completed
+running -> interrupted
+running -> cancelled
+interrupted -> running
+interrupted -> cancelled
 ```
 
 Run verdict is independent of execution status:
@@ -320,6 +368,37 @@ Run verdict is independent of execution status:
 ```text
 pass | fail | blocked | not_verified
 ```
+
+An exploratory session is not a separate entity. It is a run with `kind: exploratory`; a regression execution is a run with `kind: regression`. `execution` separately records `local` or `ci`. `completed` requires a terminal verdict. A cancelled run is terminal and receives a `not_verified` verdict with a cancellation reason.
+
+### 9.6 Versioned work order and execution budget
+
+`run start` returns a versioned work order containing:
+
+- Work-order schema and protocol versions.
+- Run kind, execution environment, project ID, platform, and environment profile.
+- Pinned case ID, revision, content hash, and platform-variant hash for regression runs.
+- Ordered required steps and evidence checkpoints.
+- Supported recovery policy.
+- Frozen execution budgets.
+- Required output and verdict rules.
+
+The default regression budgets are derived from the selected platform variant:
+
+```text
+maxToolCalls
+  = min(100, 10 + requiredStepCount * 6)
+
+maxRecoveryActions
+  = min(10, max(3, ceil(requiredStepCount / 2)))
+
+deadline
+  = min(30 minutes, max(10 minutes, requiredStepCount * 2 minutes))
+```
+
+An exploratory run defaults to 100 tool calls, 10 recovery actions, and a 30-minute deadline because it has no required-step count. Project configuration may define different defaults, and an immutable case revision may override regression defaults. `run start` freezes the resulting values in the work order. Every work order has finite budgets; CI and local runs cannot use unlimited values.
+
+A tool call is any external Chrome DevTools MCP, Pepper, or Appium invocation, including read-only observation and screenshot calls. A recovery action is a state-changing external invocation marked `recoveryForStepId`. Generic budget exhaustion produces `not_verified` with reason `budget_exhausted`; when evidence identifies repeated platform-tool failure as the cause, the result is `blocked:tool`.
 
 ## 10. CLI surface
 
@@ -329,10 +408,15 @@ The CLI command groups are:
 ai-qa init/configure       Project configuration
 ai-qa doctor/setup         Readiness and approved environment preparation
 ai-qa skill               Project-skill generation, validation, and sync
-ai-qa session             Exploratory QA lifecycle
-ai-qa event/evidence      Mandatory structured write-back
+ai-qa action              Two-phase action write-back
+ai-qa observation         UI and runtime observations
+ai-qa assertion           Structured acceptance checks
+ai-qa evidence            Immutable evidence registration
+ai-qa decision            Semantic decision write-back
+ai-qa recovery            Unknown-action resolution
+ai-qa blocker/verdict     Typed result write-back
 ai-qa case                Regression-case lifecycle
-ai-qa run                 Regression-run lifecycle and recovery
+ai-qa run                 Exploratory/regression lifecycle and recovery
 ai-qa report              Report generation and export
 ```
 
@@ -348,23 +432,32 @@ ai-qa skill install --global
 ai-qa skill generate
 ai-qa skill check
 ai-qa skill sync
-ai-qa session start
-ai-qa session finish <run-id>
-ai-qa action plan --run <run-id> --stdin-json
+ai-qa run start --kind exploratory --platform <platform> --execution local
+ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json
 ai-qa action complete <action-id> --stdin-json
-ai-qa event append --stdin-json
+ai-qa observation add --run <run-id> --stdin-json
+ai-qa assertion record --run <run-id> --step <step-id> --stdin-json
 ai-qa evidence add --run <run-id> --file <path> --stdin-json
+ai-qa decision record --run <run-id> --stdin-json
+ai-qa recovery resolve <action-id> --stdin-json
+ai-qa blocker record --run <run-id> --stdin-json
+ai-qa verdict set --run <run-id> --stdin-json
 ai-qa case draft --from-run <run-id>
-ai-qa case validate <case-id>
-ai-qa case activate <case-id>
-ai-qa run start <case-id> --platform <platform> --mode local|ci
+ai-qa case validate <case-id> --revision <revision>
+ai-qa case activate <case-id> --revision <revision>
+ai-qa run start --kind regression --case <case-id> --platform <platform> --execution local|ci
 ai-qa run resume <run-id>
-ai-qa run finalize <run-id>
+ai-qa run cancel <run-id> --reason <reason>
+ai-qa run finish <run-id>
 ai-qa report generate <run-id>
 ai-qa report export <run-id> --adapter <adapter-id>
 ```
 
 Mutating commands accept structured JSON through standard input and return structured JSON with the created event ID, current state, validation result, and permitted next actions. Human-readable output is available for direct operator use, but agent workflows use `--json`.
+
+There is no public generic event-append command. Each typed command enforces the domain invariants for its event type; the internal append service is not an escape hatch for agents or users.
+
+Regression actions require an existing required or recovery step ID from the pinned work order. Exploratory actions may omit `--step`; the CLI then creates and returns a stable draft step ID that subsequent observations and assertions can reference and that case promotion can normalize.
 
 ## 11. Workflows
 
@@ -399,7 +492,7 @@ QA execution never calls `setup apply` implicitly.
 ### 11.3 Exploratory manual QA
 
 ```text
-Start session
+Start exploratory run
 -> observe current UI and capture required evidence
 -> register observation
 -> register planned action and receive idempotency key
@@ -409,38 +502,52 @@ Start session
 -> register observation and assertions
 -> repeat
 -> record evidence-backed verdict
--> finalize session
+-> finish run
 ```
 
 ### 11.4 Case promotion
 
 ```text
 Exploratory run
--> draft case
+-> create the next draft case revision
 -> normalize steps, selectors, assertions, and checkpoints
 -> validate replayability
 -> AI and user review
--> activate case
+-> activate the draft revision and supersede the previous active revision
 ```
 
-Runs with missing actions, ambiguous outcomes, unstable selectors, or insufficient evidence remain drafts.
+Runs with missing actions, unresolved unknown actions, ambiguous outcomes, unstable selectors, or insufficient evidence remain drafts.
 
 ### 11.5 Regression replay
 
 ```text
 Agent runner activates global and project skills
--> ai-qa run start returns a machine-readable work order
+-> ai-qa run start pins the case revision and returns a versioned work order
 -> agent invokes the configured platform tool
 -> agent writes every action, observation, assertion, and evidence item back
--> ai-qa run finalize validates completeness
+-> agent uses bounded recovery actions only when required
+-> ai-qa run finish validates fidelity, completeness, budgets, and verdict coverage
 -> configured reports are generated and exported
 ```
+
+Regression replay uses bounded adaptive fidelity. Required steps remain ordered and cannot be skipped, replaced, or silently rewritten. Recovery actions are allowed only when they reference the affected required step and remain within the frozen work-order budgets.
+
+Before accepting a terminal verdict, `run finish` verifies:
+
+- The run used the pinned case revision and platform-variant hash.
+- Every required step has a matching planned action and terminal outcome (`completed`, resolved unknown, or typed blocker/failure).
+- Every planned action has a completed result or an explicit recovery resolution.
+- No unknown action remains unresolved or indeterminate for a `pass` verdict.
+- Required observations, assertions, and evidence checkpoints are present and linked to their step IDs.
+- Every acceptance criterion is covered by the verdict and cited assertion/evidence IDs.
+- Recovery actions and total tool calls remained within the frozen budget and deadline.
+- Extra recovery actions did not replace or reorder required product steps.
 
 Cross-platform execution may run platform variants sequentially or in parallel. Each platform has its own run directory and verdict. An aggregate report must preserve each platform's result instead of collapsing `blocked` into `fail`.
 
 ### 11.6 CI execution
 
-CI must launch a supported AI agent runner. `ai-qa run start <case-id> --mode ci` is a protocol operation used by that agent; it is not a standalone test executor.
+CI must launch a supported AI agent runner. `ai-qa run start --kind regression --case <case-id> --execution ci` is a protocol operation used by that agent; it is not a standalone test executor.
 
 The npm package provides client-oriented CI templates. Each template:
 
@@ -448,8 +555,10 @@ The npm package provides client-oriented CI templates. Each template:
 - Selects a case and platform.
 - Starts the external agent runner.
 - Preserves the `.ai-qa/` output according to project policy.
-- Returns a non-success pipeline status for product failures or policy-defined blockers.
+- Returns a non-success pipeline status for every non-`pass` verdict by default.
 - Keeps `fail`, `blocked`, and `not_verified` distinct in the generated report.
+
+Project CI policy may explicitly allow selected `blocked` subtypes or `not_verified` reasons without failing the pipeline. A product `fail` can never be mapped to a successful process exit.
 
 ## 12. Platform contracts
 
@@ -460,6 +569,8 @@ Chrome DevTools MCP is the preferred interactive control tool. The project confi
 ### 12.2 iOS Simulator
 
 Pepper is the preferred iOS Simulator control tool. The project skill records any stable service chain, app-build policy, simulator-selection policy, and recovery constraints. A stale or rebuilt app invalidates assumptions about the existing automation session.
+
+`doctor` reports `missing_required_tool` when Pepper or its required simulator capability is unavailable; this readiness result is not itself a run verdict. If an iOS run is requested while the required Pepper capability is unavailable, the CLI creates a reportable run with verdict `blocked:tool`. A release candidate cannot satisfy the iOS vertical-slice gate without a live Pepper-backed run.
 
 ### 12.3 Android Emulator
 
@@ -501,11 +612,19 @@ Blocked subtypes include `environment`, `tool`, `permission`, `data`, and `evide
 
 When a tool result is ambiguous, the agent must not immediately repeat the action. It first captures a fresh UI state or screenshot, determines whether the action took effect, records a recovery decision, and only then continues, retries, or blocks the run.
 
+The recovery event references the unknown action and records one resolution:
+
+```text
+applied | not_applied | indeterminate
+```
+
+An `applied` resolution lets the required step continue. A `not_applied` resolution permits a new planned action within the recovery budget. An `indeterminate` or unresolved unknown action prevents `pass`, prevents case activation, and produces `not_verified` unless evidence identifies a platform-tool failure, in which case it produces `blocked:tool`.
+
 Potentially destructive or externally visible actions such as deleting, paying, sending, submitting, or publishing must not be retried blindly. Action idempotency keys prevent duplicate write-back and help detect accidental repetition.
 
 ### 14.3 Crash recovery
 
-Events are durably appended after each accepted mutation. An unfinished run becomes `interrupted`. Resuming a run requires a new observation of the current UI; the agent cannot assume the app remains at the previous event's state.
+Events are durably appended after each accepted mutation. An unfinished run becomes `interrupted`. Resuming a run requires a new observation of the current UI; the agent cannot assume the app remains at the previous event's state. An interrupted or running run may be explicitly cancelled; cancellation is terminal and records `not_verified` with the cancellation reason.
 
 Different platform runs use separate directories and locks and may execute in parallel. A single run permits only one writer.
 
@@ -557,8 +676,10 @@ The core domain cannot import client-specific or platform-control packages. Clie
 - ESM package output.
 - Node.js 22 and Node.js 24 LTS support.
 - Schema validation at every file and CLI boundary.
-- Versioned config, case, event, evidence, and report schemas.
+- Versioned config, case, event, evidence, work-order, and report schemas.
 - Explicit migrations; a newer CLI must not silently rewrite tracked project data without a migration preview and confirmation.
+
+An agent runner must reject an unsupported work-order major version before invoking a platform tool. Work orders are immutable execution contracts and are regenerated from the pinned case revision rather than migrated in place.
 
 Node.js 20 is not supported because it is end-of-life at the time of this design. The supported Node matrix is verified against the official Node.js release schedule during each release cycle.
 
@@ -568,9 +689,11 @@ Node.js 20 is not supported because it is end-of-life at the time of this design
 
 - Schema parsing and migration.
 - Event ordering and duplicate idempotency keys.
-- Case and run state transitions.
+- Case-revision and run state transitions, including supersede and cancel flows.
 - Verdict and evidence-completeness rules.
 - Evidence hashing and immutable derivation.
+- Work-order version compatibility and budget calculation.
+- Bounded adaptive fidelity and required-step coverage.
 - Project-root resolution and project isolation.
 - Secret detection and project-relative path enforcement.
 - Atomic writes and lock behavior.
@@ -580,7 +703,9 @@ Node.js 20 is not supported because it is end-of-life at the time of this design
 - Temporary Project A and Project B remain isolated.
 - Crash recovery resumes from the event journal.
 - Parallel platform runs do not conflict.
+- Parallel platform runs write only to their own evidence index and directory.
 - Invalid or incomplete events are rejected.
+- Public typed event commands cannot bypass action, recovery, or verdict invariants.
 - Doctor, setup plan, approval, apply, and verification preserve the consent boundary.
 - A packed npm tarball installs globally into a clean temporary prefix and operates on a target project.
 - Explicit global skill installation previews its destination, preserves an existing skill, and installs the bundled canonical source after confirmation.
@@ -592,13 +717,14 @@ Node.js 20 is not supported because it is end-of-life at the time of this design
 - It generates a project skill only when stable procedural differences require one.
 - It observes before and after meaningful actions.
 - It records direct tool operations through the CLI.
+- It does not skip or replace required regression steps during recovery.
 - It distinguishes product failure from tool and environment blockers.
 - It refuses an unsupported `pass` verdict.
 - Generated skills pass Agent Skills validation.
 
 ### 18.4 Tool-contract tests
 
-Recorded fixtures validate event mapping for Chrome DevTools MCP, Pepper, and Appium. Failure fixtures cover stale sessions, missing elements, screenshot failures, timeouts, partial command success, and tool disconnection.
+Recorded fixtures validate event mapping for Chrome DevTools MCP, Pepper, and Appium. Failure fixtures cover stale automation connections, missing elements, screenshot failures, timeouts, partial command success, unknown-action resolution, budget exhaustion, and tool disconnection.
 
 Real-device Appium receives contract tests only in npm v1.
 
@@ -637,6 +763,7 @@ npm v1 is complete only when:
 - Global CLI operation in two target projects produces fully isolated records.
 - Web, iOS Simulator, and Android Emulator each have one successful live vertical-slice acceptance run with raw evidence.
 - Failure-injection runs prove that tool failures and incomplete evidence cannot produce a product `fail` or unsupported `pass`.
+- Fidelity tests prove that required steps cannot be skipped or replaced and that bounded recovery cannot exceed the frozen work-order budget.
 - CI templates successfully launch an external agent runner and preserve distinct verdict classifications.
 - The public tarball contains no secrets, private evidence, internal test data, or private repository metadata.
 - Public npm installation works while the source repository remains private.
@@ -662,6 +789,7 @@ Each increment must leave a working, testable system. Platform increments may no
 - Node.js release schedule: <https://nodejs.org/en/about/previous-releases>
 - Appium driver architecture: <https://appium.io/docs/en/latest/intro/drivers/>
 - Appium UiAutomator2 setup: <https://appium.io/docs/en/latest/quickstart/uiauto2-driver/>
+- Pepper iOS package and documentation: <https://pypi.org/project/pepper-ios/>
 
 ## 22. Approved decisions recap
 
@@ -673,10 +801,15 @@ Each increment must leave a working, testable system. Platform increments may no
 - Tools: Chrome DevTools MCP, Pepper, Appium/UiAutomator2.
 - Regression: Exploratory manual run promoted into a reviewed case.
 - Case structure: Shared scenario with platform-specific variants.
+- Case history: Immutable revisions pinned by revision number and content hash in every regression run.
 - Direct tool usage: Allowed, with mandatory CLI write-back.
+- Event API: Public write-back commands are typed; generic event append remains internal.
+- Evidence concurrency: Evidence indexes and files are isolated per run.
+- Replay fidelity: Required ordered steps with bounded, step-linked adaptive recovery.
+- Execution limits: Every versioned work order freezes finite tool-call, recovery-action, and deadline budgets.
 - Screenshots: Immutable evidence plus AI semantic evaluation; no mandatory full-screen pixel diff.
 - Configuration: User and AI discuss report, storage, evidence, Git, environment, and CI policy.
 - Internal record: Versioned JSON Lines event log.
 - Environment changes: Read-only doctor first; setup requires an approved plan.
-- CI: Requires an external AI agent runner.
+- CI: Requires an external AI agent runner; all non-`pass` verdicts fail by default.
 - npm v1: Requires a complete live vertical slice on all three formal platforms.
