@@ -393,23 +393,28 @@ function hasLinkedCheckpoints(
     linkedEvidenceIds.add(payload.id);
     for (const kind of payload.evidenceKinds) linkedKinds.add(kind);
   }
-  const checkpointsPresent = step.evidenceCheckpoints.every((kind) =>
-    linkedKinds.has(kind),
-  );
-  const assertionPresent = events.some((event) => {
+  let assertionPresent = false;
+  for (const event of events) {
     if (
       event.type !== "assertion" ||
       event.sequence <= success.event.sequence
     ) {
-      return false;
+      continue;
     }
     const payload = assertionPayloadSchema.parse(event.payload);
-    return (
+    if (
+      payload.status === "satisfied" &&
       payload.stepId === step.id &&
       payload.observationIds.some((id) => observations.has(id)) &&
       payload.evidenceIds.some((id) => linkedEvidenceIds.has(id))
-    );
-  });
+    ) {
+      assertionPresent = true;
+      for (const kind of payload.assertionKinds) linkedKinds.add(kind);
+    }
+  }
+  const checkpointsPresent = step.evidenceCheckpoints.every((kind) =>
+    linkedKinds.has(kind),
+  );
   return checkpointsPresent && assertionPresent;
 }
 

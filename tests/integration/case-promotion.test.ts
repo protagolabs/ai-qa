@@ -50,7 +50,10 @@ const config: ProjectConfig = {
 };
 
 async function createCompletedPassRun(
-  options: { extraInteraction?: boolean } = {},
+  options: {
+    extraInteraction?: boolean;
+    mislinkedStructuredProof?: boolean;
+  } = {},
 ): Promise<{
   projectRoot: string;
   aiQaHome: string;
@@ -77,7 +80,10 @@ async function createCompletedPassRun(
           {
             id: "authenticated-home-visible",
             description: "Authenticated home is visible",
-            requiredEvidence: ["post-action-screenshot"],
+            requiredEvidence:
+              options.mislinkedStructuredProof === true
+                ? ["structured-text-assertion", "post-action-screenshot"]
+                : ["post-action-screenshot"],
           },
         ],
         readiness: { platform: "web", status: "ready", checks: [] },
@@ -95,6 +101,64 @@ async function createCompletedPassRun(
     "run-source",
     runNow,
   );
+  let unrelatedObservation:
+    Awaited<ReturnType<RunProtocolService["addObservation"]>> | undefined;
+  let unrelatedEvidence:
+    Awaited<ReturnType<typeof registerEvidence>> | undefined;
+  if (options.mislinkedStructuredProof === true) {
+    const unrelatedObservationAction = await protocol.planAction({
+      idempotencyKey: "observe-unrelated-pre-login-state",
+      kind: "observation",
+      intent: "Observe unrelated state before login",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Unrelated pre-login state" },
+    });
+    await protocol.completeAction({
+      actionId: unrelatedObservationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Unrelated state observed" },
+    });
+    unrelatedObservation = await protocol.addObservation({
+      actionId: unrelatedObservationAction.id,
+      summary: "Unrelated pre-login state is visible",
+      state: { screen: "unrelated" },
+    });
+    const unrelatedStepId = (
+      unrelatedObservationAction.payload as { stepId: string }
+    ).stepId;
+    const unrelatedCapture = await protocol.planAction({
+      idempotencyKey: "capture-unrelated-pre-login-state",
+      kind: "evidence-capture",
+      intent: "Capture unrelated state before login",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Unrelated pre-login state" },
+      stepId: unrelatedStepId,
+    });
+    await protocol.completeAction({
+      actionId: unrelatedCapture.id,
+      phase: "completed",
+      toolResult: { summary: "Unrelated screenshot captured" },
+    });
+    const unrelatedPath = join(projectRoot, "unrelated.png");
+    await writeFile(unrelatedPath, Buffer.from([9, 9, 9, 9]));
+    unrelatedEvidence = await registerEvidence({
+      projectRoot,
+      aiQaHome,
+      runId: "run-source",
+      payload: {
+        sourcePath: unrelatedPath,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["pre-action-screenshot"],
+        captureActionId: unrelatedCapture.id,
+        idempotencyKey: "unrelated-pre-login-screenshot",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [unrelatedObservation.id],
+      now: runNow,
+    });
+  }
   const planned = await protocol.planAction({
     idempotencyKey: "submit-valid-credentials",
     kind: "interaction",
@@ -181,11 +245,14 @@ async function createCompletedPassRun(
   const assertion = await protocol.recordAssertion({
     criterionId: "authenticated-home-visible",
     status: "satisfied",
-    assertionKinds: ["semantic-ui"],
+    assertionKinds:
+      options.mislinkedStructuredProof === true
+        ? ["structured-text-assertion"]
+        : ["semantic-ui"],
     actual: "Authenticated home is visible",
     expected: "Authenticated home is visible",
-    observationIds: [observation.id],
-    evidenceIds: [evidence.id],
+    observationIds: [unrelatedObservation?.id ?? observation.id],
+    evidenceIds: [unrelatedEvidence?.id ?? evidence.id],
     stepId,
   });
   const verdict = new VerdictService(
@@ -559,6 +626,48 @@ describe("case promotion", () => {
         revision: 1,
       }),
     ).rejects.toMatchObject({ code: "case.content_hash_mismatch" });
+  });
+
+  it("rejects an assertion checkpoint that cites proof from before another step", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun({
+      mislinkedStructuredProof: true,
+    });
+    const draft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-source",
+      input: {
+        caseId: "mislinked-structured-proof",
+        title: "Mislinked structured proof",
+        webSteps: [
+          {
+            sourceActionId: plannedActionId,
+            intent: "Submit valid credentials",
+            target: {
+              description: "Login button",
+              selector: '[data-testid="login"]',
+              stability: "stable",
+              stabilityRationale: "Unique application-owned data-testid",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "Read the authenticated account text",
+            evidenceCheckpoints: [
+              "structured-text-assertion",
+              "post-action-screenshot",
+            ],
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+
+    expect(draft.promotion.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "case.evidence_checkpoint_missing",
+          relatedIds: [plannedActionId, "structured-text-assertion"],
+        }),
+      ]),
+    );
   });
 
   it("rejects a completed pass whose criterion result lacks assertion support", async () => {

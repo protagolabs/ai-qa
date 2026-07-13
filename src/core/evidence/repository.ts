@@ -122,7 +122,12 @@ export class EvidenceRepository {
     await this.ensureIndex();
     const release = await lockfile.lock(this.paths.index, {
       realpath: false,
-      retries: { retries: 3, minTimeout: 50 },
+      retries: {
+        retries: 10,
+        factor: 1.5,
+        minTimeout: 50,
+        maxTimeout: 250,
+      },
     });
 
     let copiedPath: string | undefined;

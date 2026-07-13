@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
 import { EvidenceRepository } from "../../src/core/evidence/repository.js";
@@ -144,6 +145,51 @@ describe("actionPayloadSchema", () => {
 });
 
 describe("EvidenceRepository", () => {
+  it("waits for a realistic evidence critical section instead of failing after 350 ms", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-lock-"));
+    const firstSource = join(projectRoot, "first.png");
+    const secondSource = join(projectRoot, "second.png");
+    await writeFile(firstSource, "first");
+    await writeFile(secondSource, "second");
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-lock",
+      fixedNow,
+    );
+    await repository.registerRaw({
+      sourcePath: firstSource,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-first",
+      idempotencyKey: "first",
+    });
+    const indexPath = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-lock",
+      "index.jsonl",
+    );
+    const release = await lockfile.lock(indexPath, { realpath: false });
+    const registration = repository.registerRaw({
+      sourcePath: secondSource,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-second",
+      idempotencyKey: "second",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await release();
+
+    await expect(registration).resolves.toMatchObject({
+      idempotencyKey: "second",
+    });
+  });
+
   it("copies raw evidence, hashes it, and detects later tampering", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-"));
     const source = join(projectRoot, "screen.png");

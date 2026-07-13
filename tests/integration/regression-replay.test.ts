@@ -430,6 +430,85 @@ describe("pinned regression replay", () => {
     ).rejects.toMatchObject({ code: "replay.fidelity_incomplete" });
   });
 
+  it("does not satisfy a checkpoint with a linked violated assertion", async () => {
+    const fixture = await createActiveCase({
+      firstEvidenceCheckpoints: [
+        "structured-text-assertion",
+        "post-action-screenshot",
+      ],
+    });
+    const { workOrder, protocol } = await startFixtureRun(fixture);
+    const first = await completeStep({
+      fixture,
+      runId: workOrder.runId,
+      protocol,
+      stepId: "step-1-submit-login",
+      criterionId: "home-visible",
+      key: "violated-checkpoint-home",
+      skipAssertion: true,
+    });
+    await protocol.recordAssertion({
+      criterionId: "home-visible",
+      status: "violated",
+      assertionKinds: ["structured-text-assertion"],
+      actual: "Authenticated account text is absent",
+      expected: "Authenticated account text is visible",
+      observationIds: [first.observation.id],
+      evidenceIds: [first.evidence.id],
+      stepId: "step-1-submit-login",
+    });
+    const supported = await protocol.recordAssertion({
+      criterionId: "home-visible",
+      status: "satisfied",
+      assertionKinds: ["semantic-ui"],
+      actual: "Authenticated home is visible",
+      expected: "Authenticated home is visible",
+      observationIds: [first.observation.id],
+      evidenceIds: [first.evidence.id],
+      stepId: "step-1-submit-login",
+    });
+    const second = await completeStep({
+      fixture,
+      runId: workOrder.runId,
+      protocol,
+      stepId: "step-2-account-visible",
+      criterionId: "account-visible",
+      key: "violated-checkpoint-account",
+    });
+    await new VerdictService(
+      fixture.projectRoot,
+      fixture.aiQaHome,
+      workOrder.runId,
+      now,
+    ).set({
+      classification: "pass",
+      summary: "A violated assertion cannot provide the pinned checkpoint",
+      criterionResults: [
+        {
+          criterionId: "home-visible",
+          status: "satisfied",
+          assertionIds: [supported.id],
+          evidenceIds: [first.evidence.id],
+        },
+        {
+          criterionId: "account-visible",
+          status: "satisfied",
+          assertionIds: [second.assertion!.id],
+          evidenceIds: [second.evidence.id],
+        },
+      ],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: workOrder.runId,
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "replay.fidelity_incomplete" });
+  });
+
   it("rejects a pass whose assertion is attributed to the wrong required step", async () => {
     const fixture = await createActiveCase();
     const { workOrder, protocol } = await startFixtureRun(fixture);

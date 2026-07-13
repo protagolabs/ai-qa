@@ -18,6 +18,7 @@ import {
   actionPayloadSchema,
   assertionPayloadSchema,
   evidenceEventPayloadSchema,
+  observationPayloadSchema,
   recoveryPayloadSchema,
 } from "../../core/runs/event-payloads.js";
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
@@ -459,7 +460,7 @@ function analyzePromotion(input: {
   }
 
   const plannedById = new Map(planned.map((entry) => [entry.event.id, entry]));
-  const evidenceKindsByStep = evidenceKindsForSteps(
+  const proofKindsByStep = proofKindsForSteps(
     input.source.events,
     input.source.evidence,
     plannedById,
@@ -481,7 +482,7 @@ function analyzePromotion(input: {
     const available =
       sourceStepId === undefined
         ? new Set<string>()
-        : (evidenceKindsByStep.get(sourceStepId) ?? new Set<string>());
+        : (proofKindsByStep.get(sourceStepId) ?? new Set<string>());
     const missing = step.evidenceCheckpoints.filter(
       (checkpoint) => !available.has(checkpoint),
     );
@@ -588,7 +589,7 @@ function sourceCriterionCoverageIssues(
   });
 }
 
-function evidenceKindsForSteps(
+function proofKindsForSteps(
   events: readonly RunEvent[],
   evidence: readonly EvidenceRecord[],
   plannedById: ReadonlyMap<
@@ -604,17 +605,110 @@ function evidenceKindsForSteps(
 ): Map<string, Set<string>> {
   const validEvidenceIds = new Set(evidence.map((record) => record.id));
   const result = new Map<string, Set<string>>();
+  const completedByActionId = new Map(
+    events.flatMap((event) => {
+      if (event.type !== "action") return [];
+      const payload = actionPayloadSchema.parse(event.payload);
+      return payload.phase === "completed"
+        ? [[payload.actionId, event] as const]
+        : [];
+    }),
+  );
+  const successfulInteractionByStep = new Map(
+    [...plannedById.values()].flatMap(({ event, payload }) => {
+      if (
+        payload.kind !== "interaction" ||
+        payload.recoveryForStepId !== undefined
+      ) {
+        return [];
+      }
+      const terminal = completedByActionId.get(event.id);
+      return terminal === undefined
+        ? []
+        : [[payload.stepId, terminal] as const];
+    }),
+  );
+  const observationsByStep = new Map<string, Set<string>>();
+  for (const event of events) {
+    if (event.type !== "observation") continue;
+    const payload = observationPayloadSchema.parse(event.payload);
+    if (payload.stepId === undefined) continue;
+    const success = successfulInteractionByStep.get(payload.stepId);
+    const plan = plannedById.get(payload.actionId);
+    const terminal = completedByActionId.get(payload.actionId);
+    if (
+      success === undefined ||
+      plan?.payload.kind !== "observation" ||
+      plan.payload.stepId !== payload.stepId ||
+      plan.event.sequence <= success.sequence ||
+      terminal === undefined ||
+      terminal.sequence <= success.sequence ||
+      event.sequence <= success.sequence
+    ) {
+      continue;
+    }
+    const observations = observationsByStep.get(payload.stepId) ?? new Set();
+    observations.add(event.id);
+    observationsByStep.set(payload.stepId, observations);
+  }
+  const evidenceIdsByStep = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.type !== "evidence") continue;
     const payload = evidenceEventPayloadSchema.parse(event.payload);
     if (!validEvidenceIds.has(payload.id)) continue;
-    const stepId = plannedById.get(payload.captureActionId)?.payload.stepId;
-    if (stepId === undefined) continue;
-    const kinds = result.get(stepId) ?? new Set<string>();
-    for (const kind of payload.evidenceKinds) kinds.add(kind);
-    result.set(stepId, kinds);
+    const capture = plannedById.get(payload.captureActionId);
+    const stepId = capture?.payload.stepId;
+    if (capture === undefined || stepId === undefined) continue;
+    const success = successfulInteractionByStep.get(stepId);
+    const terminal = completedByActionId.get(payload.captureActionId);
+    const observations = observationsByStep.get(stepId);
+    if (
+      success === undefined ||
+      capture.payload.kind !== "evidence-capture" ||
+      capture.event.sequence <= success.sequence ||
+      terminal === undefined ||
+      terminal.sequence <= success.sequence ||
+      event.sequence <= success.sequence ||
+      !payload.observationIds.some((id) => observations?.has(id) === true)
+    ) {
+      continue;
+    }
+    addProofKinds(result, stepId, payload.evidenceKinds);
+    const evidenceIds = evidenceIdsByStep.get(stepId) ?? new Set();
+    evidenceIds.add(payload.id);
+    evidenceIdsByStep.set(stepId, evidenceIds);
+  }
+  for (const event of events) {
+    if (event.type !== "assertion") continue;
+    const payload = assertionPayloadSchema.parse(event.payload);
+    if (payload.stepId === undefined || payload.status !== "satisfied")
+      continue;
+    const success = successfulInteractionByStep.get(payload.stepId);
+    if (
+      success === undefined ||
+      event.sequence <= success.sequence ||
+      !payload.observationIds.some(
+        (id) => observationsByStep.get(payload.stepId!)?.has(id) === true,
+      ) ||
+      !payload.evidenceIds.some(
+        (id) => evidenceIdsByStep.get(payload.stepId!)?.has(id) === true,
+      )
+    ) {
+      continue;
+    }
+    addProofKinds(result, payload.stepId, payload.assertionKinds);
   }
   return result;
+}
+
+function addProofKinds(
+  result: Map<string, Set<string>>,
+  stepId: string,
+  proofKinds: readonly string[],
+): void {
+  const kinds = result.get(stepId) ?? new Set<string>();
+  for (const kind of proofKinds) kinds.add(kind);
+  result.set(stepId, kinds);
 }
 
 function countIds(ids: readonly string[]): Map<string, number> {
