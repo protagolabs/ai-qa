@@ -1,0 +1,51 @@
+{
+  "name": "ai-qa",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agent-orchestrated QA CLI and skill",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
+  "bin": {
+    "ai-qa": "./dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "prepack": "pnpm check"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "diff": "^9.0.0",
+    "proper-lockfile": "^4.1.2",
+    "semver": "^7.8.5",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/semver": "^7.7.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
+  }
+}

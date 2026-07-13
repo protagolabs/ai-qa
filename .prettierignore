@@ -1,0 +1,6 @@
+coverage
+dist
+node_modules
+pnpm-lock.yaml
+docs/superpowers
+**/.ai-qa
