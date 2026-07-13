@@ -91,100 +91,112 @@ export class RunProtocolService {
 
   async planAction(input: PlanActionInput): Promise<RunEvent> {
     const parsed = planActionInputSchema.parse(input);
-    return this.appendValidated((workOrder, events) => {
-      const existing = events.find(
-        (event) => event.idempotencyKey === parsed.idempotencyKey,
-      );
-      if (existing !== undefined) {
-        if (!matchesPlanRetry(existing, parsed)) {
-          throw idempotencyConflict(parsed.idempotencyKey);
+    let enforceDeadline = true;
+    return this.appendValidated(
+      (workOrder, events) => {
+        const existing = events.find(
+          (event) => event.idempotencyKey === parsed.idempotencyKey,
+        );
+        if (existing !== undefined) {
+          if (!matchesPlanRetry(existing, parsed)) {
+            throw idempotencyConflict(parsed.idempotencyKey);
+          }
+          enforceDeadline = false;
+          return appendInput(existing);
         }
-        return appendInput(existing);
-      }
 
-      const planned = plannedActions(events);
-      if (
-        this.now().getTime() >= new Date(workOrder.budget.deadline).getTime()
-      ) {
-        throw new AiQaError(
-          "run.deadline_exhausted",
-          "The frozen run deadline has been reached",
-          { runId: this.runId, deadline: workOrder.budget.deadline },
-        );
-      }
-      if (planned.length >= workOrder.budget.maxToolCalls) {
-        throw new AiQaError(
-          "run.tool_call_budget_exhausted",
-          "The frozen tool-call budget has been exhausted",
-          {
-            runId: this.runId,
-            maxToolCalls: workOrder.budget.maxToolCalls,
-          },
-        );
-      }
-      if (parsed.recoveryForStepId !== undefined) {
-        if (parsed.kind !== "interaction") {
+        const planned = plannedActions(events);
+        if (planned.length >= workOrder.budget.maxToolCalls) {
           throw new AiQaError(
-            "recovery.interaction_required",
-            "Recovery actions must be state-changing interactions",
-            { recoveryForStepId: parsed.recoveryForStepId },
-          );
-        }
-        if (
-          parsed.stepId !== undefined &&
-          parsed.stepId !== parsed.recoveryForStepId
-        ) {
-          throw new AiQaError(
-            "recovery.step_mismatch",
-            "A recovery action must stay on the affected step",
-            {
-              stepId: parsed.stepId,
-              recoveryForStepId: parsed.recoveryForStepId,
-            },
-          );
-        }
-        requireKnownStep(planned, parsed.recoveryForStepId);
-        const recoveryCount = planned.filter(
-          ({ payload }) => payload.recoveryForStepId !== undefined,
-        ).length;
-        if (recoveryCount >= workOrder.budget.maxRecoveryActions) {
-          throw new AiQaError(
-            "run.recovery_budget_exhausted",
-            "The frozen recovery-action budget has been exhausted",
+            "run.tool_call_budget_exhausted",
+            "The frozen tool-call budget has been exhausted",
             {
               runId: this.runId,
-              maxRecoveryActions: workOrder.budget.maxRecoveryActions,
+              maxToolCalls: workOrder.budget.maxToolCalls,
             },
           );
         }
-        requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
-      } else if (
-        parsed.kind === "interaction" &&
-        parsed.stepId !== undefined &&
-        planned.some(
-          ({ payload }) =>
-            payload.kind === "interaction" && payload.stepId === parsed.stepId,
-        )
-      ) {
-        throw new AiQaError(
-          "recovery.marker_required",
-          "A repeated interaction step must declare recoveryForStepId",
-          { stepId: parsed.stepId },
-        );
-      }
+        if (parsed.recoveryForStepId !== undefined) {
+          if (parsed.kind !== "interaction") {
+            throw new AiQaError(
+              "recovery.interaction_required",
+              "Recovery actions must be state-changing interactions",
+              { recoveryForStepId: parsed.recoveryForStepId },
+            );
+          }
+          if (
+            parsed.stepId !== undefined &&
+            parsed.stepId !== parsed.recoveryForStepId
+          ) {
+            throw new AiQaError(
+              "recovery.step_mismatch",
+              "A recovery action must stay on the affected step",
+              {
+                stepId: parsed.stepId,
+                recoveryForStepId: parsed.recoveryForStepId,
+              },
+            );
+          }
+          requireKnownStep(planned, parsed.recoveryForStepId);
+          const recoveryCount = planned.filter(
+            ({ payload }) => payload.recoveryForStepId !== undefined,
+          ).length;
+          if (recoveryCount >= workOrder.budget.maxRecoveryActions) {
+            throw new AiQaError(
+              "run.recovery_budget_exhausted",
+              "The frozen recovery-action budget has been exhausted",
+              {
+                runId: this.runId,
+                maxRecoveryActions: workOrder.budget.maxRecoveryActions,
+              },
+            );
+          }
+          requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
+        } else if (
+          parsed.kind === "interaction" &&
+          parsed.stepId !== undefined &&
+          planned.some(
+            ({ payload }) =>
+              payload.kind === "interaction" &&
+              payload.stepId === parsed.stepId,
+          )
+        ) {
+          throw new AiQaError(
+            "recovery.marker_required",
+            "A repeated interaction step must declare recoveryForStepId",
+            { stepId: parsed.stepId },
+          );
+        }
 
-      const payload = actionPayloadSchema.parse({
-        phase: "planned",
-        kind: parsed.kind,
-        intent: parsed.intent,
-        stepId: parsed.stepId ?? parsed.recoveryForStepId ?? createId("step"),
-        target: parsed.target,
-        ...(parsed.recoveryForStepId === undefined
-          ? {}
-          : { recoveryForStepId: parsed.recoveryForStepId }),
-      });
-      return actionAppendInput(parsed.tool, parsed.idempotencyKey, payload);
-    });
+        const payload = actionPayloadSchema.parse({
+          phase: "planned",
+          kind: parsed.kind,
+          intent: parsed.intent,
+          stepId: parsed.stepId ?? parsed.recoveryForStepId ?? createId("step"),
+          target: parsed.target,
+          ...(parsed.recoveryForStepId === undefined
+            ? {}
+            : { recoveryForStepId: parsed.recoveryForStepId }),
+        });
+        return actionAppendInput(parsed.tool, parsed.idempotencyKey, payload);
+      },
+      (workOrder, timestamp) => {
+        if (
+          enforceDeadline &&
+          new Date(timestamp).getTime() >=
+            new Date(workOrder.budget.deadline).getTime()
+        ) {
+          throw new AiQaError(
+            "run.deadline_exhausted",
+            "The frozen run deadline has been reached",
+            {
+              runId: this.runId,
+              deadline: workOrder.budget.deadline,
+            },
+          );
+        }
+      },
+    );
   }
 
   async completeAction(input: CompleteActionInput): Promise<RunEvent> {
@@ -346,6 +358,7 @@ export class RunProtocolService {
       workOrder: WorkOrder,
       events: readonly RunEvent[],
     ) => AppendRunEvent,
+    validateTimestamp?: (workOrder: WorkOrder, timestamp: string) => void,
   ): Promise<RunEvent> {
     const trusted = await resolveTrustedProject({
       cwd: this.projectRoot,
@@ -358,6 +371,12 @@ export class RunProtocolService {
       validateProtocolEvents(events, workOrder, this.runId);
       return {
         input: prepare(workOrder, events),
+        ...(validateTimestamp === undefined
+          ? {}
+          : {
+              validateTimestamp: (timestamp: string) =>
+                validateTimestamp(workOrder, timestamp),
+            }),
         resolve: (event: RunEvent) => event,
       };
     });

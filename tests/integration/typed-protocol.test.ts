@@ -442,6 +442,39 @@ describe("typed run protocol", () => {
     ).rejects.toMatchObject({ code: "action.step_not_found" });
   });
 
+  it("validates and persists a plan with one locked append timestamp", async () => {
+    const { projectRoot, aiQaHome } = await createTrustedRun();
+    let clockReads = 0;
+    const crossingClock = () => {
+      clockReads += 1;
+      return clockReads === 1
+        ? new Date("2026-07-13T00:29:59.999Z")
+        : new Date("2026-07-13T00:30:00.000Z");
+    };
+    const service = new RunProtocolService(
+      projectRoot,
+      aiQaHome,
+      "run-1",
+      crossingClock,
+    );
+    const planned = await service.planAction({
+      idempotencyKey: "deadline-crossing-plan",
+      kind: "interaction",
+      intent: "Use one timestamp for validation and persistence",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Page" },
+    });
+    expect(clockReads).toBe(1);
+    expect(planned.timestamp).toBe("2026-07-13T00:29:59.999Z");
+    await expect(
+      service.recordDecision({
+        kind: "semantic",
+        rationale: "The prior plan remains semantically valid",
+        relatedIds: [planned.id],
+      }),
+    ).resolves.toMatchObject({ type: "decision" });
+  });
+
   it("requires a completed observation action and preserves its step", async () => {
     const { service } = await createTrustedRun();
     const action = await service.planAction({

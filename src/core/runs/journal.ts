@@ -28,6 +28,7 @@ function appendInput(event: RunEvent): AppendRunEvent {
 
 export interface PreparedRunAppend<T> {
   input: AppendRunEvent;
+  validateTimestamp?: (timestamp: string) => void;
   resolve: (event: RunEvent) => T;
 }
 
@@ -103,7 +104,13 @@ export class RunJournal {
     try {
       const events = await this.readAll();
       const prepared = await prepare(events);
-      const event = await this.appendToSnapshot(events, prepared.input);
+      const timestamp = this.now().toISOString();
+      prepared.validateTimestamp?.(timestamp);
+      const event = await this.appendToSnapshot(
+        events,
+        prepared.input,
+        timestamp,
+      );
       return prepared.resolve(event);
     } finally {
       await release();
@@ -113,6 +120,7 @@ export class RunJournal {
   private async appendToSnapshot(
     events: RunEvent[],
     input: AppendRunEvent,
+    timestamp: string,
   ): Promise<RunEvent> {
     if (input.idempotencyKey !== undefined) {
       const existing = events.find(
@@ -135,7 +143,7 @@ export class RunJournal {
       id: createId("event"),
       runId: this.runId,
       sequence: (events.at(-1)?.sequence ?? 0) + 1,
-      timestamp: this.now().toISOString(),
+      timestamp,
       ...input,
     });
     const handle = await open(this.path, "a", 0o600);
