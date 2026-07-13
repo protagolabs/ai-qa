@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
 import { EvidenceRepository } from "../../src/core/evidence/repository.js";
@@ -328,12 +328,16 @@ describe("EvidenceRepository", () => {
     );
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      () => new Date(Number.NaN),
+    );
 
     await expect(
       repository.registerRaw({
         sourcePath: source,
-        mediaType: "",
+        mediaType: "image/png",
         sourceTool: "chrome-devtools-mcp",
         sensitivity: "internal",
         evidenceKinds: ["post-action-screenshot"],
@@ -356,6 +360,161 @@ describe("EvidenceRepository", () => {
       code: "ENOENT",
     });
   });
+
+  it.each([
+    ["unsafe evidence ID", { id: "../evidence" }],
+    ["unsafe capture action ID", { captureActionId: "../event" }],
+    ["unsafe parent evidence ID", { parentEvidenceId: "../parent" }],
+    ["absolute path", { projectRelativePath: "/tmp/evidence.png" }],
+    [
+      "backslash path",
+      {
+        projectRelativePath:
+          ".ai-qa\\evidence\\run-1\\files\\evidence-safe.png",
+      },
+    ],
+    [
+      "empty path segment",
+      {
+        projectRelativePath: ".ai-qa/evidence/run-1/files//evidence-safe.png",
+      },
+    ],
+    [
+      "dot path segment",
+      {
+        projectRelativePath: ".ai-qa/evidence/run-1/files/./evidence-safe.png",
+      },
+    ],
+    [
+      "traversing path",
+      {
+        projectRelativePath:
+          ".ai-qa/evidence/run-1/files/../outside-evidence.png",
+      },
+    ],
+    [
+      "cross-run path",
+      {
+        projectRelativePath:
+          ".ai-qa/evidence/run-2/files/evidence-safe-screen.png",
+      },
+    ],
+    [
+      "cross-evidence path",
+      {
+        projectRelativePath:
+          ".ai-qa/evidence/run-1/files/evidence-other-screen.png",
+      },
+    ],
+  ])("rejects a structurally %s from readAll", async (_name, mutation) => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-safe-"));
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    await repository.registerRaw({
+      sourcePath: source,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-action",
+      idempotencyKey: "capture-home",
+    });
+    const index = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const record = JSON.parse((await readFile(index, "utf8")).trim()) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(index, `${JSON.stringify({ ...record, ...mutation })}\n`);
+
+    await expect(repository.readAll()).rejects.toBeDefined();
+    await expect(repository.verifyAll()).rejects.toMatchObject({
+      code: "evidence.integrity_error",
+    });
+  });
+
+  it.each([
+    ["unsafe action ID", { captureActionId: "../event" }],
+    ["unknown input field", { unexpected: true }],
+  ])("rejects %s before creating evidence storage", async (_name, mutation) => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-input-"));
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+
+    await expect(
+      repository.registerRaw({
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId: "event-capture-action",
+        idempotencyKey: "capture-home",
+        ...mutation,
+      }),
+    ).rejects.toBeDefined();
+    await expect(access(join(projectRoot, ".ai-qa"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it.each([
+    ["evidence root", "evidence", "internal"],
+    ["run root", "run", "internal"],
+    ["files root", "files", "internal"],
+    ["evidence root", "evidence", "outside"],
+    ["run root", "run", "outside"],
+    ["files root", "files", "outside"],
+  ] as const)(
+    "rejects a symlinked %s with an %s target before touching the target",
+    async (_name, component, targetLocation) => {
+      const projectRoot = await mkdtemp(
+        join(tmpdir(), "ai-qa-evidence-root-link-"),
+      );
+      const source = join(projectRoot, "screen.png");
+      await writeFile(source, "original-image");
+      const evidenceRoot = join(projectRoot, ".ai-qa", "evidence");
+      const runRoot = join(evidenceRoot, "run-1");
+      const linkPath =
+        component === "evidence"
+          ? evidenceRoot
+          : component === "run"
+            ? runRoot
+            : join(runRoot, "files");
+      const target =
+        targetLocation === "outside"
+          ? await mkdtemp(join(tmpdir(), "ai-qa-evidence-link-target-"))
+          : component === "evidence"
+            ? join(projectRoot, "alternate-evidence")
+            : component === "run"
+              ? join(evidenceRoot, "alternate-run")
+              : join(runRoot, "alternate-files");
+      await mkdir(dirname(linkPath), { recursive: true });
+      await mkdir(target, { recursive: true });
+      await symlink(target, linkPath);
+      const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+
+      await expect(
+        repository.registerRaw({
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId: "event-capture-action",
+          idempotencyKey: "capture-home",
+        }),
+      ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+      expect(await readdir(target)).toEqual([]);
+    },
+  );
 });
 
 describe("registerEvidence", () => {
@@ -512,6 +671,346 @@ describe("registerEvidence", () => {
     await expect(
       access(join(projectRoot, ".ai-qa", "evidence")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an unknown criterion before creating evidence storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "capture-unknown-criterion",
+        },
+        criterionIds: ["unknown-criterion"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a dangling observation before creating evidence storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "capture-dangling-observation",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: ["event-missing-observation"],
+        now: fixedNow,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a wrong-type observation citation before evidence storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "capture-wrong-observation",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [captureActionId],
+        now: fixedNow,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an invalid typed observation before creating evidence storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const invalidObservation = await runRepository.journal("run-1").append({
+      type: "observation",
+      actor: "agent",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      payload: {
+        summary: "Current page",
+        state: { url: "https://example.com/home" },
+        actionId: captureActionId,
+        unexpected: true,
+      },
+      relatedIds: [captureActionId],
+    });
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "capture-invalid-observation",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [invalidObservation.id],
+        now: fixedNow,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("persists strict valid criterion and observation citations", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const journal = runRepository.journal("run-1");
+    const observationAction = await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      idempotencyKey: "plan-observe-home",
+      payload: {
+        phase: "planned",
+        kind: "observation",
+        intent: "Observe the current home",
+        stepId: "step-home",
+        target: { description: "Authenticated home" },
+      },
+      relatedIds: [],
+    });
+    await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      idempotencyKey: `complete:${observationAction.id}`,
+      payload: {
+        phase: "completed",
+        actionId: observationAction.id,
+        toolResult: { summary: "Home observed" },
+      },
+      relatedIds: [observationAction.id],
+    });
+    const observation = await journal.append({
+      type: "observation",
+      actor: "agent",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      payload: {
+        summary: "Authenticated home is visible",
+        state: { url: "https://example.com/home" },
+        stepId: "step-home",
+        actionId: observationAction.id,
+      },
+      relatedIds: [observationAction.id],
+    });
+
+    const record = await registerEvidence({
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId,
+        idempotencyKey: "capture-valid-citations",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [observation.id],
+      now: fixedNow,
+    });
+
+    const evidenceEvent = (await journal.readAll()).find(
+      (event) => event.type === "evidence",
+    );
+    expect(evidenceEvent?.payload).toMatchObject({
+      id: record.id,
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [observation.id],
+    });
+    expect(evidenceEvent?.relatedIds).toEqual([
+      captureActionId,
+      observation.id,
+    ]);
+  });
+
+  it("rejects a non-evidence idempotency collision before storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    await runRepository.journal("run-1").append({
+      type: "decision",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "capture-collision",
+      payload: { kind: "semantic", rationale: "Existing decision" },
+      relatedIds: [],
+    });
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "capture-collision",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "event.idempotency_conflict" });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("coordinates concurrent same-key registrations into one record and event", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const input = {
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal" as const,
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId,
+        idempotencyKey: "capture-concurrent",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [],
+      now: fixedNow,
+    };
+
+    const [first, second] = await Promise.all([
+      registerEvidence(input),
+      registerEvidence(input),
+    ]);
+
+    expect(second).toEqual(first);
+    expect(
+      (await runRepository.journal("run-1").readAll()).filter(
+        (event) => event.type === "evidence",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await readdir(join(projectRoot, ".ai-qa", "evidence", "run-1", "files")),
+    ).toHaveLength(1);
+  });
+
+  it("rejects a non-strict existing evidence event without adding files", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "original-image");
+    const input = {
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal" as const,
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId,
+        idempotencyKey: "capture-strict-retry",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [],
+      now: fixedNow,
+    };
+    await registerEvidence(input);
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const events = (await readFile(eventsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const evidenceEvent = events.find((event) => event.type === "evidence");
+    if (evidenceEvent === undefined) throw new Error("missing evidence event");
+    evidenceEvent.payload = {
+      ...(evidenceEvent.payload as Record<string, unknown>),
+      unexpected: true,
+    };
+    await writeFile(
+      eventsPath,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(registerEvidence(input)).rejects.toMatchObject({
+      code: "event.idempotency_conflict",
+    });
+    expect(
+      await readdir(join(projectRoot, ".ai-qa", "evidence", "run-1", "files")),
+    ).toHaveLength(1);
   });
 });
 

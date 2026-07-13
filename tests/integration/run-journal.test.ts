@@ -104,6 +104,67 @@ describe("RunJournal", () => {
       }),
     ).rejects.toMatchObject({ code: "event.idempotency_conflict" });
   });
+
+  it("holds the journal lock across prepared work and its append", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = await RunJournal.create(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+    let enterPrepare: () => void = () => undefined;
+    const prepareEntered = new Promise<void>((resolve) => {
+      enterPrepare = resolve;
+    });
+    let releasePrepare: () => void = () => undefined;
+    const prepareReleased = new Promise<void>((resolve) => {
+      releasePrepare = resolve;
+    });
+    const coordinated = journal.appendPrepared(async () => {
+      enterPrepare();
+      await prepareReleased;
+      return {
+        input: {
+          type: "decision" as const,
+          actor: "ai-qa" as const,
+          platform: "web" as const,
+          tool: "ai-qa",
+          idempotencyKey: "coordinated-key",
+          payload: { source: "prepared" },
+          relatedIds: [],
+        },
+        resolve: (event: { id: string }) => event.id,
+      };
+    });
+    await prepareEntered;
+    let competitorSettled = false;
+    const competitor = journal
+      .append({
+        type: "decision",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        idempotencyKey: "coordinated-key",
+        payload: { source: "competitor" },
+        relatedIds: [],
+      })
+      .then(
+        (event) => event,
+        (error: unknown) => error,
+      )
+      .finally(() => {
+        competitorSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(competitorSettled).toBe(false);
+    releasePrepare();
+    await expect(coordinated).resolves.toMatch(/^event-/);
+    expect(await competitor).toMatchObject({
+      code: "event.idempotency_conflict",
+    });
+    expect(await journal.readAll()).toHaveLength(1);
+  });
 });
 
 describe("RunRepository", () => {

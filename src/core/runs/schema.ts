@@ -6,9 +6,19 @@ import {
 } from "../../schemas/versions.js";
 import { jsonValueSchema } from "../json-value.js";
 
+export const criterionIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
+
+export const eventIdSchema = z
+  .string()
+  .regex(/^event-[a-z0-9][a-z0-9-]{0,126}$/);
+
+export const actionIdSchema = eventIdSchema;
+
+export const stepIdSchema = z.string().regex(/^step-[a-z0-9][a-z0-9-]{0,126}$/);
+
 export const acceptanceCriterionSchema = z
   .object({
-    id: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/),
+    id: criterionIdSchema,
     description: z.string().trim().min(1),
     requiredEvidence: z.array(z.string().trim().min(1)).min(1),
   })
@@ -186,7 +196,7 @@ export function createExploratoryWorkOrder(input: {
 export const runEventSchema = z
   .object({
     schemaVersion: z.literal(EVENT_SCHEMA_VERSION),
-    id: z.string(),
+    id: eventIdSchema,
     runId: runIdSchema,
     sequence: z.number().int().positive(),
     timestamp: z.string().datetime(),

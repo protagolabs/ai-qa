@@ -11,12 +11,13 @@ import {
 } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import lockfile from "proper-lockfile";
+import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
-import { runIdSchema } from "../runs/schema.js";
+import { actionIdSchema, runIdSchema } from "../runs/schema.js";
 import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
 
 export interface RegisterRawEvidenceInput {
@@ -28,6 +29,19 @@ export interface RegisterRawEvidenceInput {
   captureActionId: string;
   idempotencyKey: string;
 }
+
+export const registerRawEvidenceInputSchema: z.ZodType<RegisterRawEvidenceInput> =
+  z
+    .object({
+      sourcePath: z.string().min(1),
+      mediaType: z.string().trim().min(1),
+      sourceTool: z.string().trim().min(1),
+      sensitivity: z.enum(["public", "internal", "sensitive"]),
+      evidenceKinds: z.array(z.string().trim().min(1)).min(1),
+      captureActionId: actionIdSchema,
+      idempotencyKey: z.string().trim().min(1),
+    })
+    .strict();
 
 interface EvidencePaths {
   root: string;
@@ -103,8 +117,8 @@ export class EvidenceRepository {
   }
 
   async registerRaw(input: RegisterRawEvidenceInput): Promise<EvidenceRecord> {
-    await mkdir(this.paths.files, { recursive: true });
-    await this.validateStorageRoots();
+    input = registerRawEvidenceInputSchema.parse(input);
+    await this.ensureStorageRoots();
     await this.ensureIndex();
     const release = await lockfile.lock(this.paths.index, {
       realpath: false,
@@ -306,12 +320,62 @@ export class EvidenceRepository {
     files: string;
   }> {
     const canonicalProjectRoot = await realpath(this.projectRoot);
-    const canonicalRoot = await realpath(this.paths.root);
-    const canonicalFiles = await realpath(this.paths.files);
-    requireDescendant(canonicalProjectRoot, canonicalRoot);
-    requireDescendant(canonicalRoot, canonicalFiles);
-    return { root: canonicalRoot, files: canonicalFiles };
+    const paths = this.canonicalStoragePaths(canonicalProjectRoot);
+    await this.requireRealDirectory(paths.aiQa);
+    await this.requireRealDirectory(paths.evidence);
+    await this.requireRealDirectory(paths.root);
+    await this.requireRealDirectory(paths.files);
+    return { root: paths.root, files: paths.files };
   }
+
+  private async ensureStorageRoots(): Promise<void> {
+    const canonicalProjectRoot = await realpath(this.projectRoot);
+    const paths = this.canonicalStoragePaths(canonicalProjectRoot);
+    await this.ensureRealDirectory(paths.aiQa);
+    await this.ensureRealDirectory(paths.evidence);
+    await this.ensureRealDirectory(paths.root);
+    await this.ensureRealDirectory(paths.files);
+  }
+
+  private canonicalStoragePaths(canonicalProjectRoot: string): {
+    aiQa: string;
+    evidence: string;
+    root: string;
+    files: string;
+  } {
+    const aiQa = resolve(canonicalProjectRoot, ".ai-qa");
+    const evidence = resolve(aiQa, "evidence");
+    const root = resolve(evidence, this.runId);
+    const files = resolve(root, "files");
+    return { aiQa, evidence, root, files };
+  }
+
+  private async ensureRealDirectory(path: string): Promise<void> {
+    try {
+      await mkdir(path, { mode: 0o700 });
+    } catch (error: unknown) {
+      if (!isNodeError(error, "EEXIST")) throw error;
+    }
+    await this.requireRealDirectory(path);
+  }
+
+  private async requireRealDirectory(path: string): Promise<void> {
+    const stats = await lstat(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw invalidStorageRoot(path);
+    }
+    if ((await realpath(path)) !== path) {
+      throw invalidStorageRoot(path);
+    }
+  }
+}
+
+function invalidStorageRoot(path: string): AiQaError {
+  return new AiQaError(
+    "evidence.integrity_error",
+    "Evidence storage roots must be real canonical directories",
+    { path },
+  );
 }
 
 function isNodeError(error: unknown, code: string): boolean {
