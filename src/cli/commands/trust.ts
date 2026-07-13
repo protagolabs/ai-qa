@@ -71,6 +71,10 @@ export function registerTrustCommands(
     });
     const identity = await readRepositoryIdentity(resolved.root);
     const trusted = await new TrustStore(aiQaHome(context)).isTrusted(identity);
-    writeJson(context, { ...identity, trusted });
+    writeJson(context, {
+      canonicalPath: identity.canonicalPath,
+      fingerprint: identity.fingerprint,
+      trusted,
+    });
   });
 }
