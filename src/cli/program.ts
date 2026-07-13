@@ -1,8 +1,12 @@
 import { Command, CommanderError } from "commander";
+import { ZodError } from "zod";
+import { AiQaError } from "../core/errors.js";
+import { registerInitCommands } from "./commands/init.js";
+import { registerTrustCommands } from "./commands/trust.js";
 import type { CliContext } from "./context.js";
 
 export function createProgram(context: CliContext): Command {
-  return new Command()
+  const program = new Command()
     .name("ai-qa")
     .description("Agent-orchestrated QA state and evidence CLI")
     .version("0.0.0")
@@ -13,6 +17,9 @@ export function createProgram(context: CliContext): Command {
       writeErr: (value) => context.writeStderr(value),
       outputError: () => undefined,
     });
+  registerInitCommands(program, context);
+  registerTrustCommands(program, context);
+  return program;
 }
 
 export async function runCli(
@@ -36,10 +43,36 @@ export async function runCli(
         program.commands.length === 0
           ? "commander.unknownCommand"
           : error.code;
-      context.writeStderr(
-        `${JSON.stringify({ error: { code, message: error.message } })}\n`,
-      );
+      const message =
+        error.code === "commander.unknownCommand"
+          ? `error: too many arguments. Expected 0 arguments but got ${String(args.length)}.`
+          : error.message;
+      context.writeStderr(`${JSON.stringify({ error: { code, message } })}\n`);
       return error.exitCode === 0 ? 1 : error.exitCode;
+    }
+    if (error instanceof AiQaError) {
+      context.writeStderr(
+        `${JSON.stringify({
+          error: {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+          },
+        })}\n`,
+      );
+      return 1;
+    }
+    if (error instanceof ZodError) {
+      context.writeStderr(
+        `${JSON.stringify({
+          error: {
+            code: "schema.validation_failed",
+            message: "Schema validation failed",
+            details: { issuePaths: error.issues.map((issue) => issue.path) },
+          },
+        })}\n`,
+      );
+      return 1;
     }
     throw error;
   }
