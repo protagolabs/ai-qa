@@ -36,6 +36,7 @@ The npm v1 release must:
 - Promote an exploratory run into a reviewed, replayable regression case.
 - Model one shared scenario with platform-specific steps and assertions.
 - Replay active cases through an AI agent runner locally or in CI.
+- Group one or more pinned case/platform runs into a reproducible regression invocation and aggregate report.
 - Produce evidence-backed verdicts and user-configured reports.
 - Distinguish product failures from environment, permission, evidence, and automation-tool blockers.
 - Complete a live vertical slice on Web, iOS Simulator, and Android Emulator before npm v1 is declared complete.
@@ -50,6 +51,8 @@ The npm v1 release must:
 - Silent installation, service startup, app build, simulator mutation, or external evidence upload.
 - Automatically treating every exploratory action sequence as an active regression case.
 - Maintaining separate full QA workflows for Codex and Claude Code.
+- Persisted named test suites; npm v1 supports explicit case selection and `--all-active` snapshots instead.
+- Dynamically loading third-party npm exporter or storage plugins.
 
 ## 4. Architectural principles
 
@@ -90,6 +93,7 @@ User
               |-- Project resolution
               |-- Configuration
               |-- Runs and event logs
+              |-- Regression run groups
               |-- Per-run evidence indexes
               |-- Regression cases
               |-- Assertions and verdicts
@@ -116,6 +120,8 @@ Explicit global skill installation
 
 Installing the public package globally installs the executable and bundled canonical skill assets. `ai-qa skill install --global` then previews and installs the skill into `~/.agents/skills/ai-qa/`. The explicit command is required because package installation must not silently overwrite user-level agent instructions. The installer may create client-specific shims when a supported client requires them, but the bundled skill remains the one canonical source.
 
+The npm package and every installed skill expose an `aiQaSkillVersion` and compatible CLI/work-protocol range in CLI-managed metadata. A global npm upgrade updates the bundled canonical assets but does not silently rewrite `~/.agents/skills/ai-qa/`. `doctor` reports missing, stale, and incompatible installed skills; `ai-qa skill sync --global` previews the managed-region diff before applying an upgrade. Starting a QA run with an incompatible global skill creates a reportable `blocked:tool` run instead of returning a work order that the installed skill cannot safely execute.
+
 ### 6.2 Target-project files
 
 ```text
@@ -134,11 +140,19 @@ target-project/
     |-- runs/
     |   `-- <run-id>/
     |       `-- events.jsonl
+    |-- run-groups/
+    |   `-- <run-group-id>/
+    |       |-- group.json
+    |       `-- events.jsonl
     |-- evidence/
     |   `-- <run-id>/
     |       |-- index.jsonl
     |       `-- files/
     `-- reports/
+        |-- runs/
+        |   `-- <run-id>/
+        `-- run-groups/
+            `-- <run-group-id>/
 ```
 
 `.agents/skills/ai-qa-project/` is optional. `.ai-qa/` is the canonical project QA workspace.
@@ -151,7 +165,9 @@ Project resolution follows this precedence:
 
 1. An explicit `--project <path>` argument.
 2. The nearest ancestor containing `.ai-qa/config.yaml`.
-3. For `init` only, the current Git repository root after user confirmation.
+3. For `init` only, when no ancestor config exists, the current Git repository root after user confirmation.
+
+`--project` always identifies the exact target, including a nested project. If `init` finds an ancestor configuration, it reports that existing project and does not initialize a nested project unless the caller explicitly supplies `--project`. Outside a Git repository, `init` has no implicit fallback: the caller must supply `--project <path>` and confirm that exact directory.
 
 Mutating commands fail when the project root is ambiguous or outside the confirmed target. Tracked configuration must use project-relative paths and must not persist machine-specific absolute paths.
 
@@ -198,7 +214,7 @@ The main skill recommends project-skill generation only when at least one stable
 - Refuse silent overwrite when the existing skill differs.
 - Present a diff and require confirmation before replacement.
 
-Generated project skills separate CLI-managed and user-managed content with explicit markers:
+Installed global skills and generated project skills separate CLI-managed and user-managed content with explicit markers:
 
 ```html
 <!-- ai-qa:managed:start -->
@@ -209,6 +225,8 @@ Generated project skills separate CLI-managed and user-managed content with expl
 ```
 
 `skill sync` updates only the managed region and preserves the user region byte-for-byte. Frontmatter metadata stores a checksum over the normalized CLI-managed frontmatter fields and managed body region. If either managed area was edited manually, sync shows a diff and requires confirmation instead of merging or replacing it silently.
+
+The same managed metadata records skill and compatible work-protocol versions. `skill check`, `doctor`, and `run start` compare the installed global and project skill metadata with the active CLI. Project skills may be older than the bundled template only when their declared protocol range is compatible; incompatible managed regions require `skill sync` before execution.
 
 ## 8. Configuration dialogue and storage selection
 
@@ -229,7 +247,9 @@ The dialogue covers:
 
 The internal run representation is always versioned JSON Lines. User-facing report format and storage are configurable.
 
-The CLI exposes exporter and storage-adapter registries. The main skill maps the user's goals to installed capabilities instead of presenting a hard-coded provider menu. Project-local storage is always available for canonical data. External storage receives only artifacts permitted by the confirmed project policy, never receives raw evidence implicitly, and never becomes an alternate mutable event log.
+The CLI exposes internal typed exporter and storage-adapter registries. npm v1 includes Markdown and JSON report exporters, project-local filesystem storage, and an explicitly configured command adapter for handing approved exports to an external system. The command adapter receives only the generated artifacts and metadata allowed by project policy; it cannot read the event store or raw evidence implicitly. npm v1 does not discover or dynamically load third-party npm adapters.
+
+The main skill maps the user's goals to these installed capabilities instead of presenting a hard-coded provider menu. Project-local storage is always available for canonical data. External storage never becomes an alternate mutable event log.
 
 Secrets are stored as references such as environment-variable names, not as literal values.
 
@@ -283,8 +303,14 @@ caseId: login-success
 revision: 2
 contentHash: sha256:current-content
 acceptance:
-  - 使用者進入首頁
-  - 畫面顯示目前帳號
+  - id: authenticated-home-visible
+    description: 使用者進入首頁
+    requiredEvidence:
+      - post-action-screenshot
+  - id: current-account-visible
+    description: 畫面顯示目前帳號
+    requiredEvidence:
+      - structured-text-assertion
 variants:
   web:
     steps: []
@@ -294,7 +320,7 @@ variants:
     steps: []
 ```
 
-Each step contains an intent, tool action record, stable target description, expected state, assertion strategy, and evidence checkpoint. Platform-specific selectors remain inside that platform variant.
+Every acceptance criterion has a stable ID, description, and required-evidence policy. Verdicts and assertions cite that ID; array position is never an identifier. Each step contains an intent, tool action record, stable target description, expected state, assertion strategy, and evidence checkpoint. Platform-specific selectors remain inside that platform variant.
 
 An active revision is never edited in place. Editing creates the next draft revision. Activating that draft marks the previous active revision as `superseded` but retains it for historical reports. `contentHash` is calculated from the canonical revision content with the `contentHash` field omitted; the platform-variant hash is calculated from the canonical selected variant. Every regression run pins `caseId`, `caseRevision`, `caseContentHash`, and the selected platform-variant hash in its work order and event log.
 
@@ -304,6 +330,7 @@ Each run has an append-only `events.jsonl`. Every event contains:
 
 - Schema version.
 - Run ID and monotonically increasing sequence.
+- Optional run-group ID for grouped regression runs.
 - Timestamp and actor.
 - Platform and tool identity.
 - Event type.
@@ -342,6 +369,8 @@ Raw evidence is immutable. Redacted and annotated files are new derived artifact
 
 Evidence files and their append-only index live under `.ai-qa/evidence/<run-id>/`. Each run owns its evidence index and lock, so parallel platform runs never contend on a shared mutable registry. A project-wide evidence view is derived from per-run indexes and can be rebuilt; it is not another source of truth.
 
+`evidence add` calculates and stores the content hash before accepting the evidence event. The CLI re-verifies registered evidence on `run resume`, before `run finish`, and before report generation or export. A mismatch before completion prevents the current verdict from being finalized and requires a typed `blocked:evidence` verdict or replacement evidence. A mismatch discovered after completion produces an integrity error and refuses a normal report/export without rewriting the historical verdict.
+
 ### 9.5 State machines
 
 Case-revision status:
@@ -363,6 +392,18 @@ interrupted -> running
 interrupted -> cancelled
 ```
 
+Run-group execution status transitions:
+
+```text
+created -> running
+created -> cancelled
+running -> completed
+running -> interrupted
+running -> cancelled
+interrupted -> running
+interrupted -> cancelled
+```
+
 Run verdict is independent of execution status:
 
 ```text
@@ -371,12 +412,47 @@ pass | fail | blocked | not_verified
 
 An exploratory session is not a separate entity. It is a run with `kind: exploratory`; a regression execution is a run with `kind: regression`. `execution` separately records `local` or `ci`. `completed` requires a terminal verdict. A cancelled run is terminal and receives a `not_verified` verdict with a cancellation reason.
 
-### 9.6 Versioned work order and execution budget
+The append-only log may contain verdict revisions, but it has exactly one effective verdict. `verdict set` creates the first verdict. A later correction must use `verdict revise --supersedes <verdict-id>` and may occur only before `run finish`; implicit last-wins behavior is forbidden. `run finish` rejects zero effective verdicts, multiple unsuperseded verdicts, or a supersession chain that does not end at the effective verdict. Completed and cancelled runs cannot revise verdicts.
+
+### 9.6 Regression run groups
+
+A `RunGroup` represents one local or CI regression invocation over one or more case revisions and platforms. It is not an exploratory session or a persisted named suite. `run-group start` resolves the requested selection and writes an immutable, versioned `group.json` before any child tool action begins:
+
+```yaml
+schemaVersion: 1
+id: run-group-01
+execution: ci
+selectionMode: all-active
+members:
+  - runId: run-web-login
+    caseId: login-success
+    caseRevision: 2
+    caseContentHash: sha256:current-content
+    platform: web
+    platformVariantHash: sha256:web-variant
+  - runId: run-ios-login
+    caseId: login-success
+    caseRevision: 2
+    caseContentHash: sha256:current-content
+    platform: ios-simulator
+    platformVariantHash: sha256:ios-variant
+```
+
+Selection may name one or more cases or use `--all-active`, and it must name at least one platform. `--all-active` is resolved once at group creation; later case activation, supersession, or retirement does not change the group. The selected matrix contains members only where an active revision declares a platform variant. Missing requested variants are recorded as explicit exclusions in the manifest and aggregate coverage matrix; they are never silently omitted. CI policy decides whether such a coverage gap is allowed, and the default is non-success.
+
+Every member is an atomic regression run with its own work order, event log, evidence directory, lock, and verdict, and records the parent `runGroupId`.
+
+`run-group start` allocates all member run IDs in the manifest and returns the member work orders. Child runs never mutate the shared manifest while executing in parallel. The group cannot dynamically add members or perform platform-tool actions outside a child work order, so its maximum tool-call cost is the finite sum of its frozen member budgets; the CLI reports that bound before local confirmation or CI execution.
+
+`run-group finish` acquires the group lock, validates that every member is terminal, and appends the group completion event. An interrupted group resumes by re-reading each child state and requiring the normal fresh-observation rule for any resumed child. Cancelling a group cancels every non-terminal member with `not_verified` while preserving terminal member results. A group has execution status but no collapsed QA verdict: aggregate reports and process exit policy preserve the full case/platform verdict matrix, exclusions, and result counts.
+
+### 9.7 Versioned work order and execution budget
 
 `run start` returns a versioned work order containing:
 
 - Work-order schema and protocol versions.
-- Run kind, execution environment, project ID, platform, and environment profile.
+- Run kind, execution environment, project ID, optional run-group ID, platform, and environment profile.
+- A user-confirmed goal and stable acceptance-criterion objects for exploratory runs.
 - Pinned case ID, revision, content hash, and platform-variant hash for regression runs.
 - Ordered required steps and evidence checkpoints.
 - Supported recovery policy.
@@ -395,6 +471,8 @@ maxRecoveryActions
 deadline
   = min(30 minutes, max(10 minutes, requiredStepCount * 2 minutes))
 ```
+
+An exploratory run starts only after the user and AI have confirmed a goal and one or more acceptance criteria with stable IDs and required-evidence policies. Those criteria are frozen into the work order and become the only valid basis for an exploratory verdict. Case promotion copies and normalizes them into the draft case revision.
 
 An exploratory run defaults to 100 tool calls, 10 recovery actions, and a 30-minute deadline because it has no required-step count. Project configuration may define different defaults, and an immutable case revision may override regression defaults. `run start` freezes the resulting values in the work order. Every work order has finite budgets; CI and local runs cannot use unlimited values.
 
@@ -417,6 +495,7 @@ ai-qa recovery            Unknown-action resolution
 ai-qa blocker/verdict     Typed result write-back
 ai-qa case                Regression-case lifecycle
 ai-qa run                 Exploratory/regression lifecycle and recovery
+ai-qa run-group           Multi-case/platform regression orchestration
 ai-qa report              Report generation and export
 ```
 
@@ -431,8 +510,8 @@ ai-qa setup apply <plan-id>
 ai-qa skill install --global
 ai-qa skill generate
 ai-qa skill check
-ai-qa skill sync
-ai-qa run start --kind exploratory --platform <platform> --execution local
+ai-qa skill sync [--global]
+ai-qa run start --kind exploratory --platform <platform> --execution local --stdin-json
 ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json
 ai-qa action complete <action-id> --stdin-json
 ai-qa observation add --run <run-id> --stdin-json
@@ -442,6 +521,7 @@ ai-qa decision record --run <run-id> --stdin-json
 ai-qa recovery resolve <action-id> --stdin-json
 ai-qa blocker record --run <run-id> --stdin-json
 ai-qa verdict set --run <run-id> --stdin-json
+ai-qa verdict revise --run <run-id> --supersedes <verdict-id> --stdin-json
 ai-qa case draft --from-run <run-id>
 ai-qa case validate <case-id> --revision <revision>
 ai-qa case activate <case-id> --revision <revision>
@@ -449,8 +529,14 @@ ai-qa run start --kind regression --case <case-id> --platform <platform> --execu
 ai-qa run resume <run-id>
 ai-qa run cancel <run-id> --reason <reason>
 ai-qa run finish <run-id>
+ai-qa run-group start (--case <case-id>... | --all-active) --platform <platform>... --execution local|ci
+ai-qa run-group resume <run-group-id>
+ai-qa run-group cancel <run-group-id> --reason <reason>
+ai-qa run-group finish <run-group-id>
 ai-qa report generate <run-id>
+ai-qa report generate --group <run-group-id>
 ai-qa report export <run-id> --adapter <adapter-id>
+ai-qa report export --group <run-group-id> --adapter <adapter-id>
 ```
 
 Mutating commands accept structured JSON through standard input and return structured JSON with the created event ID, current state, validation result, and permitted next actions. Human-readable output is available for direct operator use, but agent workflows use `--json`.
@@ -466,7 +552,7 @@ Regression actions require an existing required or recovery step ID from the pin
 ```text
 Activate global ai-qa skill
 -> Resolve and confirm target project
--> Confirm project trust
+-> Confirm project trust in the machine-local trust store
 -> Read only the required project documents
 -> Discuss configuration with the user
 -> Run read-only doctor checks
@@ -492,7 +578,8 @@ QA execution never calls `setup apply` implicitly.
 ### 11.3 Exploratory manual QA
 
 ```text
-Start exploratory run
+Discuss and confirm the exploratory goal, acceptance criteria, and required evidence
+-> start exploratory run and freeze them in the work order
 -> observe current UI and capture required evidence
 -> register observation
 -> register planned action and receive idempotency key
@@ -545,18 +632,33 @@ Before accepting a terminal verdict, `run finish` verifies:
 
 Cross-platform execution may run platform variants sequentially or in parallel. Each platform has its own run directory and verdict. An aggregate report must preserve each platform's result instead of collapsing `blocked` into `fail`.
 
+One regression run may still be started directly for interactive use. Multi-case, cross-platform, and full-active execution uses a `RunGroup`:
+
+```text
+Resolve explicit cases or --all-active and requested platforms
+-> create the immutable group manifest and child runs
+-> execute child work orders sequentially or in parallel
+-> finish every child run
+-> finish the group
+-> generate one aggregate report with the full case/platform verdict matrix
+```
+
 ### 11.6 CI execution
 
-CI must launch a supported AI agent runner. `ai-qa run start --kind regression --case <case-id> --execution ci` is a protocol operation used by that agent; it is not a standalone test executor.
+CI must launch a supported AI agent runner. npm v1 formally supports Codex CLI and Claude Code CLI as external runners, with GitHub Actions as the first supported CI provider. The CLI does not embed either runner and does not maintain divergent QA workflows for them; client templates adapt the same versioned work protocol.
+
+`ai-qa run start --kind regression --case <case-id> --platform <platform> --execution ci` and `ai-qa run-group start ... --execution ci` are protocol operations used by those agents; neither is a standalone test executor.
 
 The npm package provides client-oriented CI templates. Each template:
 
 - Makes the global and project skills available.
-- Selects a case and platform.
+- Selects explicit cases or `--all-active` and one or more platforms.
 - Starts the external agent runner.
 - Preserves the `.ai-qa/` output according to project policy.
 - Returns a non-success pipeline status for every non-`pass` verdict by default.
 - Keeps `fail`, `blocked`, and `not_verified` distinct in the generated report.
+
+A grouped CI job succeeds by default only when every member run has verdict `pass` and the group completes without an integrity error. The report never derives a single QA verdict by collapsing member results.
 
 Project CI policy may explicitly allow selected `blocked` subtypes or `not_verified` reasons without failing the pipeline. A product `fail` can never be mapped to a successful process exit.
 
@@ -600,13 +702,15 @@ fail
   Observed product behavior clearly violates an acceptance criterion.
 
 blocked
-  Environment, tool, permission, data, or required-evidence conditions prevent validation.
+  A specific external environment, tool, permission, data, or evidence-capture condition prevents validation.
 
 not_verified
-  Only part of the scenario was verified or the available evidence is insufficient.
+  Validation or evidence coverage is incomplete without a specific external blocker.
 ```
 
 Blocked subtypes include `environment`, `tool`, `permission`, `data`, and `evidence`.
+
+`blocked:evidence` requires a recorded attempt to capture, register, read, or integrity-check required evidence plus the concrete tool, permission, policy, storage, or corruption condition that prevented it. `not_verified` covers skipped criteria, budget exhaustion, cancellation, an intentionally incomplete run, or insufficient coverage when no such external prevention occurred. Evidence being absent is not by itself a blocker.
 
 ### 14.2 Ambiguous action result
 
@@ -630,7 +734,9 @@ Different platform runs use separate directories and locks and may execute in pa
 
 ## 15. Security and trust
 
-- The user must trust a target repository before its project skill is loaded.
+- The user must trust a target repository before its project skill is loaded. A project cannot authorize itself through `.ai-qa/config.yaml`.
+- Trust decisions live only in the per-machine user store `~/.ai-qa/trust.json`, outside every target repository. This is the only global project-related state in npm v1 and contains no cases, runs, evidence, reports, secrets, or project instructions.
+- A trust entry records the canonical project path, repository identity fingerprint when Git metadata is available, confirmation time, and trust-schema version. A path or repository-identity mismatch requires confirmation again; untrusted project content is not loaded while prompting.
 - Project skills, configuration, cases, logs, and reports must not contain literal passwords, tokens, recovery codes, or private keys.
 - Secret values are supplied at runtime through the user's chosen secret mechanism.
 - Tool output and screenshots are treated as potentially sensitive.
@@ -651,6 +757,7 @@ src/
 |   |-- config/
 |   |-- cases/
 |   |-- runs/
+|   |-- run-groups/
 |   |-- events/
 |   |-- evidence/
 |   `-- verdicts/
@@ -662,13 +769,17 @@ src/
 |   `-- report-generation/
 |-- exporters/
 |-- storage/
+|-- clients/
+|   |-- codex/
+|   |-- claude-code/
+|   `-- github-actions/
 |-- skills/
 |   |-- global/
 |   `-- project-template/
 `-- schemas/
 ```
 
-The core domain cannot import client-specific or platform-control packages. Client compatibility, skill installation, and CI templates are boundary modules around the same core workflow.
+The core domain cannot import client-specific or platform-control packages. Client compatibility, skill installation, and CI templates are boundary modules around the same core workflow. Exporter and storage registries are internal composition mechanisms in npm v1, not a public plugin-loading API.
 
 ## 17. Runtime and compatibility
 
@@ -676,10 +787,10 @@ The core domain cannot import client-specific or platform-control packages. Clie
 - ESM package output.
 - Node.js 22 and Node.js 24 LTS support.
 - Schema validation at every file and CLI boundary.
-- Versioned config, case, event, evidence, work-order, and report schemas.
+- Versioned config, case, event, evidence, run-group, work-order, skill-protocol, and report schemas.
 - Explicit migrations; a newer CLI must not silently rewrite tracked project data without a migration preview and confirmation.
 
-An agent runner must reject an unsupported work-order major version before invoking a platform tool. Work orders are immutable execution contracts and are regenerated from the pinned case revision rather than migrated in place.
+An agent runner must reject an unsupported work-order major version before invoking a platform tool. Work orders are immutable execution contracts and are regenerated from the pinned case revision rather than migrated in place. Codex CLI and Claude Code CLI templates declare the protocol versions they support; the release gate exercises both against the packaged CLI instead of assuming compatible command syntax.
 
 Node.js 20 is not supported because it is end-of-life at the time of this design. The supported Node matrix is verified against the official Node.js release schedule during each release cycle.
 
@@ -689,12 +800,16 @@ Node.js 20 is not supported because it is end-of-life at the time of this design
 
 - Schema parsing and migration.
 - Event ordering and duplicate idempotency keys.
-- Case-revision and run state transitions, including supersede and cancel flows.
+- Case-revision, run, and run-group state transitions, including supersede and cancel flows.
+- Run-group explicit and `--all-active` selection snapshots remain unchanged when active cases later change.
 - Verdict and evidence-completeness rules.
+- Verdict supersession and exactly-one-effective-verdict validation.
+- `blocked:evidence` versus `not_verified` classification boundaries.
 - Evidence hashing and immutable derivation.
 - Work-order version compatibility and budget calculation.
 - Bounded adaptive fidelity and required-step coverage.
 - Project-root resolution and project isolation.
+- Nested-project and non-Git `init` behavior.
 - Secret detection and project-relative path enforcement.
 - Atomic writes and lock behavior.
 
@@ -704,16 +819,22 @@ Node.js 20 is not supported because it is end-of-life at the time of this design
 - Crash recovery resumes from the event journal.
 - Parallel platform runs do not conflict.
 - Parallel platform runs write only to their own evidence index and directory.
+- Parallel run-group members never mutate the shared immutable manifest.
 - Invalid or incomplete events are rejected.
 - Public typed event commands cannot bypass action, recovery, or verdict invariants.
 - Doctor, setup plan, approval, apply, and verification preserve the consent boundary.
 - A packed npm tarball installs globally into a clean temporary prefix and operates on a target project.
 - Explicit global skill installation previews its destination, preserves an existing skill, and installs the bundled canonical source after confirmation.
+- `doctor` and `run start` detect stale or incompatible global and project skill versions, and `skill sync` preserves user-managed regions while upgrading compatible metadata.
+- Project configuration cannot forge machine-local repository trust.
+- Evidence hash mismatches are detected on resume, finish, report generation, and export.
+- Single-run and run-group reports preserve criterion, case, platform, and verdict identity.
 
 ### 18.3 Skill tests and evals
 
 - The main skill discusses configuration before writing.
 - It confirms project root and repository trust.
+- It defines exploratory goals and stable acceptance criteria before starting a run.
 - It generates a project skill only when stable procedural differences require one.
 - It observes before and after meaningful actions.
 - It records direct tool operations through the CLI.
@@ -739,10 +860,14 @@ init/configure
 -> raw screenshot
 -> draft case
 -> active case
--> regression replay
--> evidence-backed verdict
+-> regression replay 1
+-> evidence-backed verdict 1
+-> regression replay 2 of the same pinned revision
+-> evidence-backed verdict 2
 -> configured report/export
 ```
+
+The exploratory-to-promotion flow occurs once per platform gate. The two regression replays use fresh run IDs and must both pass consecutively against the same case revision and platform-variant hash. A failed, blocked, or not-verified replay resets the consecutive-pass count for that gate.
 
 The formal platform matrix is:
 
@@ -761,10 +886,10 @@ npm v1 is complete only when:
 - The packed tarball installs globally in a clean temporary prefix.
 - Explicit global skill installation produces a valid `~/.agents/skills/ai-qa/` without silently replacing an existing user skill.
 - Global CLI operation in two target projects produces fully isolated records.
-- Web, iOS Simulator, and Android Emulator each have one successful live vertical-slice acceptance run with raw evidence.
+- Web, iOS Simulator, and Android Emulator each complete one exploratory-to-promotion flow followed by two consecutive successful regression replays of the same pinned revision, with raw evidence for every run.
 - Failure-injection runs prove that tool failures and incomplete evidence cannot produce a product `fail` or unsupported `pass`.
 - Fidelity tests prove that required steps cannot be skipped or replaced and that bounded recovery cannot exceed the frozen work-order budget.
-- CI templates successfully launch an external agent runner and preserve distinct verdict classifications.
+- GitHub Actions templates for Codex CLI and Claude Code CLI each successfully launch the external runner, execute a RunGroup, and preserve distinct verdict classifications.
 - The public tarball contains no secrets, private evidence, internal test data, or private repository metadata.
 - Public npm installation works while the source repository remains private.
 
@@ -774,11 +899,11 @@ Mock or contract coverage alone cannot satisfy a formal platform gate.
 
 Implementation should be delivered as independently reviewable vertical increments:
 
-1. Core schemas, project isolation, event/evidence journal, global skill, and Web vertical slice.
-2. Case promotion, regression replay, reporting/storage contracts, and CI agent protocol.
+1. Core schemas, project isolation, event/evidence journal, global skill, case promotion, Web regression replay, project-local report/export, and the complete Web vertical slice.
+2. RunGroup selection and aggregation, external reporting/storage contracts, Codex and Claude Code compatibility, and the GitHub Actions CI protocol.
 3. Pepper iOS Simulator vertical slice and recovery behavior.
 4. Appium Android Emulator vertical slice and recovery behavior.
-5. Cross-platform aggregation, packaging hardening, skill evals, and npm v1 release gates.
+5. Cross-platform hardening, packaging hardening, skill evals, and npm v1 release gates.
 
 Each increment must leave a working, testable system. Platform increments may not bypass the canonical event and evidence protocol.
 
@@ -805,11 +930,15 @@ Each increment must leave a working, testable system. Platform increments may no
 - Direct tool usage: Allowed, with mandatory CLI write-back.
 - Event API: Public write-back commands are typed; generic event append remains internal.
 - Evidence concurrency: Evidence indexes and files are isolated per run.
+- Regression grouping: RunGroup snapshots explicit cases or `--all-active` across selected platforms; persisted named suites are outside npm v1.
 - Replay fidelity: Required ordered steps with bounded, step-linked adaptive recovery.
 - Execution limits: Every versioned work order freezes finite tool-call, recovery-action, and deadline budgets.
 - Screenshots: Immutable evidence plus AI semantic evaluation; no mandatory full-screen pixel diff.
 - Configuration: User and AI discuss report, storage, evidence, Git, environment, and CI policy.
+- Exploratory criteria: Goal and stable, citable acceptance criteria are confirmed and frozen before the run starts.
+- Trust: Repository trust is per-machine state under `~/.ai-qa/`, never project-controlled.
+- Adapters: npm v1 has built-in typed adapters and an explicit command adapter, not third-party npm plugin loading.
 - Internal record: Versioned JSON Lines event log.
 - Environment changes: Read-only doctor first; setup requires an approved plan.
-- CI: Requires an external AI agent runner; all non-`pass` verdicts fail by default.
-- npm v1: Requires a complete live vertical slice on all three formal platforms.
+- CI: GitHub Actions templates support Codex CLI and Claude Code CLI; all non-`pass` member verdicts fail by default.
+- npm v1: Requires promotion plus two consecutive successful replays on all three formal platforms.
