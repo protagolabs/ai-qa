@@ -8,13 +8,20 @@ import {
   type ExploratoryRunInput,
   type WorkOrder,
 } from "../../core/runs/schema.js";
+import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 
 export async function startExploratoryRun(input: {
   projectRoot: string;
+  aiQaHome: string;
   payload: ExploratoryRunInput;
   now: () => Date;
 }): Promise<WorkOrder> {
-  const config = await readProjectConfig(input.projectRoot);
+  const trusted = await resolveTrustedProject({
+    cwd: input.projectRoot,
+    explicitProject: input.projectRoot,
+    aiQaHome: input.aiQaHome,
+  });
+  const config = await readProjectConfig(trusted.projectRoot);
   const payload = exploratoryRunInputSchema.parse(input.payload);
   if (payload.readiness.status !== "ready") {
     throw new AiQaError(
@@ -32,6 +39,6 @@ export async function startExploratoryRun(input: {
     },
     startedAt: input.now(),
   });
-  await new RunRepository(input.projectRoot, input.now).create(workOrder);
+  await new RunRepository(trusted.projectRoot, input.now).create(workOrder);
   return workOrder;
 }

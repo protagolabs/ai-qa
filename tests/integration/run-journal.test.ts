@@ -129,7 +129,7 @@ describe("RunRepository", () => {
       workOrder,
     );
     await expect(repository.create(workOrder)).rejects.toMatchObject({
-      code: "EEXIST",
+      code: "run.already_exists",
     });
 
     const path = join(
@@ -166,6 +166,7 @@ describe("exploratory run start", () => {
     await expect(
       startExploratoryRun({
         projectRoot,
+        aiQaHome,
         payload: {
           ...readyPayload,
           readiness: { ...readyPayload.readiness, status: "not_ready" },

@@ -39,14 +39,16 @@ export function registerRunCommands(
     async (options: { kind: string; platform: string; execution: string }) => {
       startOptionsSchema.parse(options);
       const project = explicitProject(startCommand);
+      const home = aiQaHome(context);
       const resolved = await resolveTrustedProject({
         cwd: context.cwd,
-        aiQaHome: aiQaHome(context),
+        aiQaHome: home,
         ...(project === undefined ? {} : { explicitProject: project }),
       });
       const payload = await readJsonInput(context, exploratoryRunInputSchema);
       const workOrder = await startExploratoryRun({
         projectRoot: resolved.projectRoot,
+        aiQaHome: home,
         payload,
         now: context.now,
       });

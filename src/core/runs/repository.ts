@@ -1,28 +1,40 @@
-import { mkdir, open, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { RunJournal } from "./journal.js";
-import { workOrderSchema, type RunEvent, type WorkOrder } from "./schema.js";
+import { resolveRunPaths } from "./paths.js";
+import {
+  deepFreezeWorkOrder,
+  workOrderSchema,
+  type RunEvent,
+  type WorkOrder,
+} from "./schema.js";
 
-function startedWorkOrderHash(events: RunEvent[]): string | undefined {
-  for (const event of events) {
-    if (
-      event.type !== "run" ||
-      event.payload === null ||
-      typeof event.payload !== "object"
-    ) {
-      continue;
-    }
-    const payload = event.payload as Record<string, unknown>;
-    if (
-      payload.phase === "started" &&
-      typeof payload.workOrderHash === "string"
-    ) {
-      return payload.workOrderHash;
-    }
+function startedWorkOrderHash(events: RunEvent[], runId: string): string {
+  const startEvents = events.filter(
+    (event) =>
+      event.type === "run" &&
+      isRecord(event.payload) &&
+      event.payload.phase === "started",
+  );
+  if (startEvents.length !== 1) throw new Error("invalid start anchor count");
+  const [event] = startEvents;
+  if (event === undefined || !isRecord(event.payload)) {
+    throw new Error("missing start anchor");
   }
-  return undefined;
+  const payloadKeys = Object.keys(event.payload).sort();
+  if (
+    event.sequence !== 1 ||
+    event.runId !== runId ||
+    event.actor !== "ai-qa" ||
+    payloadKeys.length !== 2 ||
+    payloadKeys[0] !== "phase" ||
+    payloadKeys[1] !== "workOrderHash" ||
+    typeof event.payload.workOrderHash !== "string"
+  ) {
+    throw new Error("invalid start anchor");
+  }
+  return event.payload.workOrderHash;
 }
 
 export class RunRepository {
@@ -34,63 +46,102 @@ export class RunRepository {
   async create(
     workOrder: WorkOrder,
   ): Promise<{ journal: RunJournal; workOrderHash: string }> {
-    const directory = join(this.projectRoot, ".ai-qa", "runs", workOrder.runId);
-    await mkdir(directory, { recursive: true });
-    const path = join(directory, "work-order.json");
-    const handle = await open(path, "wx", 0o600);
+    const validated = workOrderSchema.parse(workOrder);
+    const paths = resolveRunPaths(this.projectRoot, validated.runId);
+    await mkdir(paths.runsRoot, { recursive: true });
     try {
-      await handle.writeFile(JSON.stringify(workOrder), "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      await mkdir(paths.directory, { mode: 0o700 });
+    } catch (error: unknown) {
+      if (isNodeError(error, "EEXIST")) {
+        throw new AiQaError("run.already_exists", "Run already exists", {
+          runId: validated.runId,
+        });
+      }
+      throw error;
     }
 
-    const workOrderHash = sha256Canonical(workOrder);
-    const journal = await RunJournal.create(
-      this.projectRoot,
-      workOrder.runId,
-      this.now,
-    );
-    await journal.append({
-      type: "run",
-      actor: "ai-qa",
-      platform: "web",
-      tool: "ai-qa",
-      idempotencyKey: `start-${workOrder.runId}`,
-      payload: { phase: "started", workOrderHash },
-      relatedIds: [],
-    });
-    return { journal, workOrderHash };
+    try {
+      const handle = await open(paths.workOrder, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(validated), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+
+      const workOrderHash = sha256Canonical(validated);
+      const journal = await RunJournal.create(
+        this.projectRoot,
+        validated.runId,
+        this.now,
+      );
+      await journal.append({
+        type: "run",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        idempotencyKey: `start-${validated.runId}`,
+        payload: { phase: "started", workOrderHash },
+        relatedIds: [],
+      });
+      return { journal, workOrderHash };
+    } catch (error: unknown) {
+      try {
+        await rm(paths.directory, { recursive: true, force: true });
+      } catch {
+        // Preserve the original creation failure.
+      }
+      if (isNodeError(error, "EEXIST")) {
+        throw new AiQaError("run.already_exists", "Run already exists", {
+          runId: validated.runId,
+        });
+      }
+      throw error;
+    }
   }
 
   async readVerifiedWorkOrder(runId: string): Promise<WorkOrder> {
-    const workOrder = workOrderSchema.parse(
-      JSON.parse(
-        await readFile(
-          join(this.projectRoot, ".ai-qa", "runs", runId, "work-order.json"),
-          "utf8",
-        ),
-      ),
-    );
-    const expectedHash = startedWorkOrderHash(
-      await this.journal(runId).readAll(),
-    );
-    const actualHash = sha256Canonical(workOrder);
-    if (
-      workOrder.runId !== runId ||
-      expectedHash === undefined ||
-      expectedHash !== actualHash
-    ) {
+    const paths = resolveRunPaths(this.projectRoot, runId);
+    try {
+      const raw: unknown = JSON.parse(await readFile(paths.workOrder, "utf8"));
+      const workOrder = workOrderSchema.parse(raw);
+      const rawHash = sha256Canonical(raw);
+      const validatedHash = sha256Canonical(workOrder);
+      const expectedHash = startedWorkOrderHash(
+        await this.journal(runId).readAll(),
+        runId,
+      );
+      if (
+        workOrder.runId !== runId ||
+        rawHash !== validatedHash ||
+        expectedHash !== rawHash
+      ) {
+        throw new Error("work order hash mismatch");
+      }
+      return deepFreezeWorkOrder(workOrder) as WorkOrder;
+    } catch {
       throw new AiQaError(
         "work_order.integrity_error",
-        "Work order does not match the run start event",
+        "Work order integrity verification failed",
         { runId },
       );
     }
-    return workOrder;
   }
 
   journal(runId: string): RunJournal {
+    resolveRunPaths(this.projectRoot, runId);
     return RunJournal.open(this.projectRoot, runId, this.now);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }

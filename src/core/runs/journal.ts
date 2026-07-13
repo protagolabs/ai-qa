@@ -1,11 +1,11 @@
-import { mkdir, open, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
+import { resolveRunPaths } from "./paths.js";
 import {
   runEventSchema,
   type AppendRunEvent,
@@ -38,23 +38,48 @@ export class RunJournal {
     runId: string,
     now: () => Date,
   ): Promise<RunJournal> {
-    const directory = join(projectRoot, ".ai-qa", "runs", runId);
-    const path = join(directory, "events.jsonl");
-    await mkdir(directory, { recursive: true });
-    await writeFile(path, "", { flag: "wx", mode: 0o600 });
-    return new RunJournal(path, runId, now);
+    const paths = resolveRunPaths(projectRoot, runId);
+    await mkdir(paths.directory, { recursive: true });
+    let handle;
+    try {
+      handle = await open(paths.events, "wx", 0o600);
+      await handle.sync();
+    } catch (error: unknown) {
+      if (isNodeError(error, "EEXIST")) {
+        throw new AiQaError(
+          "run_journal.already_exists",
+          "Run journal already exists",
+          { runId },
+        );
+      }
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+    return new RunJournal(paths.events, runId, now);
   }
 
   static open(projectRoot: string, runId: string, now: () => Date): RunJournal {
-    return new RunJournal(
-      join(projectRoot, ".ai-qa", "runs", runId, "events.jsonl"),
-      runId,
-      now,
-    );
+    const paths = resolveRunPaths(projectRoot, runId);
+    return new RunJournal(paths.events, runId, now);
   }
 
   async readAll(): Promise<RunEvent[]> {
-    return readJsonLines(this.path, runEventSchema);
+    try {
+      const events = await readJsonLines(this.path, runEventSchema);
+      for (const [index, event] of events.entries()) {
+        if (event.runId !== this.runId || event.sequence !== index + 1) {
+          throw new Error("journal invariant mismatch");
+        }
+      }
+      return events;
+    } catch {
+      throw new AiQaError(
+        "journal.integrity_error",
+        "Run journal integrity verification failed",
+        { runId: this.runId },
+      );
+    }
   }
 
   async append(input: AppendRunEvent): Promise<RunEvent> {
@@ -100,4 +125,12 @@ export class RunJournal {
       await release();
     }
   }
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
