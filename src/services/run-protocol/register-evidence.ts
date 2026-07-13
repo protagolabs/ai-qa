@@ -16,6 +16,7 @@ import {
   observationPayloadSchema,
   type EvidenceEventPayload,
 } from "../../core/runs/event-payloads.js";
+import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
   criterionIdSchema,
@@ -58,6 +59,24 @@ export async function registerEvidence(input: {
   requireKnownCriteria(workOrder, citations.criterionIds);
   const journal = runRepository.journal(input.runId);
   return journal.appendPrepared(async (events) => {
+    const lifecycle = validateRunLifecycleHistory(events, input.runId);
+    if (lifecycle.current.payload.phase === "interrupted") {
+      throw new AiQaError(
+        "run.interrupted",
+        "Interrupted runs must be resumed or cancelled before evidence registration",
+        { runEventId: lifecycle.current.event.id },
+      );
+    }
+    if (
+      lifecycle.current.payload.phase === "completed" ||
+      lifecycle.current.payload.phase === "cancelled"
+    ) {
+      throw new AiQaError(
+        "run.terminal",
+        "Completed or cancelled runs cannot register evidence",
+        { runEventId: lifecycle.current.event.id },
+      );
+    }
     const existing = events.find(
       (event) => event.idempotencyKey === payload.idempotencyKey,
     );

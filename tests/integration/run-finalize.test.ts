@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
+import { sha256Canonical } from "../../src/core/canonical-json.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -13,6 +14,7 @@ import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
+import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
 import {
   cancelRun,
   resumeRun,
@@ -167,7 +169,71 @@ async function recordSupportedCriterion(
   return { assertion, evidence };
 }
 
+async function appendInterrupted(
+  fixture: Awaited<ReturnType<typeof createRun>>,
+) {
+  const events = await fixture.repository.journal("run-1").readAll();
+  const previous = events.filter((event) => event.type === "run").at(-1)!;
+  return fixture.repository.journal("run-1").append({
+    type: "run",
+    actor: "ai-qa",
+    platform: "web",
+    tool: "ai-qa",
+    idempotencyKey: `interrupt:run-1:${previous.id}`,
+    payload: {
+      phase: "interrupted",
+      previousLifecycleEventId: previous.id,
+    },
+    relatedIds: [previous.id],
+  });
+}
+
 describe("finalizeRun", () => {
+  it("verifies evidence before resolving active-run verdict cardinality", async () => {
+    const fixture = await createRun();
+    const support = await recordSupportedCriterion(fixture);
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Initial evidence-backed pass",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [support.assertion.id],
+          evidenceIds: [support.evidence.id],
+        },
+      ],
+    });
+    const competing = {
+      classification: "not_verified" as const,
+      reasonCode: "incomplete_coverage" as const,
+      summary: "Adversarial competing verdict",
+      criterionResults: [],
+    };
+    await fixture.repository.journal("run-1").append({
+      type: "verdict",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `verdict:${sha256Canonical(competing)}`,
+      payload: competing,
+      relatedIds: [],
+    });
+    await writeFile(
+      join(fixture.projectRoot, support.evidence.projectRelativePath),
+      Buffer.from([7, 7, 7]),
+    );
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
   it("does not let an executable run complete without any platform action", async () => {
     const fixture = await createRun();
     const [started] = await fixture.repository.journal("run-1").readAll();
@@ -329,6 +395,87 @@ describe("finalizeRun", () => {
     ).rejects.toMatchObject({ code: "verdict.unsupported_not_verified" });
   });
 
+  it("supports not_verified when the frozen recovery budget is exhausted", async () => {
+    const fixture = await createRun();
+    const base = await fixture.protocol.planAction({
+      idempotencyKey: "base-recovery-step",
+      kind: "interaction",
+      intent: "Establish the recoverable interaction step",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Retryable button" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: base.id,
+      phase: "completed",
+      toolResult: { summary: "Base attempt completed" },
+    });
+    const stepId = (base.payload as { stepId: string }).stepId;
+    for (let index = 0; index < 10; index += 1) {
+      const recovery = await fixture.protocol.planAction({
+        idempotencyKey: `recovery-${String(index)}`,
+        kind: "interaction",
+        intent: `Recovery attempt ${String(index + 1)}`,
+        tool: "chrome-devtools-mcp",
+        target: { description: "Retryable button" },
+        recoveryForStepId: stepId,
+      });
+      if (index === 9) {
+        await fixture.protocol.completeAction({
+          actionId: recovery.id,
+          phase: "completed",
+          toolResult: { summary: "Final allowed recovery completed" },
+        });
+        continue;
+      }
+      await fixture.protocol.completeAction({
+        actionId: recovery.id,
+        phase: "unknown",
+        toolResult: { summary: "Recovery result was ambiguous" },
+      });
+      const observationAction = await fixture.protocol.planAction({
+        idempotencyKey: `observe-recovery-${String(index)}`,
+        kind: "observation",
+        intent: "Observe ambiguous recovery state",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Current page" },
+      });
+      await fixture.protocol.completeAction({
+        actionId: observationAction.id,
+        phase: "completed",
+        toolResult: { summary: "Observed recovery state" },
+      });
+      const observation = await fixture.protocol.addObservation({
+        actionId: observationAction.id,
+        summary: "Recovery was not applied",
+        state: { attempt: index },
+      });
+      await fixture.protocol.resolveUnknownAction({
+        actionId: recovery.id,
+        resolution: "not_applied",
+        observationId: observation.id,
+        rationale: "Fresh observation shows no state change",
+      });
+    }
+    await fixture.verdicts.set({
+      classification: "not_verified",
+      reasonCode: "budget_exhausted",
+      summary: "No further recovery is permitted by the frozen budget",
+      criterionResults: [],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "completed",
+      verdict: "not_verified",
+    });
+  });
+
   it("rejects tampered immutable evidence before completion", async () => {
     const fixture = await createRun();
     const support = await recordSupportedCriterion(fixture);
@@ -360,6 +507,89 @@ describe("finalizeRun", () => {
 });
 
 describe("run lifecycle", () => {
+  it("rejects protocol, verdict, and finalization mutation while interrupted", async () => {
+    const fixture = await createRun();
+    const action = await fixture.protocol.planAction({
+      idempotencyKey: "before-interruption",
+      kind: "observation",
+      intent: "Record one completed action before interruption",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: action.id,
+      phase: "completed",
+      toolResult: { summary: "Observed before interruption" },
+    });
+    const capture = await fixture.protocol.planAction({
+      idempotencyKey: "capture-before-interruption",
+      kind: "evidence-capture",
+      intent: "Prepare evidence before interruption",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: capture.id,
+      phase: "completed",
+      toolResult: { summary: "Captured before interruption" },
+    });
+    const interruptedSource = join(fixture.projectRoot, "interrupted.png");
+    await writeFile(interruptedSource, Buffer.from([1, 3, 3, 7]));
+    const verdict = await fixture.verdicts.set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "Coverage was incomplete before interruption",
+      criterionResults: [],
+    });
+    await appendInterrupted(fixture);
+
+    await expect(
+      fixture.protocol.planAction({
+        idempotencyKey: "while-interrupted",
+        kind: "observation",
+        intent: "Must resume before new protocol work",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Current page" },
+      }),
+    ).rejects.toMatchObject({ code: "run.interrupted" });
+    await expect(
+      fixture.verdicts.revise({
+        classification: "not_verified",
+        reasonCode: "incomplete_coverage",
+        summary: "Must resume before revising",
+        criterionResults: [],
+        supersedes: verdict.id,
+      }),
+    ).rejects.toMatchObject({ code: "run.interrupted" });
+    await expect(
+      registerEvidence({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: interruptedSource,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId: capture.id,
+          idempotencyKey: "evidence-while-interrupted",
+        },
+        criterionIds: [],
+        observationIds: [],
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run.interrupted" });
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run.interrupted" });
+  });
+
   it("verifies immutable evidence before resuming", async () => {
     const fixture = await createRun();
     const support = await recordSupportedCriterion(fixture);
@@ -597,6 +827,48 @@ describe("preflight result runs", () => {
 });
 
 describe("verdict and lifecycle CLI", () => {
+  it("does not advertise finish while an action is incomplete", async () => {
+    const fixture = await createRun();
+    await fixture.protocol.planAction({
+      idempotencyKey: "pending-before-verdict",
+      kind: "observation",
+      intent: "Leave this action pending",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await fixture.verdicts.set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "Coverage and action completion are pending",
+      criterionResults: [],
+    });
+
+    const state = await readRunState({
+      projectRoot: fixture.projectRoot,
+      aiQaHome: fixture.aiQaHome,
+      runId: "run-1",
+      now,
+    });
+    expect(state.permittedNextActions).toEqual([
+      "invoke-tool",
+      "action.complete",
+      "verdict.revise",
+    ]);
+  });
+
+  it("advertises verdict set after assertion coverage is recorded", async () => {
+    const fixture = await createRun();
+    await recordSupportedCriterion(fixture);
+
+    const state = await readRunState({
+      projectRoot: fixture.projectRoot,
+      aiQaHome: fixture.aiQaHome,
+      runId: "run-1",
+      now,
+    });
+    expect(state.permittedNextActions).toContain("verdict.set");
+  });
+
   it("records a blocker and verdict, then finishes with state-aware hints", async () => {
     const fixture = await createRun();
     const attempt = await fixture.protocol.planAction({

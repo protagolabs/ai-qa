@@ -373,6 +373,13 @@ export class RunProtocolService {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
       const lifecycle = validateRunLifecycleHistory(events, this.runId);
+      if (lifecycle.current.payload.phase === "interrupted") {
+        throw new AiQaError(
+          "run.interrupted",
+          "Interrupted runs must be resumed or cancelled before protocol work",
+          { runEventId: lifecycle.current.event.id },
+        );
+      }
       if (
         lifecycle.current.payload.phase === "completed" ||
         lifecycle.current.payload.phase === "cancelled"

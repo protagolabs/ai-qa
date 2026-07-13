@@ -99,7 +99,12 @@ function permittedNextActions(input: {
   if (input.lifecyclePhase === "interrupted")
     return ["run.resume", "run.cancel"];
   if (input.requiresFreshObservation) return ["action.plan:observation"];
-  if (input.hasVerdict) return ["run.finish", "verdict.revise"];
+  if (input.hasVerdict) {
+    const requiredProtocolActions = structuralCompletionActions(input.events);
+    return requiredProtocolActions.length === 0
+      ? ["run.finish", "verdict.revise"]
+      : [...requiredProtocolActions, "verdict.revise"];
+  }
 
   const latest = input.events.at(-1);
   if (latest?.type === "action") {
@@ -124,11 +129,55 @@ function permittedNextActions(input: {
   if (latest?.type === "recovery") {
     const payload = recoveryPayloadSchema.parse(latest.payload);
     return payload.resolution === "not_applied"
-      ? ["action.plan", "decision.record"]
-      : ["assertion.record", "decision.record"];
+      ? ["action.plan", "decision.record", "verdict.set"]
+      : ["assertion.record", "decision.record", "verdict.set"];
   }
   if (latest?.type === "blocker") return ["verdict.set"];
+  if (latest?.type === "assertion") {
+    return ["verdict.set", "action.plan", "decision.record"];
+  }
+  if (latest?.type === "decision") return ["verdict.set", "action.plan"];
   return ["action.plan", "decision.record"];
+}
+
+function structuralCompletionActions(events: readonly RunEvent[]): string[] {
+  const plans = events.flatMap((event) => {
+    if (event.type !== "action") return [];
+    const payload = actionPayloadSchema.parse(event.payload);
+    return payload.phase === "planned" ? [{ event, payload }] : [];
+  });
+  const terminals = events.flatMap((event) => {
+    if (event.type !== "action") return [];
+    const payload = actionPayloadSchema.parse(event.payload);
+    return payload.phase === "planned" ? [] : [{ event, payload }];
+  });
+  if (
+    plans.some(
+      ({ event }) =>
+        !terminals.some(({ payload }) => payload.actionId === event.id),
+    )
+  ) {
+    return ["invoke-tool", "action.complete"];
+  }
+
+  const recovered = new Set(
+    events.flatMap((event) => {
+      if (event.type !== "recovery") return [];
+      return [recoveryPayloadSchema.parse(event.payload).actionId];
+    }),
+  );
+  const unresolved = terminals.find(
+    ({ payload }) =>
+      payload.phase === "unknown" && !recovered.has(payload.actionId),
+  );
+  if (unresolved === undefined) return [];
+  return events.some(
+    (event) =>
+      event.type === "observation" &&
+      event.sequence > unresolved.event.sequence,
+  )
+    ? ["recovery.resolve"]
+    : ["action.plan:observation"];
 }
 
 function hasUnresolvedUnknown(events: readonly RunEvent[]): boolean {

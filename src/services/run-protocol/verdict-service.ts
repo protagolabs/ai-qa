@@ -143,7 +143,14 @@ export class VerdictService {
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
-      validateRunLifecycleHistory(events, this.runId);
+      const lifecycle = validateRunLifecycleHistory(events, this.runId);
+      if (lifecycle.current.payload.phase === "interrupted") {
+        throw new AiQaError(
+          "run.interrupted",
+          "Interrupted runs must be resumed or cancelled before verdict mutation",
+          { runEventId: lifecycle.current.event.id },
+        );
+      }
       const verdicts = validateVerdictHistory(events, workOrder);
       return {
         input: prepare(workOrder, events, verdicts),

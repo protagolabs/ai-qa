@@ -57,7 +57,6 @@ export async function finalizeRun(input: {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
     validateProtocolEvents(events, workOrder, runId);
     const verdicts = validateVerdictHistory(events, workOrder);
-    const effective = effectiveVerdictFrom(verdicts);
     const lifecycle = validateRunLifecycleHistory(events, runId);
     if (lifecycle.current.payload.phase === "cancelled") {
       throw new AiQaError(
@@ -66,7 +65,15 @@ export async function finalizeRun(input: {
         { runId },
       );
     }
+    if (lifecycle.current.payload.phase === "interrupted") {
+      throw new AiQaError(
+        "run.interrupted",
+        "Interrupted runs must be resumed before normal finalization",
+        { runId },
+      );
+    }
     if (lifecycle.current.payload.phase === "completed") {
+      const effective = effectiveVerdictFrom(verdicts);
       if (
         effective === undefined ||
         lifecycle.current.payload.verdictId !== effective.event.id
@@ -93,6 +100,7 @@ export async function finalizeRun(input: {
       runId,
       input.now,
     ).verifyAll();
+    const effective = effectiveVerdictFrom(verdicts);
     if (effective === undefined) {
       throw new AiQaError(
         "verdict.missing",
@@ -385,6 +393,12 @@ function validateNotVerified(input: {
       event.type === "action" &&
       actionPayloadSchema.safeParse(event.payload).data?.phase === "planned",
   );
+  const recoveryPlans = plans.filter((event) => {
+    const payload = actionPayloadSchema.parse(event.payload);
+    return (
+      payload.phase === "planned" && payload.recoveryForStepId !== undefined
+    );
+  });
   const indeterminateUnknown = input.events.some(
     (event) =>
       event.type === "recovery" &&
@@ -396,6 +410,7 @@ function validateNotVerified(input: {
     (input.verdict.reasonCode === "unknown_action" && indeterminateUnknown) ||
     (input.verdict.reasonCode === "budget_exhausted" &&
       (plans.length >= input.workOrder.budget.maxToolCalls ||
+        recoveryPlans.length >= input.workOrder.budget.maxRecoveryActions ||
         input.completionTime.getTime() >=
           new Date(input.workOrder.budget.deadline).getTime()));
   if (!reasonMatches) {
