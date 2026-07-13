@@ -2,6 +2,7 @@ import { Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 import { AiQaError } from "../core/errors.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerEvidenceCommands } from "./commands/evidence.js";
 import { registerInitCommands } from "./commands/init.js";
 import { registerRunCommands } from "./commands/run.js";
 import { registerSkillCommands } from "./commands/skill.js";
@@ -23,6 +24,7 @@ export function createProgram(context: CliContext): Command {
       outputError: () => undefined,
     });
   registerDoctorCommand(program, context);
+  registerEvidenceCommands(program, context);
   registerInitCommands(program, context);
   registerRunCommands(program, context);
   registerSkillCommands(program, context, (exitCode) => {
