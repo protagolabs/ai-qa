@@ -724,10 +724,11 @@ export function validateProtocolEvents(
   events: readonly RunEvent[],
   workOrder: WorkOrder,
   runId: string,
+  options: { evidenceParityAuthoritative?: boolean } = {},
 ): void {
   try {
-    const eventIds = new Set<string>();
-    const idempotencyKeys = new Set<string>();
+    const eventIdOwners = new Map<string, RunEvent["type"]>();
+    const idempotencyKeyOwners = new Map<string, RunEvent["type"]>();
     const plans = new Map<string, PlannedAction>();
     const terminals = new Map<string, TerminalAction>();
     const observations = new Map<string, RunEvent>();
@@ -742,11 +743,27 @@ export function validateProtocolEvents(
     let recoveryCount = 0;
 
     for (const [index, event] of events.entries()) {
-      requireSemantic(!eventIds.has(event.id));
-      eventIds.add(event.id);
+      const eventIdOwner = eventIdOwners.get(event.id);
+      requireSemantic(
+        eventIdOwner === undefined ||
+          (options.evidenceParityAuthoritative === true &&
+            eventIdOwner === "evidence" &&
+            event.type === "evidence"),
+      );
+      if (eventIdOwner === undefined) {
+        eventIdOwners.set(event.id, event.type);
+      }
       if (event.idempotencyKey !== undefined) {
-        requireSemantic(!idempotencyKeys.has(event.idempotencyKey));
-        idempotencyKeys.add(event.idempotencyKey);
+        const owner = idempotencyKeyOwners.get(event.idempotencyKey);
+        requireSemantic(
+          owner === undefined ||
+            (options.evidenceParityAuthoritative === true &&
+              owner === "evidence" &&
+              event.type === "evidence"),
+        );
+        if (owner === undefined) {
+          idempotencyKeyOwners.set(event.idempotencyKey, event.type);
+        }
       }
 
       switch (event.type) {
@@ -867,7 +884,10 @@ export function validateProtocolEvents(
           requireSemantic(
             payload.observationIds.every((id) => observations.has(id)),
           );
-          requireSemantic(!evidenceIds.has(payload.id));
+          requireSemantic(
+            options.evidenceParityAuthoritative === true ||
+              !evidenceIds.has(payload.id),
+          );
           requireProtocolMetadata(event, {
             actor: "ai-qa",
             tool: "ai-qa",

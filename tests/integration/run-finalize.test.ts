@@ -188,6 +188,32 @@ async function appendInterrupted(
   });
 }
 
+async function appendDuplicateTypedEvidenceEvent(
+  fixture: Awaited<ReturnType<typeof createRun>>,
+): Promise<void> {
+  const eventsPath = join(
+    fixture.projectRoot,
+    ".ai-qa",
+    "runs",
+    "run-1",
+    "events.jsonl",
+  );
+  const events = (await readFile(eventsPath, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const evidence = events.find((event) => event.type === "evidence");
+  if (evidence === undefined) throw new Error("missing evidence event");
+  events.push({
+    ...evidence,
+    sequence: events.length + 1,
+  });
+  await writeFile(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
+}
+
 describe("finalizeRun", () => {
   it("rejects duplicate evidence index records before finish", async () => {
     const fixture = await createRun();
@@ -213,6 +239,33 @@ describe("finalizeRun", () => {
         },
       ],
     });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
+  it("classifies duplicate typed evidence as an evidence integrity error", async () => {
+    const fixture = await createRun();
+    const support = await recordSupportedCriterion(fixture);
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Login verified",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [support.assertion.id],
+          evidenceIds: [support.evidence.id],
+        },
+      ],
+    });
+    await appendDuplicateTypedEvidenceEvent(fixture);
 
     await expect(
       finalizeRun({
@@ -371,6 +424,83 @@ describe("finalizeRun", () => {
         now,
       }),
     ).resolves.toEqual(result);
+  });
+
+  it("re-verifies evidence bytes on a completed finalize retry", async () => {
+    const fixture = await createRun();
+    const support = await recordSupportedCriterion(fixture);
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Login is supported by observation and screenshot evidence",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [support.assertion.id],
+          evidenceIds: [support.evidence.id],
+        },
+      ],
+    });
+    await finalizeRun({
+      projectRoot: fixture.projectRoot,
+      aiQaHome: fixture.aiQaHome,
+      runId: "run-1",
+      now,
+    });
+    await writeFile(
+      join(fixture.projectRoot, support.evidence.projectRelativePath),
+      Buffer.from([9, 9, 9]),
+    );
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
+  it("re-verifies exact parity on a completed finalize retry", async () => {
+    const fixture = await createRun();
+    const support = await recordSupportedCriterion(fixture);
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Login is supported by observation and screenshot evidence",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [support.assertion.id],
+          evidenceIds: [support.evidence.id],
+        },
+      ],
+    });
+    await finalizeRun({
+      projectRoot: fixture.projectRoot,
+      aiQaHome: fixture.aiQaHome,
+      runId: "run-1",
+      now,
+    });
+    const indexPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
   });
 
   it("rejects an otherwise supported pass after the frozen deadline", async () => {
@@ -723,6 +853,42 @@ describe("run lifecycle", () => {
       .filter((event) => event.type === "run")
       .map((event) => (event.payload as { phase: string }).phase);
     expect(phases).toEqual(["started"]);
+  });
+
+  it("classifies duplicate typed evidence before resuming", async () => {
+    const fixture = await createRun();
+    await recordSupportedCriterion(fixture);
+    await appendDuplicateTypedEvidenceEvent(fixture);
+
+    await expect(
+      resumeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+
+    const phases = (await fixture.repository.journal("run-1").readAll())
+      .filter((event) => event.type === "run")
+      .map((event) => (event.payload as { phase: string }).phase);
+    expect(phases).toEqual(["started"]);
+  });
+
+  it("keeps duplicate typed evidence fatal for normal protocol mutation", async () => {
+    const fixture = await createRun();
+    await recordSupportedCriterion(fixture);
+    await appendDuplicateTypedEvidenceEvent(fixture);
+
+    await expect(
+      fixture.protocol.planAction({
+        idempotencyKey: "plan-after-duplicate-evidence",
+        kind: "observation",
+        intent: "Observe after duplicate evidence corruption",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Current page" },
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
   it("requires a fresh observation after resume before interaction", async () => {

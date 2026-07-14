@@ -62,6 +62,12 @@ export async function finalizeRun(input: {
   const repository = new RunRepository(trusted.projectRoot, input.now);
   return repository.journal(runId).appendPrepared(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
+    const evidence = await new EvidenceRepository(
+      trusted.projectRoot,
+      runId,
+      input.now,
+    ).verifyAll();
+    validateEvidenceParity(events, evidence, runId);
     validateProtocolEvents(events, workOrder, runId);
     const verdicts = validateVerdictHistory(events, workOrder);
     const lifecycle = validateRunLifecycleHistory(events, runId);
@@ -111,12 +117,6 @@ export async function finalizeRun(input: {
       validateRegressionFidelity(workOrder, [...events]);
     }
 
-    const evidence = await new EvidenceRepository(
-      trusted.projectRoot,
-      runId,
-      input.now,
-    ).verifyAll();
-    validateEvidenceParity(events, evidence, runId);
     const effective = effectiveVerdictFrom(verdicts);
     if (effective === undefined) {
       throw new AiQaError(

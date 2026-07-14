@@ -393,6 +393,32 @@ async function createCompletedUnknownRun(): Promise<{
   return { projectRoot, plannedActionId: planned.id };
 }
 
+async function appendDuplicateTypedEvidenceEvent(
+  projectRoot: string,
+): Promise<void> {
+  const eventsPath = join(
+    projectRoot,
+    ".ai-qa",
+    "runs",
+    "run-source",
+    "events.jsonl",
+  );
+  const events = (await readFile(eventsPath, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const evidence = events.find((event) => event.type === "evidence");
+  if (evidence === undefined) throw new Error("missing evidence event");
+  events.push({
+    ...evidence,
+    sequence: events.length + 1,
+  });
+  await writeFile(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
+}
+
 describe("case promotion", () => {
   it("validates case storage before acquiring activation locks", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
@@ -831,6 +857,99 @@ describe("case promotion", () => {
         now: runNow,
       }),
     ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+  });
+
+  it("keeps duplicate typed evidence as an inactive draft", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
+    await appendDuplicateTypedEvidenceEvent(projectRoot);
+
+    const draft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-source",
+      input: {
+        caseId: "duplicate-typed-source-evidence",
+        title: "Duplicate typed source evidence",
+        webSteps: [
+          {
+            sourceActionId: plannedActionId,
+            intent: "Submit valid credentials",
+            target: {
+              description: "Login button",
+              stability: "stable",
+              stabilityRationale: "Unique application-owned control",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "Visible account text",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+
+    expect(draft.promotion.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "case.evidence_invalid" }),
+      ]),
+    );
+    await expect(
+      activateCaseRevision({
+        projectRoot,
+        caseId: draft.caseId,
+        revision: draft.revision,
+        reviewConfirmed: true,
+        now: runNow,
+      }),
+    ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+  });
+
+  it("does not let invalid evidence hide unrelated protocol corruption", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
+    await appendDuplicateTypedEvidenceEvent(projectRoot);
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-source",
+      "events.jsonl",
+    );
+    const events = (await readFile(eventsPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const observation = events.find((event) => event.type === "observation");
+    if (observation === undefined) throw new Error("missing observation event");
+    observation.actor = "ai-qa";
+    await writeFile(
+      eventsPath,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(
+      draftCaseFromRun({
+        projectRoot,
+        runId: "run-source",
+        input: {
+          caseId: "corrupt-protocol-with-invalid-evidence",
+          title: "Corrupt protocol with invalid evidence",
+          webSteps: [
+            {
+              sourceActionId: plannedActionId,
+              intent: "Submit valid credentials",
+              target: {
+                description: "Login button",
+                stability: "stable",
+                stabilityRationale: "Unique application-owned control",
+              },
+              expectedState: "Authenticated home is visible",
+              assertionStrategy: "Visible account text",
+              evidenceCheckpoints: ["post-action-screenshot"],
+            },
+          ],
+          excludedActions: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
   it("rejects an assertion checkpoint that cites proof from before another step", async () => {

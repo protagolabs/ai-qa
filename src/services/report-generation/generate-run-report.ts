@@ -159,6 +159,12 @@ async function buildVerifiedRunReport(
         { runId, projectId: workOrder.projectId },
       );
     }
+    const evidence = await new EvidenceRepository(
+      trusted.projectRoot,
+      runId,
+      input.now,
+    ).verifyAll();
+    validateEvidenceParity(events, evidence, runId);
     validateProtocolEvents(events, workOrder, runId);
     const effective = effectiveVerdictFrom(
       validateVerdictHistory(events, workOrder),
@@ -197,12 +203,6 @@ async function buildVerifiedRunReport(
         input.now,
       );
     }
-    const evidence = await new EvidenceRepository(
-      trusted.projectRoot,
-      runId,
-      input.now,
-    ).verifyAll();
-    validateEvidenceParity(events, evidence, runId);
     if (phase === "completed") {
       validateFinalization({
         workOrder,

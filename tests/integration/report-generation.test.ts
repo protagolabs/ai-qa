@@ -214,6 +214,32 @@ async function completedRun(
   return { ...project, evidence, repository };
 }
 
+async function appendDuplicateTypedEvidenceEvent(
+  projectRoot: string,
+): Promise<void> {
+  const eventsPath = join(
+    projectRoot,
+    ".ai-qa",
+    "runs",
+    "run-1",
+    "events.jsonl",
+  );
+  const events = (await readFile(eventsPath, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const evidence = events.find((event) => event.type === "evidence");
+  if (evidence === undefined) throw new Error("missing evidence event");
+  events.push({
+    ...evidence,
+    sequence: events.length + 1,
+  });
+  await writeFile(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
+}
+
 describe("generateRunReport", () => {
   it("writes configured project-local JSON and Markdown with deterministic identity", async () => {
     const fixture = await completedRun();
@@ -408,6 +434,15 @@ describe("generateRunReport", () => {
       ".ai-qa/evidence/run-1/index.jsonl",
     );
     await appendFile(indexPath, await readFile(indexPath, "utf8"));
+
+    await expect(
+      generateRunReport({ ...fixture, runId: "run-1", now: generatedNow }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
+  it("classifies duplicate typed evidence before report generation", async () => {
+    const fixture = await completedRun();
+    await appendDuplicateTypedEvidenceEvent(fixture.projectRoot);
 
     await expect(
       generateRunReport({ ...fixture, runId: "run-1", now: generatedNow }),

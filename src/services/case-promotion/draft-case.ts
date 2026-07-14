@@ -227,7 +227,15 @@ async function readCompletedExploratoryRun(
         { runId },
       );
     }
-    validateProtocolEvents(events, workOrder, runId);
+    const evidenceResult = await readVerifiedEvidence(
+      projectRoot,
+      runId,
+      events,
+      now,
+    );
+    validateProtocolEvents(events, workOrder, runId, {
+      evidenceParityAuthoritative: !evidenceResult.valid,
+    });
     const lifecycle = validateRunLifecycleHistory(events, runId);
     if (lifecycle.current.payload.phase !== "completed") {
       throw new AiQaError(
@@ -249,12 +257,6 @@ async function readCompletedExploratoryRun(
         { runId },
       );
     }
-    const evidenceResult = await readVerifiedEvidence(
-      projectRoot,
-      runId,
-      events,
-      now,
-    );
     return {
       workOrder,
       events,

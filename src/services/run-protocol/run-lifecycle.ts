@@ -44,16 +44,16 @@ export async function resumeRun(input: {
 
   const first = await journal.appendPrepared(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
-    validateProtocolEvents(events, workOrder, runId);
-    validateVerdictHistory(events, workOrder);
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    requireMutableLifecycle(lifecycle.current);
     const evidence = await new EvidenceRepository(
       trusted.projectRoot,
       runId,
       input.now,
     ).verifyAll();
     validateEvidenceParity(events, evidence, runId);
+    validateProtocolEvents(events, workOrder, runId);
+    validateVerdictHistory(events, workOrder);
+    const lifecycle = validateRunLifecycleHistory(events, runId);
+    requireMutableLifecycle(lifecycle.current);
     const append =
       lifecycle.current.payload.phase === "interrupted"
         ? resumedAppend(runId, lifecycle.current.event.id)
@@ -64,6 +64,12 @@ export async function resumeRun(input: {
   if (isRunPhase(first, "interrupted")) {
     await journal.appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(runId);
+      const evidence = await new EvidenceRepository(
+        trusted.projectRoot,
+        runId,
+        input.now,
+      ).verifyAll();
+      validateEvidenceParity(events, evidence, runId);
       validateProtocolEvents(events, workOrder, runId);
       validateVerdictHistory(events, workOrder);
       const lifecycle = validateRunLifecycleHistory(events, runId);

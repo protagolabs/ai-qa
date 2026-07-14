@@ -59,4 +59,17 @@ describe("validateEvidenceParity", () => {
     }
     expect(thrown).toMatchObject({ code: "evidence.integrity_error" });
   });
+
+  it("rejects duplicate typed evidence records", () => {
+    const duplicate = runEventSchema.parse({
+      ...event,
+      sequence: 2,
+    });
+
+    expect(() =>
+      validateEvidenceParity([event, duplicate], [record], "run-1"),
+    ).toThrowError(
+      expect.objectContaining({ code: "evidence.integrity_error" }),
+    );
+  });
 });
