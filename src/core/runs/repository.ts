@@ -130,7 +130,15 @@ export class RunRepository {
         throw new Error("work order hash mismatch");
       }
       return deepFreezeWorkOrder(workOrder) as WorkOrder;
-    } catch {
+    } catch (error: unknown) {
+      if (
+        isNodeError(error, "ENOENT") ||
+        (error instanceof AiQaError &&
+          error.code === "storage.integrity_error" &&
+          error.details.causeCode === "ENOENT")
+      ) {
+        throw new AiQaError("run.not_found", "Run does not exist", { runId });
+      }
       throw new AiQaError(
         "work_order.integrity_error",
         "Work order integrity verification failed",

@@ -621,6 +621,39 @@ describe("EvidenceRepository", () => {
 });
 
 describe("registerEvidence", () => {
+  it("preserves run.not_found when evidence targets a missing run", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "missing-run.png");
+    await writeFile(source, Buffer.from("missing-run-image"));
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-missing",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "missing-run-evidence",
+        },
+        criterionIds: [],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({
+      code: "run.not_found",
+      message: "Run does not exist",
+      details: { runId: "run-missing" },
+    });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence", "run-missing")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects forged protocol metadata before mutating evidence storage", async () => {
     const { projectRoot, aiQaHome, captureActionId, runRepository } =
       await createTrustedRun();
@@ -1217,6 +1250,59 @@ describe("registerEvidence", () => {
 });
 
 describe("evidence add CLI", () => {
+  it("returns one path-safe run.not_found error for a missing run", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "missing-run-cli.png");
+    await writeFile(source, Buffer.from("missing-run-cli-image"));
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            mediaType: "image/png",
+            sourceTool: "chrome-devtools-mcp",
+            sensitivity: "internal",
+            evidenceKinds: ["post-action-screenshot"],
+            captureActionId,
+            idempotencyKey: "missing-run-cli-evidence",
+            criterionIds: [],
+            observationIds: [],
+          }),
+        ),
+    });
+
+    const exitCode = await runCli(
+      [
+        "evidence",
+        "add",
+        "--run",
+        "run-missing",
+        "--file",
+        source,
+        "--stdin-json",
+        "--project",
+        projectRoot,
+      ],
+      captured.context,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(captured.stdout).toEqual([]);
+    expect(captured.stderr).toHaveLength(1);
+    expect(JSON.parse(captured.stderr[0]!)).toEqual({
+      error: {
+        code: "run.not_found",
+        message: "Run does not exist",
+        details: { runId: "run-missing" },
+      },
+    });
+    expect(captured.stderr[0]).not.toContain(projectRoot);
+    expect(captured.stderr[0]).not.toContain(source);
+    expect(captured.stderr[0]?.toLowerCase()).not.toContain("stack");
+    expect(captured.stderr[0]?.toLowerCase()).not.toContain("path");
+  });
+
   it("resolves a relative source and registers it through the trusted command", async () => {
     const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
     await writeFile(join(projectRoot, "screen.png"), "original-image");

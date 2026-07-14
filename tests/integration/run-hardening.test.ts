@@ -278,6 +278,33 @@ describe("trusted exploratory start boundary", () => {
 });
 
 describe("strict work-order integrity", () => {
+  it("preserves run.not_found for a missing work order", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-missing-order-"));
+    const repository = new RunRepository(projectRoot, fixedNow);
+
+    await expect(
+      repository.readVerifiedWorkOrder("run-missing"),
+    ).rejects.toMatchObject({
+      code: "run.not_found",
+      message: "Run does not exist",
+      details: { runId: "run-missing" },
+    });
+  });
+
+  it("does not misreport a symlinked work order as missing", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-symlinked-order-"));
+    const { repository } = await createRepositoryRun(projectRoot);
+    const workOrderPath = join(runDirectory(projectRoot), "work-order.json");
+    const outsidePath = join(projectRoot, "outside-work-order.json");
+    await writeFile(outsidePath, await readFile(workOrderPath, "utf8"));
+    await rm(workOrderPath);
+    await symlink(outsidePath, workOrderPath);
+
+    await expect(
+      repository.readVerifiedWorkOrder("run-1"),
+    ).rejects.toMatchObject({ code: "work_order.integrity_error" });
+  });
+
   it.each([
     [
       "unknown fields",
