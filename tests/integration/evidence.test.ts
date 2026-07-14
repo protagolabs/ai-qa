@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
+import { sha256Canonical } from "../../src/core/canonical-json.js";
 import {
   EvidenceRepository,
   registerRawEvidenceInputSchema,
@@ -620,6 +621,64 @@ describe("EvidenceRepository", () => {
 });
 
 describe("registerEvidence", () => {
+  it("rejects forged protocol metadata before mutating evidence storage", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "forged-history.png");
+    await writeFile(source, Buffer.from("forged-history-image"));
+    const decisionPayload = {
+      kind: "semantic" as const,
+      rationale: "Schema-valid payload with forged event metadata",
+      relatedIds: [],
+    };
+    const journal = runRepository.journal("run-1");
+    await journal.append({
+      type: "decision",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "chrome-devtools-mcp",
+      idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+      payload: decisionPayload,
+      relatedIds: [captureActionId],
+    });
+    const journalPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const journalBefore = await readFile(journalPath, "utf8");
+    const evidenceRoot = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+    );
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "forged-history-evidence",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    await expect(readFile(journalPath, "utf8")).resolves.toBe(journalBefore);
+    await expect(access(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("repairs an indexed registration by appending one typed evidence event", async () => {
     const { projectRoot, aiQaHome, runRepository } = await createTrustedRun();
     const source = join(projectRoot, "screen.png");
@@ -987,6 +1046,7 @@ describe("registerEvidence", () => {
       actor: "agent",
       platform: "web",
       tool: "chrome-devtools-mcp",
+      idempotencyKey: `observation:${observationAction.id}`,
       payload: {
         summary: "Authenticated home is visible",
         state: { url: "https://example.com/home" },
@@ -1028,7 +1088,7 @@ describe("registerEvidence", () => {
     ]);
   });
 
-  it("rejects a non-evidence idempotency collision before storage", async () => {
+  it("rejects a forged non-evidence idempotency collision before storage", async () => {
     const { projectRoot, aiQaHome, captureActionId, runRepository } =
       await createTrustedRun();
     const source = join(projectRoot, "screen.png");
@@ -1061,7 +1121,7 @@ describe("registerEvidence", () => {
         observationIds: [],
         now: fixedNow,
       }),
-    ).rejects.toMatchObject({ code: "event.idempotency_conflict" });
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
     await expect(
       access(join(projectRoot, ".ai-qa", "evidence")),
     ).rejects.toMatchObject({ code: "ENOENT" });
@@ -1151,7 +1211,7 @@ describe("registerEvidence", () => {
     );
 
     await expect(registerEvidence(input)).rejects.toMatchObject({
-      code: "event.idempotency_conflict",
+      code: "run_protocol.integrity_error",
     });
     expect(
       await readdir(join(projectRoot, ".ai-qa", "evidence", "run-1", "files")),

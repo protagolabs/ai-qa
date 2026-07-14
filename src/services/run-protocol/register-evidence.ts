@@ -30,6 +30,7 @@ import {
 import { WEB_CONTROLLER } from "../../core/tools.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { validateProtocolEvents } from "./run-protocol-service.js";
 
 const citationInputSchema = z
   .object({
@@ -58,10 +59,11 @@ export async function registerEvidence(input: {
     observationIds: input.observationIds,
   });
   const runRepository = new RunRepository(trusted.projectRoot, input.now);
-  const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
-  requireKnownCriteria(workOrder, citations.criterionIds);
   const journal = runRepository.journal(input.runId);
   const record = await journal.appendPrepared(async (events) => {
+    const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
+    validateProtocolEvents(events, workOrder, input.runId);
+    requireKnownCriteria(workOrder, citations.criterionIds);
     const lifecycle = validateRunLifecycleHistory(events, input.runId);
     if (lifecycle.current.payload.phase === "interrupted") {
       throw new AiQaError(
