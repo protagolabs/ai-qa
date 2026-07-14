@@ -42,7 +42,12 @@ export class TrustStore {
     await mkdir(this.aiQaHome, { recursive: true, mode: 0o700 });
     const release = await lockfile.lock(this.aiQaHome, {
       realpath: false,
-      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+      retries: {
+        retries: 15,
+        minTimeout: 10,
+        maxTimeout: 1_000,
+        randomize: true,
+      },
     });
     try {
       const current = await this.read();

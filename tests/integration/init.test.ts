@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import lockfile from "proper-lockfile";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
@@ -337,6 +338,27 @@ describe("trust confirm CLI", () => {
 });
 
 describe("machine trust boundary", () => {
+  it("waits for a transiently contended trust lock", async () => {
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-trust-home-"));
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-trust-project-"));
+    const identity = await readRepositoryIdentity(projectRoot);
+    const store = new TrustStore(aiQaHome);
+    const release = await lockfile.lock(aiQaHome, { realpath: false });
+    const delayedRelease = new Promise<void>((resolve, reject) => {
+      setTimeout(() => {
+        release().then(resolve, reject);
+      }, 2_500);
+    });
+
+    try {
+      await store.trust(identity, new Date("2026-07-13T00:00:00.000Z"));
+    } finally {
+      await delayedRelease;
+    }
+
+    await expect(store.isTrusted(identity)).resolves.toBe(true);
+  });
+
   it("preserves every concurrent trust confirmation", async () => {
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-trust-home-"));
     const roots = await Promise.all(
