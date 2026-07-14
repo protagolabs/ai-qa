@@ -13,6 +13,7 @@ import type {
   RunEvent,
   WorkOrder,
 } from "../../core/runs/schema.js";
+import { effectiveInteractionSuccesses } from "./effective-interactions.js";
 
 export interface RegressionFidelityResult {
   requiredStepIds: string[];
@@ -39,6 +40,11 @@ interface TerminalEntry {
   >;
 }
 
+interface SuccessfulNormalInteraction {
+  terminal: TerminalEntry;
+  boundaryEvent: RunEvent;
+}
+
 export function validateRegressionFidelity(
   workOrder: WorkOrder,
   events: RunEvent[],
@@ -61,14 +67,15 @@ export function validateRegressionFidelity(
   const plans = new Map<string, PlannedEntry>();
   const terminals = new Map<string, TerminalEntry>();
   const normalPlans = new Map<string, PlannedEntry[]>();
-  const successfulNormal = new Map<string, TerminalEntry>();
+  const successfulNormal = new Map<string, SuccessfulNormalInteraction>();
   const recoveryResolutions = new Map<
     string,
     ReturnType<typeof recoveryPayloadSchema.parse>
   >();
   let recoveryActionCount = 0;
+  let recoveryHistoryValid = true;
 
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     if (event.type === "action") {
       const payload = actionPayloadSchema.parse(event.payload);
       if (payload.phase !== "planned") {
@@ -94,7 +101,10 @@ export function validateRegressionFidelity(
               { stepId: planned.payload.stepId },
             );
           }
-          successfulNormal.set(planned.payload.stepId, terminal);
+          successfulNormal.set(planned.payload.stepId, {
+            terminal,
+            boundaryEvent: event,
+          });
         }
         continue;
       }
@@ -146,14 +156,21 @@ export function validateRegressionFidelity(
 
     if (event.type === "recovery") {
       const payload = recoveryPayloadSchema.parse(event.payload);
+      if (recoveryResolutions.has(payload.actionId)) {
+        recoveryHistoryValid = false;
+      }
       recoveryResolutions.set(payload.actionId, payload);
       if (payload.resolution === "applied") {
         const planned = plans.get(payload.actionId);
         const terminal = terminals.get(payload.actionId);
+        const effective = effectiveInteractionSuccesses(
+          events.slice(0, index + 1),
+        ).find((success) => success.actionId === payload.actionId);
         if (
           planned?.payload.kind === "interaction" &&
           planned.payload.recoveryForStepId === undefined &&
-          terminal?.payload.phase === "unknown"
+          terminal?.payload.phase === "unknown" &&
+          effective !== undefined
         ) {
           if (successfulNormal.has(planned.payload.stepId)) {
             throw replayError(
@@ -162,7 +179,12 @@ export function validateRegressionFidelity(
               { stepId: planned.payload.stepId },
             );
           }
-          successfulNormal.set(planned.payload.stepId, terminal);
+          successfulNormal.set(planned.payload.stepId, {
+            terminal,
+            boundaryEvent: effective.boundaryEvent,
+          });
+        } else if (planned?.payload.recoveryForStepId === undefined) {
+          recoveryHistoryValid = false;
         }
       }
     }
@@ -200,7 +222,8 @@ export function validateRegressionFidelity(
       completedStepIds.length === required.length &&
       unresolvedActionIds.length === 0 &&
       checkpointsLinked &&
-      budgetsValid,
+      budgetsValid &&
+      recoveryHistoryValid,
   };
 }
 
@@ -216,7 +239,7 @@ function validateNormalPlan(input: {
     ReturnType<typeof recoveryPayloadSchema.parse>
   >;
   plans: ReadonlyMap<string, PlannedEntry>;
-  successfulNormal: ReadonlyMap<string, TerminalEntry>;
+  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>;
 }): void {
   const expected = input.required.find(
     (step) => !input.successfulNormal.has(step.id),
@@ -324,7 +347,7 @@ function validateRecoveryPlan(input: {
 function validateSupportingPlan(
   stepId: string,
   required: RequiredStep[],
-  successfulNormal: ReadonlyMap<string, TerminalEntry>,
+  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>,
 ): void {
   const currentIndex = required.findIndex(
     (step) => !successfulNormal.has(step.id),
@@ -351,7 +374,7 @@ function hasLinkedCheckpoints(
   events: RunEvent[],
   plans: ReadonlyMap<string, PlannedEntry>,
   terminals: ReadonlyMap<string, TerminalEntry>,
-  successfulNormal: ReadonlyMap<string, TerminalEntry>,
+  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>,
 ): boolean {
   const success = successfulNormal.get(step.id);
   if (success === undefined) return false;
@@ -363,10 +386,10 @@ function hasLinkedCheckpoints(
       const terminal = terminals.get(payload.actionId);
       return payload.stepId === step.id &&
         plan?.payload.kind === "observation" &&
-        plan.event.sequence > success.event.sequence &&
+        plan.event.sequence > success.boundaryEvent.sequence &&
         terminal?.payload.phase === "completed" &&
-        terminal.event.sequence > success.event.sequence &&
-        event.sequence > success.event.sequence
+        terminal.event.sequence > success.boundaryEvent.sequence &&
+        event.sequence > success.boundaryEvent.sequence
         ? [[event.id, event] as const]
         : [];
     }),
@@ -383,10 +406,10 @@ function hasLinkedCheckpoints(
     if (
       capture?.payload.kind !== "evidence-capture" ||
       capture.payload.stepId !== step.id ||
-      capture.event.sequence <= success.event.sequence ||
+      capture.event.sequence <= success.boundaryEvent.sequence ||
       terminal?.payload.phase !== "completed" ||
-      terminal.event.sequence <= success.event.sequence ||
-      event.sequence <= success.event.sequence ||
+      terminal.event.sequence <= success.boundaryEvent.sequence ||
+      event.sequence <= success.boundaryEvent.sequence ||
       !payload.observationIds.some((id) => observations.has(id))
     ) {
       continue;
@@ -398,7 +421,7 @@ function hasLinkedCheckpoints(
   for (const event of events) {
     if (
       event.type !== "assertion" ||
-      event.sequence <= success.event.sequence
+      event.sequence <= success.boundaryEvent.sequence
     ) {
       continue;
     }

@@ -62,6 +62,7 @@ async function createCompletedPassRun(
   options: {
     extraInteraction?: boolean;
     mislinkedStructuredProof?: boolean;
+    appliedUnknown?: boolean;
   } = {},
 ): Promise<{
   projectRoot: string;
@@ -178,11 +179,44 @@ async function createCompletedPassRun(
       selector: '[data-testid="login"]',
     },
   });
-  await protocol.completeAction({
-    actionId: planned.id,
-    phase: "completed",
-    toolResult: { summary: "Credentials submitted" },
-  });
+  const stepId = (planned.payload as { stepId: string }).stepId;
+  if (options.appliedUnknown === true) {
+    await protocol.completeAction({
+      actionId: planned.id,
+      phase: "unknown",
+      toolResult: { summary: "The login result was ambiguous" },
+    });
+    const recoveryObservationAction = await protocol.planAction({
+      idempotencyKey: "observe-applied-login-recovery",
+      kind: "observation",
+      intent: "Observe whether the ambiguous login applied",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+      stepId,
+    });
+    await protocol.completeAction({
+      actionId: recoveryObservationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Observed the ambiguous login result" },
+    });
+    const recoveryObservation = await protocol.addObservation({
+      actionId: recoveryObservationAction.id,
+      summary: "Authenticated home confirms the login applied",
+      state: { applied: true },
+    });
+    await protocol.resolveUnknownAction({
+      actionId: planned.id,
+      resolution: "applied",
+      observationId: recoveryObservation.id,
+      rationale: "Fresh same-step state confirms the login was applied",
+    });
+  } else {
+    await protocol.completeAction({
+      actionId: planned.id,
+      phase: "completed",
+      toolResult: { summary: "Credentials submitted" },
+    });
+  }
   const extraAction =
     options.extraInteraction === true
       ? await protocol.planAction({
@@ -200,7 +234,6 @@ async function createCompletedPassRun(
       toolResult: { summary: "Help opened and exploration continued" },
     });
   }
-  const stepId = (planned.payload as { stepId: string }).stepId;
   const observationAction = await protocol.planAction({
     idempotencyKey: "observe-authenticated-home",
     kind: "observation",
@@ -1002,6 +1035,57 @@ describe("case promotion", () => {
         revision: 1,
       }),
     ).rejects.toMatchObject({ code: "case.content_hash_mismatch" });
+  });
+
+  it("activates a pass whose interaction is confirmed by an applied recovery", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun({
+      appliedUnknown: true,
+    });
+    const draft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-source",
+      input: {
+        caseId: "applied-unknown-login",
+        title: "Applied unknown login",
+        webSteps: [
+          {
+            sourceActionId: plannedActionId,
+            intent: "Submit valid credentials",
+            target: {
+              description: "Login button",
+              selector: '[data-testid="login"]',
+              stability: "stable",
+              stabilityRationale: "Unique application-owned data-testid",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "URL and visible account text",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+
+    expect(draft.promotion.validationIssues).toEqual([]);
+    await expect(
+      validateCaseRevision({
+        projectRoot,
+        caseId: draft.caseId,
+        revision: draft.revision,
+      }),
+    ).resolves.toMatchObject({ valid: true, issues: [] });
+    await expect(
+      activateCaseRevision({
+        projectRoot,
+        caseId: draft.caseId,
+        revision: draft.revision,
+        reviewConfirmed: true,
+        now: runNow,
+      }),
+    ).resolves.toMatchObject({
+      caseId: draft.caseId,
+      revision: draft.revision,
+    });
   });
 
   it("keeps a duplicate-index source as an inactive draft", async () => {

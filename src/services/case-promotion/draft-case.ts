@@ -24,6 +24,7 @@ import { RunRepository } from "../../core/runs/repository.js";
 import type { RunEvent, WorkOrder } from "../../core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../core/tools.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
+import { effectiveInteractionSuccesses } from "../run-protocol/effective-interactions.js";
 import { validateFinalization } from "../run-protocol/finalize-run.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
@@ -597,20 +598,17 @@ function proofKindsForSteps(
         : [];
     }),
   );
-  const successfulInteractionByStep = new Map(
-    [...plannedById.values()].flatMap(({ event, payload }) => {
-      if (
-        payload.kind !== "interaction" ||
-        payload.recoveryForStepId !== undefined
-      ) {
-        return [];
-      }
-      const terminal = completedByActionId.get(event.id);
-      return terminal === undefined
-        ? []
-        : [[payload.stepId, terminal] as const];
-    }),
-  );
+  const successfulInteractionByStep = new Map<string, RunEvent>();
+  for (const success of effectiveInteractionSuccesses(events)) {
+    if (success.planPayload.recoveryForStepId !== undefined) continue;
+    const latest = successfulInteractionByStep.get(success.stepId);
+    if (
+      latest === undefined ||
+      success.boundaryEvent.sequence > latest.sequence
+    ) {
+      successfulInteractionByStep.set(success.stepId, success.boundaryEvent);
+    }
+  }
   const observationsByStep = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.type !== "observation") continue;

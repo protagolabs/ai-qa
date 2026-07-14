@@ -7,6 +7,7 @@ import {
 } from "../../core/runs/event-payloads.js";
 import type { RunEvent } from "../../core/runs/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
+import { effectiveInteractionSuccesses } from "./effective-interactions.js";
 
 export function validatePassEvidenceFreshness(
   events: readonly RunEvent[],
@@ -33,13 +34,19 @@ export function validatePassEvidenceFreshness(
         : [];
     }),
   );
+  const interactionSteps = new Set(
+    [...plans.values()].flatMap(({ payload }) =>
+      payload.kind === "interaction" ? [payload.stepId] : [],
+    ),
+  );
   const latestInteractionByStep = new Map<string, RunEvent>();
-  for (const [actionId, event] of completedByActionId) {
-    const plan = plans.get(actionId);
-    if (plan?.payload.kind !== "interaction") continue;
-    const latest = latestInteractionByStep.get(plan.payload.stepId);
-    if (latest === undefined || event.sequence > latest.sequence) {
-      latestInteractionByStep.set(plan.payload.stepId, event);
+  for (const success of effectiveInteractionSuccesses(events)) {
+    const latest = latestInteractionByStep.get(success.stepId);
+    if (
+      latest === undefined ||
+      success.boundaryEvent.sequence > latest.sequence
+    ) {
+      latestInteractionByStep.set(success.stepId, success.boundaryEvent);
     }
   }
   const evidenceById = new Map(
@@ -69,14 +76,19 @@ export function validatePassEvidenceFreshness(
       if (stepId === undefined) {
         throw staleEvidence(assertion.event.id);
       }
+      if (
+        interactionSteps.has(stepId) &&
+        !latestInteractionByStep.has(stepId)
+      ) {
+        throw staleEvidence(assertion.event.id);
+      }
       validateObservations({
         eventsById: byId,
         plans,
         completedByActionId,
         observationIds: assertion.payload.observationIds,
         stepId,
-        freshnessSequence:
-          latestInteractionByStep.get(stepId)?.sequence ?? 0,
+        freshnessSequence: latestInteractionByStep.get(stepId)?.sequence ?? 0,
         beforeSequence: assertion.event.sequence,
         assertionId: assertion.event.id,
       });

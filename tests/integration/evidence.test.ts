@@ -649,12 +649,7 @@ describe("registerEvidence", () => {
       "events.jsonl",
     );
     const journalBefore = await readFile(journalPath, "utf8");
-    const evidenceRoot = join(
-      projectRoot,
-      ".ai-qa",
-      "evidence",
-      "run-1",
-    );
+    const evidenceRoot = join(projectRoot, ".ai-qa", "evidence", "run-1");
 
     await expect(
       registerEvidence({
@@ -676,7 +671,9 @@ describe("registerEvidence", () => {
       }),
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
     await expect(readFile(journalPath, "utf8")).resolves.toBe(journalBefore);
-    await expect(access(evidenceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(evidenceRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("repairs an indexed registration by appending one typed evidence event", async () => {
