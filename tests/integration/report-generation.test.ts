@@ -1,4 +1,5 @@
 import {
+  access,
   appendFile,
   mkdir,
   mkdtemp,
@@ -88,6 +89,7 @@ async function completedRun(
   options: {
     formats?: Array<"markdown" | "json">;
     detail?: "summary" | "full";
+    preActionEvidenceLaundering?: boolean;
     verdictSummary?: string;
   } = {},
 ) {
@@ -178,6 +180,27 @@ async function completedRun(
     observationIds: [observation.id],
     now: eventNow,
   });
+  const interaction =
+    options.preActionEvidenceLaundering === true
+      ? await protocol.planAction({
+          idempotencyKey: "submit-after-stale-evidence",
+          kind: "interaction",
+          intent: "Submit valid credentials",
+          tool: "chrome-devtools-mcp",
+          target: { description: "Login button" },
+        })
+      : undefined;
+  if (interaction !== undefined) {
+    await protocol.completeAction({
+      actionId: interaction.id,
+      phase: "completed",
+      toolResult: { summary: "Credentials submitted" },
+    });
+  }
+  const assertionStepId =
+    interaction === undefined
+      ? stepId
+      : (interaction.payload as { stepId: string }).stepId;
   const assertion = await protocol.recordAssertion({
     criterionId: "authenticated-home-visible",
     status: "satisfied",
@@ -186,14 +209,14 @@ async function completedRun(
     expected: "Authenticated home is visible",
     observationIds: [observation.id],
     evidenceIds: [evidence.id],
-    stepId,
+    stepId: assertionStepId,
   });
   await protocol.recordDecision({
     kind: "semantic",
     rationale: "The authenticated shell is the success state",
     relatedIds: [assertion.id],
   });
-  await new VerdictService(
+  const verdict = await new VerdictService(
     project.projectRoot,
     project.aiQaHome,
     "run-1",
@@ -210,7 +233,19 @@ async function completedRun(
       },
     ],
   });
-  await finalizeRun({ ...project, runId: "run-1", now: eventNow });
+  if (options.preActionEvidenceLaundering === true) {
+    await repository.journal("run-1").append({
+      type: "run",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "finish:run-1",
+      payload: { phase: "completed", verdictId: verdict.id },
+      relatedIds: [verdict.id],
+    });
+  } else {
+    await finalizeRun({ ...project, runId: "run-1", now: eventNow });
+  }
   return { ...project, evidence, repository };
 }
 
@@ -524,6 +559,30 @@ describe("generateRunReport", () => {
     await expect(
       generateRunReport({ ...project, runId: "run-1", now: generatedNow }),
     ).rejects.toMatchObject({ code: "run.action_required" });
+  });
+
+  it("rejects completed history with pre-action evidence before writing reports", async () => {
+    const project = await completedRun({
+      preActionEvidenceLaundering: true,
+    });
+
+    await expect(
+      exportProjectLocalRunReport({
+        ...project,
+        runId: "run-1",
+        now: generatedNow,
+      }),
+    ).rejects.toMatchObject({
+      code: "verdict.stale_post_action_evidence",
+    });
+    await expect(
+      generateRunReport({ ...project, runId: "run-1", now: generatedNow }),
+    ).rejects.toMatchObject({
+      code: "verdict.stale_post_action_evidence",
+    });
+    await expect(
+      access(join(project.projectRoot, ".ai-qa", "reports", "runs", "run-1")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reapplies the pass deadline gate to the terminal event timestamp", async () => {

@@ -390,6 +390,108 @@ describe("finalizeRun", () => {
     ).rejects.toMatchObject({ code: "verdict.unsupported_pass" });
   });
 
+  it("rejects pre-action evidence laundered as post-action proof", async () => {
+    const fixture = await createRun();
+    const initialObservationAction = await fixture.protocol.planAction({
+      idempotencyKey: "observe-initial-login-state",
+      kind: "observation",
+      intent: "Observe the initial login state",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: initialObservationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Initial login state observed" },
+    });
+    const initialObservation = await fixture.protocol.addObservation({
+      actionId: initialObservationAction.id,
+      summary: "The login form is visible",
+      state: { url: "https://example.com/login" },
+    });
+    const initialStepId = (
+      initialObservationAction.payload as { stepId: string }
+    ).stepId;
+    const initialCapture = await fixture.protocol.planAction({
+      idempotencyKey: "capture-initial-login-state",
+      kind: "evidence-capture",
+      intent: "Capture the initial login state",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId: initialStepId,
+    });
+    await fixture.protocol.completeAction({
+      actionId: initialCapture.id,
+      phase: "completed",
+      toolResult: { summary: "Initial login screenshot captured" },
+    });
+    const sourcePath = join(fixture.projectRoot, "initial-login.png");
+    await writeFile(sourcePath, Buffer.from([4, 3, 2, 1]));
+    const staleEvidence = await registerEvidence({
+      projectRoot: fixture.projectRoot,
+      aiQaHome: fixture.aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId: initialCapture.id,
+        idempotencyKey: "initial-login-screenshot",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [initialObservation.id],
+      now,
+    });
+    const submit = await fixture.protocol.planAction({
+      idempotencyKey: "submit-after-initial-evidence",
+      kind: "interaction",
+      intent: "Submit valid credentials",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+    });
+    await fixture.protocol.completeAction({
+      actionId: submit.id,
+      phase: "completed",
+      toolResult: { summary: "Credentials submitted" },
+    });
+    const submitStepId = (submit.payload as { stepId: string }).stepId;
+    const assertion = await fixture.protocol.recordAssertion({
+      criterionId: "authenticated-home-visible",
+      status: "satisfied",
+      assertionKinds: ["semantic-ui"],
+      actual: "Authenticated home is visible",
+      expected: "Authenticated home is visible",
+      observationIds: [initialObservation.id],
+      evidenceIds: [staleEvidence.id],
+      stepId: submitStepId,
+    });
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Old login evidence was relabeled as post-submit proof",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [assertion.id],
+          evidenceIds: [staleEvidence.id],
+        },
+      ],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({
+      code: "verdict.stale_post_action_evidence",
+    });
+  });
+
   it("verifies evidence bytes before completing and remains idempotent", async () => {
     const fixture = await createRun();
     const support = await recordSupportedCriterion(fixture);

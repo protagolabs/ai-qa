@@ -32,6 +32,7 @@ import {
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { validatePassEvidenceFreshness } from "./evidence-semantics.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
 import {
@@ -245,6 +246,7 @@ export function validateFinalization(input: {
     evidenceById,
     evidenceEvents,
   );
+  validatePassEvidenceFreshness(input.events, input.verdict.payload);
   switch (input.verdict.payload.classification) {
     case "pass":
       validatePass(

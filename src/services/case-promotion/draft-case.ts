@@ -24,6 +24,7 @@ import { RunRepository } from "../../core/runs/repository.js";
 import type { RunEvent, WorkOrder } from "../../core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../core/tools.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
+import { validateFinalization } from "../run-protocol/finalize-run.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -258,12 +259,27 @@ async function readCompletedExploratoryRun(
         { runId },
       );
     }
+    let evidenceValid = evidenceResult.valid;
+    if (evidenceValid) {
+      try {
+        validateFinalization({
+          workOrder,
+          events,
+          evidence: evidenceResult.evidence,
+          verdict: effective,
+          completionTime: new Date(lifecycle.current.event.timestamp),
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof AiQaError)) throw error;
+        evidenceValid = false;
+      }
+    }
     return {
       workOrder,
       events,
       verdict: effective.payload,
       evidence: evidenceResult.evidence,
-      evidenceValid: evidenceResult.valid,
+      evidenceValid,
     };
   });
 }

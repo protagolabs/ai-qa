@@ -270,7 +270,7 @@ async function createCompletedPassRun(
     "run-source",
     runNow,
   );
-  await verdict.set({
+  const verdictEvent = await verdict.set({
     classification: "pass",
     summary: "Login is supported by observation and screenshot evidence",
     criterionResults: [
@@ -282,12 +282,24 @@ async function createCompletedPassRun(
       },
     ],
   });
-  await finalizeRun({
-    projectRoot,
-    aiQaHome,
-    runId: "run-source",
-    now: runNow,
-  });
+  if (options.mislinkedStructuredProof === true) {
+    await new RunRepository(projectRoot, runNow).journal("run-source").append({
+      type: "run",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "finish:run-source",
+      payload: { phase: "completed", verdictId: verdictEvent.id },
+      relatedIds: [verdictEvent.id],
+    });
+  } else {
+    await finalizeRun({
+      projectRoot,
+      aiQaHome,
+      runId: "run-source",
+      now: runNow,
+    });
+  }
   return {
     projectRoot,
     aiQaHome,
@@ -393,6 +405,154 @@ async function createCompletedUnknownRun(): Promise<{
   return { projectRoot, plannedActionId: planned.id };
 }
 
+async function createStaleCompletedPassRun(): Promise<{
+  projectRoot: string;
+  plannedActionId: string;
+}> {
+  const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-stale-"));
+  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-case-home-"));
+  await confirmProjectTrust({
+    projectRoot,
+    aiQaHome,
+    confirmed: true,
+    now: startedAt,
+  });
+  await initializeProject({ projectRoot, aiQaHome, config });
+  const repository = new RunRepository(projectRoot, () => startedAt);
+  await repository.create(
+    createExploratoryWorkOrder({
+      projectId: "sample-web",
+      runId: "run-source",
+      input: exploratoryRunInputSchema.parse({
+        goal: "Verify successful login",
+        acceptanceCriteria: [
+          {
+            id: "authenticated-home-visible",
+            description: "Authenticated home is visible",
+            requiredEvidence: ["post-action-screenshot"],
+          },
+        ],
+        readiness: { platform: "web", status: "ready", checks: [] },
+      }),
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt,
+    }),
+  );
+  const protocol = new RunProtocolService(
+    projectRoot,
+    aiQaHome,
+    "run-source",
+    runNow,
+  );
+  const initialObservationAction = await protocol.planAction({
+    idempotencyKey: "observe-initial-login-state",
+    kind: "observation",
+    intent: "Observe the initial login state",
+    tool: "chrome-devtools-mcp",
+    target: { description: "Current page" },
+  });
+  await protocol.completeAction({
+    actionId: initialObservationAction.id,
+    phase: "completed",
+    toolResult: { summary: "Initial login state observed" },
+  });
+  const initialObservation = await protocol.addObservation({
+    actionId: initialObservationAction.id,
+    summary: "The login form is visible",
+    state: { screen: "login" },
+  });
+  const initialStepId = (initialObservationAction.payload as { stepId: string })
+    .stepId;
+  const initialCapture = await protocol.planAction({
+    idempotencyKey: "capture-initial-login-state",
+    kind: "evidence-capture",
+    intent: "Capture the initial login state",
+    tool: "chrome-devtools-mcp",
+    target: { description: "Login form" },
+    stepId: initialStepId,
+  });
+  await protocol.completeAction({
+    actionId: initialCapture.id,
+    phase: "completed",
+    toolResult: { summary: "Initial login screenshot captured" },
+  });
+  const sourcePath = join(projectRoot, "stale-login.png");
+  await writeFile(sourcePath, Buffer.from([5, 4, 3, 2]));
+  const staleEvidence = await registerEvidence({
+    projectRoot,
+    aiQaHome,
+    runId: "run-source",
+    payload: {
+      sourcePath,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: initialCapture.id,
+      idempotencyKey: "stale-login-screenshot",
+    },
+    criterionIds: ["authenticated-home-visible"],
+    observationIds: [initialObservation.id],
+    now: runNow,
+  });
+  const submit = await protocol.planAction({
+    idempotencyKey: "submit-after-stale-evidence",
+    kind: "interaction",
+    intent: "Submit valid credentials",
+    tool: "chrome-devtools-mcp",
+    target: {
+      description: "Login button",
+      selector: '[data-testid="login"]',
+    },
+  });
+  await protocol.completeAction({
+    actionId: submit.id,
+    phase: "completed",
+    toolResult: { summary: "Credentials submitted" },
+  });
+  const submitStepId = (submit.payload as { stepId: string }).stepId;
+  const assertion = await protocol.recordAssertion({
+    criterionId: "authenticated-home-visible",
+    status: "satisfied",
+    assertionKinds: ["semantic-ui"],
+    actual: "Authenticated home is visible",
+    expected: "Authenticated home is visible",
+    observationIds: [initialObservation.id],
+    evidenceIds: [staleEvidence.id],
+    stepId: submitStepId,
+  });
+  const verdict = await new VerdictService(
+    projectRoot,
+    aiQaHome,
+    "run-source",
+    runNow,
+  ).set({
+    classification: "pass",
+    summary: "Pre-action evidence was relabeled as post-action proof",
+    criterionResults: [
+      {
+        criterionId: "authenticated-home-visible",
+        status: "satisfied",
+        assertionIds: [assertion.id],
+        evidenceIds: [staleEvidence.id],
+      },
+    ],
+  });
+  await repository.journal("run-source").append({
+    type: "run",
+    actor: "ai-qa",
+    platform: "web",
+    tool: "ai-qa",
+    idempotencyKey: "finish:run-source",
+    payload: { phase: "completed", verdictId: verdict.id },
+    relatedIds: [verdict.id],
+  });
+  return { projectRoot, plannedActionId: submit.id };
+}
+
 async function appendDuplicateTypedEvidenceEvent(
   projectRoot: string,
 ): Promise<void> {
@@ -420,6 +580,41 @@ async function appendDuplicateTypedEvidenceEvent(
 }
 
 describe("case promotion", () => {
+  it("keeps a completed history with pre-action evidence inactive", async () => {
+    const { projectRoot, plannedActionId } =
+      await createStaleCompletedPassRun();
+    const draft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-source",
+      input: {
+        caseId: "stale-login-proof",
+        title: "Reject stale login proof",
+        webSteps: [
+          {
+            sourceActionId: plannedActionId,
+            intent: "Submit valid credentials",
+            target: {
+              description: "Login button",
+              selector: '[data-testid="login"]',
+              stability: "stable",
+              stabilityRationale: "Unique application-owned data-testid",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "Observe the authenticated shell",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+
+    expect(draft.promotion.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "case.evidence_invalid" }),
+      ]),
+    );
+  });
+
   it("validates case storage before acquiring activation locks", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
     const outside = await mkdtemp(join(tmpdir(), "ai-qa-case-outside-"));
