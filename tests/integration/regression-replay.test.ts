@@ -753,6 +753,80 @@ describe("pinned regression replay", () => {
     ).rejects.toMatchObject({ code: "recovery.marker_required" });
   });
 
+  it("rejects cross-step regression recovery without authorizing retry", async () => {
+    const fixture = await createActiveCase();
+    const { protocol } = await startFixtureRun(fixture);
+    const first = await protocol.planAction({
+      idempotencyKey: "complete-first-before-cross-step-recovery",
+      kind: "interaction",
+      intent: "Submit valid credentials",
+      tool: "chrome-devtools-mcp",
+      target: {
+        description: "Login button",
+        selector: '[data-testid="login"]',
+      },
+      stepId: "step-1-submit-login",
+    });
+    await protocol.completeAction({
+      actionId: first.id,
+      phase: "completed",
+      toolResult: { summary: "Login completed" },
+    });
+    const second = await protocol.planAction({
+      idempotencyKey: "cross-step-regression-unknown",
+      kind: "interaction",
+      intent: "Assert account",
+      tool: "chrome-devtools-mcp",
+      target: {
+        description: "Account label",
+        selector: '[data-testid="account"]',
+      },
+      stepId: "step-2-account-visible",
+    });
+    await protocol.completeAction({
+      actionId: second.id,
+      phase: "unknown",
+      toolResult: { summary: "The account assertion result is ambiguous" },
+    });
+    const observationAction = await protocol.planAction({
+      idempotencyKey: "observe-previous-regression-step",
+      kind: "observation",
+      intent: "Observe the prior login step",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Authenticated home" },
+      stepId: "step-1-submit-login",
+    });
+    await protocol.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Observed the authenticated home" },
+    });
+    const observation = await protocol.addObservation({
+      actionId: observationAction.id,
+      summary: "Authenticated home remains visible",
+      state: { home: true },
+    });
+
+    await expect(
+      protocol.resolveUnknownAction({
+        actionId: second.id,
+        resolution: "not_applied",
+        observationId: observation.id,
+        rationale: "The prior step cannot resolve the account assertion",
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    await expect(
+      protocol.planAction({
+        idempotencyKey: "retry-after-cross-step-regression-recovery",
+        kind: "interaction",
+        intent: "Retry account assertion",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Account label" },
+        recoveryForStepId: "step-2-account-visible",
+      }),
+    ).rejects.toMatchObject({ code: "recovery.retry_not_permitted" });
+  });
+
   it("does not let a completed recovery replace or advance a required step", async () => {
     const fixture = await createActiveCase();
     const { protocol } = await startFixtureRun(fixture);

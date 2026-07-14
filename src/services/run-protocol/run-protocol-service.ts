@@ -336,7 +336,7 @@ export class RunProtocolService {
   async resolveUnknownAction(input: RecoveryPayload): Promise<RunEvent> {
     const parsed = recoveryPayloadSchema.parse(input);
     return this.appendValidated((_workOrder, events) => {
-      requirePlannedAction(events, parsed.actionId);
+      const planned = requirePlannedAction(events, parsed.actionId);
       const terminal = requireSingleTerminal(
         events,
         parsed.actionId,
@@ -352,6 +352,12 @@ export class RunProtocolService {
           "A fresh observation is required to resolve an unknown action",
           { actionId: parsed.actionId, observationId: parsed.observationId },
         );
+      }
+      const observationPayload = observationPayloadSchema.parse(
+        observation.payload,
+      );
+      if (observationPayload.stepId !== planned.payload.stepId) {
+        throw protocolIntegrityError();
       }
       const candidate = protocolAppendInput({
         type: "recovery",
@@ -912,10 +918,19 @@ export function validateProtocolEvents(
         }
         case "recovery": {
           const payload = recoveryPayloadSchema.parse(event.payload);
+          const plan = plans.get(payload.actionId);
           const terminal = terminals.get(payload.actionId);
           const observation = observations.get(payload.observationId);
+          const observationPayload = observationPayloadSchema.safeParse(
+            observation?.payload,
+          );
+          requireSemantic(plan !== undefined);
           requireSemantic(terminal?.payload.phase === "unknown");
           requireSemantic(observation !== undefined);
+          requireSemantic(observationPayload.success);
+          requireSemantic(
+            observationPayload.data.stepId === plan.payload.stepId,
+          );
           requireSemantic(observation.sequence > terminal.event.sequence);
           requireSemantic(!recoveryActions.has(payload.actionId));
           requireProtocolMetadata(event, {
@@ -930,11 +945,15 @@ export function validateProtocolEvents(
       }
     }
   } catch {
-    throw new AiQaError(
-      "run_protocol.integrity_error",
-      "Typed run protocol event validation failed",
-    );
+    throw protocolIntegrityError();
   }
+}
+
+function protocolIntegrityError(): AiQaError {
+  return new AiQaError(
+    "run_protocol.integrity_error",
+    "Typed run protocol event validation failed",
+  );
 }
 
 function requireProtocolMetadata(

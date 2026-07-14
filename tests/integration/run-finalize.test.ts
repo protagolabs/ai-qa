@@ -945,6 +945,7 @@ describe("finalizeRun", () => {
         intent: "Observe ambiguous recovery state",
         tool: "chrome-devtools-mcp",
         target: { description: "Current page" },
+        stepId,
       });
       await fixture.protocol.completeAction({
         actionId: observationAction.id,

@@ -367,6 +367,7 @@ async function createCompletedUnknownRun(): Promise<{
     intent: "Observe whether submission applied",
     tool: "chrome-devtools-mcp",
     target: { description: "Current page" },
+    stepId: (planned.payload as { stepId: string }).stepId,
   });
   await protocol.completeAction({
     actionId: observationAction.id,

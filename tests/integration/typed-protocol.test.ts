@@ -161,6 +161,7 @@ async function createSmallBudgetRun(input: {
 async function addCurrentObservation(
   service: RunProtocolService,
   key: string,
+  stepId?: string,
 ): Promise<{ actionId: string; eventId: string; stepId: string }> {
   const action = await service.planAction({
     idempotencyKey: key,
@@ -168,6 +169,7 @@ async function addCurrentObservation(
     intent: "Inspect current UI",
     tool: "chrome-devtools-mcp",
     target: { description: "Current browser page" },
+    ...(stepId === undefined ? {} : { stepId }),
   });
   await service.completeAction({
     actionId: action.id,
@@ -234,6 +236,7 @@ describe("typed run protocol", () => {
       intent: "Inspect whether login was submitted",
       tool: "chrome-devtools-mcp",
       target: { description: "Current browser page" },
+      stepId: (planned.payload as { stepId: string }).stepId,
     });
     await service.completeAction({
       actionId: observationAction.id,
@@ -266,6 +269,64 @@ describe("typed run protocol", () => {
         recoveryForStepId: (planned.payload as { stepId: string }).stepId,
       }),
     ).resolves.toMatchObject({ type: "action" });
+  });
+
+  it("rejects cross-step recovery observations without authorizing retry", async () => {
+    const { service, repository } = await createTrustedRun();
+    const action = await service.planAction({
+      idempotencyKey: "cross-step-unknown",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const observationAction = await service.planAction({
+      idempotencyKey: "observe-different-step",
+      kind: "observation",
+      intent: "Observe an unrelated account panel",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Account panel" },
+      stepId: "step-account",
+    });
+    await service.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Observed the account panel" },
+    });
+    const observation = await service.addObservation({
+      actionId: observationAction.id,
+      summary: "The account panel is visible",
+      state: { account: true },
+    });
+    const beforeRecovery = await repository.journal("run-1").readAll();
+
+    await expect(
+      service.resolveUnknownAction({
+        actionId: action.id,
+        resolution: "not_applied",
+        observationId: observation.id,
+        rationale: "Unrelated state cannot resolve the login submission",
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    await expect(repository.journal("run-1").readAll()).resolves.toEqual(
+      beforeRecovery,
+    );
+    await expect(
+      service.planAction({
+        idempotencyKey: "retry-after-cross-step-recovery",
+        kind: "interaction",
+        intent: "Retry login",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Login button" },
+        recoveryForStepId: "step-login",
+      }),
+    ).rejects.toMatchObject({ code: "recovery.retry_not_permitted" });
   });
 
   it("makes action planning and completion idempotent and rejects conflicts", async () => {
@@ -702,7 +763,11 @@ describe("typed run protocol", () => {
       }),
     ).rejects.toMatchObject({ code: "recovery.fresh_observation_required" });
 
-    const fresh = await addCurrentObservation(service, "fresh-observe");
+    const fresh = await addCurrentObservation(
+      service,
+      "fresh-observe",
+      (action.payload as { stepId: string }).stepId,
+    );
     const recoveryInput = {
       actionId: action.id,
       resolution: "indeterminate" as const,
@@ -748,6 +813,7 @@ describe("typed run protocol", () => {
     const originalObservation = await addCurrentObservation(
       service,
       "observe-original-unknown",
+      originalStepId,
     );
     await service.resolveUnknownAction({
       actionId: original.id,
@@ -794,6 +860,7 @@ describe("typed run protocol", () => {
     const retryObservation = await addCurrentObservation(
       service,
       "observe-unknown-retry",
+      originalStepId,
     );
     await service.resolveUnknownAction({
       actionId: retry.id,
@@ -838,6 +905,66 @@ describe("typed run protocol", () => {
         expected: "Authenticated home is visible",
         observationIds: [forged.id],
         evidenceIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+  });
+
+  it("rejects forged cross-step recovery history before retry", async () => {
+    const { service, repository } = await createTrustedRun();
+    const action = await service.planAction({
+      idempotencyKey: "forged-cross-step-unknown",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const observationAction = await service.planAction({
+      idempotencyKey: "forge-observation-other-step",
+      kind: "observation",
+      intent: "Observe an unrelated account panel",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Account panel" },
+      stepId: "step-account",
+    });
+    await service.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "Observed the account panel" },
+    });
+    const observation = await service.addObservation({
+      actionId: observationAction.id,
+      summary: "The account panel is visible",
+      state: { account: true },
+    });
+    await repository.journal("run-1").append({
+      type: "recovery",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `recovery:${action.id}`,
+      payload: {
+        actionId: action.id,
+        resolution: "not_applied",
+        observationId: observation.id,
+        rationale: "Forged cross-step recovery",
+      },
+      relatedIds: [action.id, observation.id],
+    });
+
+    await expect(
+      service.planAction({
+        idempotencyKey: "retry-after-forged-cross-step-recovery",
+        kind: "interaction",
+        intent: "Retry login",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Login button" },
+        recoveryForStepId: "step-login",
       }),
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
