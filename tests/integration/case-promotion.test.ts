@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, open, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
@@ -385,6 +393,124 @@ async function createCompletedUnknownRun(): Promise<{
 }
 
 describe("case promotion", () => {
+  it("preserves case.not_found for a genuinely missing case", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-missing-"));
+    await mkdir(join(projectRoot, ".ai-qa", "cases"), { recursive: true });
+
+    await expect(
+      new CaseRepository(projectRoot, runNow).readActive("missing-case"),
+    ).rejects.toMatchObject({ code: "case.not_found" });
+  });
+
+  it("preserves case.revision_not_found for a genuinely missing revision", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-revision-missing-"),
+    );
+    await mkdir(
+      join(projectRoot, ".ai-qa", "cases", "missing-revision", "revisions"),
+      { recursive: true },
+    );
+
+    await expect(
+      new CaseRepository(projectRoot, runNow).readRevision(
+        "missing-revision",
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "case.revision_not_found" });
+  });
+
+  it("preserves storage integrity errors for a symlinked case index", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-case-outside-"));
+    const caseDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "cases",
+      "symlinked-index",
+    );
+    await mkdir(caseDirectory, { recursive: true });
+    const outsideIndex = join(outside, "case.yaml");
+    await writeFile(outsideIndex, "schemaVersion: 1\n");
+    await symlink(outsideIndex, join(caseDirectory, "case.yaml"));
+
+    await expect(
+      new CaseRepository(projectRoot, runNow).readActive("symlinked-index"),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
+  it("preserves storage integrity errors when validating a symlinked revision", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-case-outside-"));
+    const revisions = join(
+      projectRoot,
+      ".ai-qa",
+      "cases",
+      "symlinked-revision",
+      "revisions",
+    );
+    await mkdir(revisions, { recursive: true });
+    const outsideRevision = join(outside, "1.yaml");
+    await writeFile(outsideRevision, "schemaVersion: 1\n");
+    await symlink(outsideRevision, join(revisions, "1.yaml"));
+
+    await expect(
+      new CaseRepository(projectRoot, runNow).validateRevision(
+        "symlinked-revision",
+        1,
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
+  it("rejects a symlinked cases root before creating a draft outside the project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-cases-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-cases-outside-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    await symlink(outside, join(projectRoot, ".ai-qa", "cases"));
+
+    await expect(
+      new CaseRepository(projectRoot, runNow).createDraft({
+        schemaVersion: 1,
+        caseId: "login-success",
+        title: "Login succeeds",
+        promotion: {
+          sourceRunId: "run-source",
+          excludedActions: [],
+          validationIssues: [],
+        },
+        acceptanceCriteria: [
+          {
+            id: "authenticated-home-visible",
+            description: "Authenticated home is visible",
+            requiredEvidence: ["post-action-screenshot"],
+          },
+        ],
+        variants: {
+          web: {
+            steps: [
+              {
+                id: "step-submit-login",
+                sourceActionId: "event-submit-login",
+                intent: "Submit valid credentials",
+                tool: "chrome-devtools-mcp",
+                target: {
+                  description: "Login button",
+                  stability: "stable",
+                  stabilityRationale: "Stable test id",
+                },
+                expectedState: "Authenticated home is visible",
+                assertionStrategy: "Observe authenticated shell",
+                evidenceCheckpoints: ["post-action-screenshot"],
+              },
+            ],
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(access(join(outside, "login-success"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("serializes concurrent creators through first-index bootstrap", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-concurrent-"));
     const repository = new CaseRepository(projectRoot, runNow);

@@ -1,10 +1,14 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
+import {
+  ensureProjectLocalDirectory,
+  requireProjectLocalRegularFile,
+} from "../fs/project-storage.js";
 import {
   calculateCaseContentHash,
   caseIdSchema,
@@ -40,7 +44,12 @@ export class CaseRepository {
   ): Promise<CaseRevision> {
     const caseId = caseIdSchema.parse(input.caseId);
     const paths = this.paths(caseId);
-    await mkdir(paths.revisions, { recursive: true });
+    await ensureProjectLocalDirectory(this.projectRoot, [
+      ".ai-qa",
+      "cases",
+      caseId,
+      "revisions",
+    ]);
     return this.withCaseWriteLock(
       paths,
       () => this.ensureIndex(paths.index, caseId, input.title),
@@ -101,16 +110,24 @@ export class CaseRepository {
   async readRevision(caseId: string, revision: number): Promise<CaseRevision> {
     caseId = caseIdSchema.parse(caseId);
     revision = z.number().int().positive().parse(revision);
-    const path = this.revisionPath(this.paths(caseId), revision);
     try {
-      const value: unknown = parse(await readFile(path, "utf8"));
+      const revisionPath = await requireProjectLocalRegularFile(
+        this.projectRoot,
+        [".ai-qa", "cases", caseId, "revisions", `${String(revision)}.yaml`],
+      );
+      const value: unknown = parse(await readFile(revisionPath, "utf8"));
       const parsed = caseRevisionSchema.parse(value);
       if (parsed.caseId !== caseId || parsed.revision !== revision) {
         throw new Error("revision identity mismatch");
       }
       return parsed;
     } catch (error: unknown) {
-      if (isNodeError(error, "ENOENT")) {
+      if (
+        isNodeError(error, "ENOENT") ||
+        (error instanceof AiQaError &&
+          error.code === "storage.integrity_error" &&
+          isMissingStoragePath(error))
+      ) {
         throw new AiQaError(
           "case.revision_not_found",
           "Case revision does not exist",
@@ -147,7 +164,8 @@ export class CaseRepository {
       if (
         error instanceof AiQaError &&
         (error.code === "case.revision_not_found" ||
-          error.code === "case.index_integrity_error")
+          error.code === "case.index_integrity_error" ||
+          error.code === "storage.integrity_error")
       ) {
         throw error;
       }
@@ -337,21 +355,32 @@ export class CaseRepository {
   }
 
   private async readIndex(caseId: string): Promise<CaseIndex> {
-    const path = this.paths(caseId).index;
     try {
-      const value: unknown = parse(await readFile(path, "utf8"));
+      const indexPath = await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "cases",
+        caseId,
+        "case.yaml",
+      ]);
+      const value: unknown = parse(await readFile(indexPath, "utf8"));
       const index = caseIndexSchema.parse(value);
       if (index.id !== caseId) throw new Error("case index identity mismatch");
       return index;
     } catch (error: unknown) {
-      if (isNodeError(error, "ENOENT")) {
+      if (
+        isNodeError(error, "ENOENT") ||
+        (error instanceof AiQaError &&
+          error.code === "storage.integrity_error" &&
+          isMissingStoragePath(error))
+      ) {
         throw new AiQaError("case.not_found", "Case does not exist", {
           caseId,
         });
       }
       if (
         error instanceof AiQaError &&
-        error.code === "case.index_integrity_error"
+        (error.code === "case.index_integrity_error" ||
+          error.code === "storage.integrity_error")
       ) {
         throw error;
       }
@@ -390,6 +419,10 @@ export class CaseRepository {
       await handle?.close();
     }
   }
+}
+
+function isMissingStoragePath(error: AiQaError): boolean {
+  return error.details.causeCode === "ENOENT";
 }
 
 function isNodeError(error: unknown, code: string): boolean {

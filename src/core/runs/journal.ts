@@ -1,9 +1,13 @@
-import { mkdir, open } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines } from "../fs/json-lines.js";
+import {
+  ensureProjectLocalDirectory,
+  requireProjectLocalRegularFile,
+} from "../fs/project-storage.js";
 import { createId } from "../ids.js";
 import { resolveRunPaths } from "./paths.js";
 import {
@@ -34,6 +38,7 @@ export interface PreparedRunAppend<T> {
 
 export class RunJournal {
   private constructor(
+    private readonly projectRoot: string,
     private readonly path: string,
     private readonly runId: string,
     private readonly now: () => Date,
@@ -45,7 +50,7 @@ export class RunJournal {
     now: () => Date,
   ): Promise<RunJournal> {
     const paths = resolveRunPaths(projectRoot, runId);
-    await mkdir(paths.directory, { recursive: true });
+    await ensureProjectLocalDirectory(projectRoot, [".ai-qa", "runs", runId]);
     let handle;
     try {
       handle = await open(paths.events, "wx", 0o600);
@@ -62,15 +67,21 @@ export class RunJournal {
     } finally {
       await handle?.close();
     }
-    return new RunJournal(paths.events, runId, now);
+    return new RunJournal(projectRoot, paths.events, runId, now);
   }
 
   static open(projectRoot: string, runId: string, now: () => Date): RunJournal {
     const paths = resolveRunPaths(projectRoot, runId);
-    return new RunJournal(paths.events, runId, now);
+    return new RunJournal(projectRoot, paths.events, runId, now);
   }
 
   async readAll(): Promise<RunEvent[]> {
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "runs",
+      this.runId,
+      "events.jsonl",
+    ]);
     try {
       const events = await readJsonLines(this.path, runEventSchema);
       for (const [index, event] of events.entries()) {
@@ -97,6 +108,12 @@ export class RunJournal {
   async readLocked<T>(
     inspect: (events: readonly RunEvent[]) => T | Promise<T>,
   ): Promise<T> {
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "runs",
+      this.runId,
+      "events.jsonl",
+    ]);
     const release = await lockfile.lock(this.path, {
       realpath: false,
       retries: { retries: 3, minTimeout: 50 },
@@ -111,6 +128,12 @@ export class RunJournal {
   async appendPrepared<T>(
     prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
   ): Promise<T> {
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "runs",
+      this.runId,
+      "events.jsonl",
+    ]);
     const release = await lockfile.lock(this.path, {
       realpath: false,
       retries: { retries: 3, minTimeout: 50 },

@@ -4,7 +4,9 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,6 +108,49 @@ async function initializeTrustedProject(): Promise<{
 }
 
 describe("run path confinement", () => {
+  it("rejects a symlinked runs root before creating a journal outside the project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-journal-outside-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    await symlink(outside, join(projectRoot, ".ai-qa", "runs"));
+
+    await expect(
+      RunJournal.create(projectRoot, "run-1", fixedNow),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(access(join(outside, "run-1"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("rejects a symlinked events file before reading outside the project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-journal-outside-"));
+    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const eventsPath = join(runDirectory(projectRoot), "events.jsonl");
+    const outsideEvents = join(outside, "events.jsonl");
+    await writeFile(outsideEvents, "");
+    await rm(eventsPath);
+    await symlink(outsideEvents, eventsPath);
+
+    await expect(journal.readAll()).rejects.toMatchObject({
+      code: "storage.integrity_error",
+    });
+  });
+
+  it("rejects a symlinked runs root before creating a run outside the project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-runs-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-runs-outside-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    await symlink(outside, join(projectRoot, ".ai-qa", "runs"));
+
+    await expect(createRepositoryRun(projectRoot)).rejects.toMatchObject({
+      code: "storage.integrity_error",
+    });
+    await expect(access(join(outside, "run-1"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("rejects traversal, absolute, and backslash IDs before creating paths", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-path-"));
     const absolute = resolve(projectRoot, "outside-absolute");

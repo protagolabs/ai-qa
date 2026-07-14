@@ -1,20 +1,38 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
   projectConfigSchema,
   type ProjectConfig,
 } from "../../src/core/config/schema.js";
+import {
+  createProjectConfig,
+  readProjectConfig,
+} from "../../src/core/config/repository.js";
 import { runCli } from "../../src/cli/program.js";
 import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { readRepositoryIdentity } from "../../src/services/trust/repository-identity.js";
 import { TrustStore } from "../../src/services/trust/trust-store.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
+});
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +59,127 @@ const confirmedConfig: ProjectConfig = {
 };
 
 describe("initializeProject", () => {
+  it("keeps direct config creation create-only", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-config-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    await createProjectConfig(projectRoot, confirmedConfig);
+
+    await expect(
+      createProjectConfig(projectRoot, {
+        ...confirmedConfig,
+        project: { id: "replacement-id", name: "Replacement" },
+      }),
+    ).rejects.toMatchObject({ code: "project.already_initialized" });
+    await expect(readProjectConfig(projectRoot)).resolves.toMatchObject({
+      project: { id: "sample-web" },
+    });
+  });
+
+  it("does not remove an unowned config staging file", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-config-project-"));
+    const directory = join(projectRoot, ".ai-qa");
+    await mkdir(directory);
+    const uuid = "00000000-0000-4000-8000-000000000000";
+    const stagingPath = join(directory, `config.yaml.${uuid}.tmp`);
+    await writeFile(stagingPath, "owned by another creator");
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+
+    await expect(
+      createProjectConfig(projectRoot, confirmedConfig),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    await expect(readFile(stagingPath, "utf8")).resolves.toBe(
+      "owned by another creator",
+    );
+    await expect(access(join(directory, "config.yaml"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("serializes concurrent initialization to one complete winner", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-init-project-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-init-home-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    const projectIds = ["concurrent-a", "concurrent-b"] as const;
+
+    const results = await Promise.allSettled(
+      projectIds.map((projectId) =>
+        initializeProject({
+          projectRoot,
+          aiQaHome,
+          config: {
+            ...confirmedConfig,
+            project: { id: projectId, name: projectId },
+          },
+        }),
+      ),
+    );
+    const winners = results.flatMap((result, index) =>
+      result.status === "fulfilled" ? [projectIds[index]!] : [],
+    );
+    const failures = results.filter((result) => result.status === "rejected");
+
+    expect(winners).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      status: "rejected",
+      reason: { code: "project.already_initialized" },
+    });
+    await expect(readProjectConfig(projectRoot)).resolves.toMatchObject({
+      project: { id: winners[0] },
+    });
+  });
+
+  it("never follows a symlinked .ai-qa directory", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-init-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-init-outside-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-init-home-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await symlink(outside, join(projectRoot, ".ai-qa"));
+
+    await expect(
+      initializeProject({ projectRoot, aiQaHome, config: confirmedConfig }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(access(join(outside, "config.yaml"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("refuses reinitialization and preserves the original project id", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-init-project-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-init-home-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeProject({ projectRoot, aiQaHome, config: confirmedConfig });
+
+    await expect(
+      initializeProject({
+        projectRoot,
+        aiQaHome,
+        config: {
+          ...confirmedConfig,
+          project: { id: "replacement-id", name: "Replacement" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "project.already_initialized" });
+    await expect(readProjectConfig(projectRoot)).resolves.toMatchObject({
+      project: { id: "sample-web" },
+    });
+  });
+
   it("writes project state locally and trust only to the machine store", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-project-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-home-"));

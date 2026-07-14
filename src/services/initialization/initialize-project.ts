@@ -1,11 +1,13 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat } from "node:fs/promises";
+import { resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import {
   projectConfigSchema,
   type ProjectConfig,
 } from "../../core/config/schema.js";
-import { writeProjectConfig } from "../../core/config/repository.js";
+import { createProjectConfig } from "../../core/config/repository.js";
 import { AiQaError } from "../../core/errors.js";
+import { ensureProjectLocalDirectory } from "../../core/fs/project-storage.js";
 import { readRepositoryIdentity } from "../trust/repository-identity.js";
 import { TrustStore } from "../trust/trust-store.js";
 
@@ -26,12 +28,43 @@ export async function initializeProject(
       "Confirm repository trust before initialization",
     );
   }
-  await Promise.all(
-    ["cases", "runs", "evidence", "reports/runs"].map((directory) =>
-      mkdir(join(input.projectRoot, ".ai-qa", directory), {
-        recursive: true,
-      }),
-    ),
+  const aiQaRoot = await ensureProjectLocalDirectory(input.projectRoot, [
+    ".ai-qa",
+  ]);
+  const release = await lockfile.lock(aiQaRoot, {
+    realpath: false,
+    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+  });
+  try {
+    try {
+      await lstat(resolve(aiQaRoot, "config.yaml"));
+      throw new AiQaError(
+        "project.already_initialized",
+        "Project already has an AI QA configuration",
+        { projectRoot: identity.canonicalPath },
+      );
+    } catch (error: unknown) {
+      if (error instanceof AiQaError) throw error;
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
+    for (const segments of [
+      [".ai-qa", "cases"],
+      [".ai-qa", "runs"],
+      [".ai-qa", "evidence"],
+      [".ai-qa", "reports", "runs"],
+    ] as const) {
+      await ensureProjectLocalDirectory(input.projectRoot, segments);
+    }
+    await createProjectConfig(input.projectRoot, config);
+  } finally {
+    await release();
+  }
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
   );
-  await writeProjectConfig(input.projectRoot, config);
 }

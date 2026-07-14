@@ -1,6 +1,10 @@
 import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
+import {
+  ensureProjectLocalDirectory,
+  requireProjectLocalRegularFile,
+} from "../fs/project-storage.js";
 import { RunJournal } from "./journal.js";
 import { resolveRunPaths } from "./paths.js";
 import {
@@ -51,7 +55,7 @@ export class RunRepository {
   ): Promise<{ journal: RunJournal; workOrderHash: string }> {
     const validated = workOrderSchema.parse(workOrder);
     const paths = resolveRunPaths(this.projectRoot, validated.runId);
-    await mkdir(paths.runsRoot, { recursive: true });
+    await ensureProjectLocalDirectory(this.projectRoot, [".ai-qa", "runs"]);
     try {
       await mkdir(paths.directory, { mode: 0o700 });
     } catch (error: unknown) {
@@ -104,9 +108,13 @@ export class RunRepository {
   }
 
   async readVerifiedWorkOrder(runId: string): Promise<WorkOrder> {
-    const paths = resolveRunPaths(this.projectRoot, runId);
+    resolveRunPaths(this.projectRoot, runId);
     try {
-      const raw: unknown = JSON.parse(await readFile(paths.workOrder, "utf8"));
+      const workOrderPath = await requireProjectLocalRegularFile(
+        this.projectRoot,
+        [".ai-qa", "runs", runId, "work-order.json"],
+      );
+      const raw: unknown = JSON.parse(await readFile(workOrderPath, "utf8"));
       const workOrder = workOrderSchema.parse(raw);
       const rawHash = sha256Canonical(raw);
       const validatedHash = sha256Canonical(workOrder);
