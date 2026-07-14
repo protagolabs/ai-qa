@@ -98,6 +98,13 @@ export async function finalizeRun(input: {
           { runId },
         );
       }
+      validateFinalization({
+        workOrder,
+        events,
+        evidence,
+        verdict: effective,
+        completionTime: new Date(lifecycle.current.event.timestamp),
+      });
       const result = completionResult(
         runId,
         effective.payload,
