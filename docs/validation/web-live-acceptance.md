@@ -4,29 +4,39 @@ This is the release-gate procedure for Increment 1. It is not satisfied by the a
 
 ## Current manual status
 
-- Status: **pending; not executed and not passed**.
-- Environment assessment date: `2026-07-14`.
-- Assessed repository HEAD: `93e0a43d3372c70d1b994f2abeb6b3d734febdf5` before the uncommitted Task 9 documentation/test update.
-- Blocker: this Codex environment exposes other browser/Chrome capabilities, but no callable Chrome DevTools MCP controller. Those capabilities cannot be substituted for, or relabeled as, `chrome-devtools-mcp`.
+- Status: **passed**.
+- Execution date: `2026-07-14`.
+- Tested CLI commit: `bf16b87978d7391cddc1066270c52f4ec7b6879d`.
+- Packed tarball: `ai-qa-0.0.0.tgz`.
+- Chrome version: `150.0.7871.115`.
+- Chrome DevTools MCP version: `1.5.0`.
+- MCP launch policy: global Codex stdio server using `chrome-devtools-mcp@latest`, an isolated temporary Chrome profile, and disabled usage-statistics and CrUX reporting.
+- Installed packaged skill: `/private/tmp/ai-qa-machine.0jP1NE/agents/skills/ai-qa/SKILL.md`; `skill check --global` returned `compatible`.
+- Exploratory run: `run-d6ebd74a-f8e1-4220-8bf0-76c666c62713` — `pass`.
+- Active case: `login-success` revision `1`.
+- Case content hash: `sha256:7eefcae26548ec7e0554d58a8e26978bfad155d669260ab106d8908d25253f83`.
+- Web variant hash: `sha256:36212ce368dbb1176779263256b26e14106816b45490bba6f40c7441331ac7c8`.
+- Consecutive regression runs:
+  - `run-fb26677f-05f7-42e0-a7a0-af966255dc86` — `pass`.
+  - `run-dffdb39c-ab6a-42aa-a9cc-316575e2ce5d` — `pass`.
+- Reports and verified project-local exports:
+  - `.ai-qa/reports/runs/run-d6ebd74a-f8e1-4220-8bf0-76c666c62713/report.json` and `.ai-qa/reports/runs/run-d6ebd74a-f8e1-4220-8bf0-76c666c62713/report.md`.
+  - `.ai-qa/reports/runs/run-fb26677f-05f7-42e0-a7a0-af966255dc86/report.json` and `.ai-qa/reports/runs/run-fb26677f-05f7-42e0-a7a0-af966255dc86/report.md`.
+  - `.ai-qa/reports/runs/run-dffdb39c-ab6a-42aa-a9cc-316575e2ce5d/report.json` and `.ai-qa/reports/runs/run-dffdb39c-ab6a-42aa-a9cc-316575e2ce5d/report.md`.
 
-The live run requires all of these prerequisites before execution:
+### Verified live proof
 
-- A callable Chrome DevTools MCP controller that can navigate, observe DOM state, interact, and return raw screenshot bytes.
-- The Chrome and Chrome DevTools MCP versions available for recording.
-- A disposable trusted checkout in which the packed CLI and installed packaged skill can create project-local `.ai-qa/` state.
-- Runtime access to the fixture password reference without writing the value to shell history, project state, evidence, or reports.
-
-Record these reproducibility fields when the prerequisite is met; none may be inferred from modeled tests or another browser controller:
-
-- Execution date: pending until a real MCP run occurs.
-- Tested CLI commit and packed tarball name: pending until a real MCP run occurs.
-- Chrome version: pending because the required controller is unavailable.
-- Chrome DevTools MCP version: pending because the required controller is unavailable.
-- Exploratory run ID: pending.
-- Active case ID/revision, case content hash, and Web variant hash: pending.
-- Two consecutive regression run IDs: pending.
-- Final verdicts: pending; no live verdict has been claimed.
-- JSON/Markdown report and verified export paths: pending.
+- The exploratory run and both regression runs completed with evidence-backed `pass` verdicts for `authenticated-home-visible` and `current-account-visible`.
+- The two regression work orders pin the same active revision, case content hash, and Web variant hash shown above.
+- All planned and terminal browser actions use `chrome-devtools-mcp`; all three evidence records use `sourceTool: chrome-devtools-mcp`.
+- Raw screenshot evidence:
+  - `evidence-fd837d33-a283-40fc-bef3-6a1531c253e7` at `.ai-qa/evidence/run-d6ebd74a-f8e1-4220-8bf0-76c666c62713/files/evidence-fd837d33-a283-40fc-bef3-6a1531c253e7-ai-qa-live-exp.png`.
+  - `evidence-fa2fd1fd-73fc-4179-a06c-a32ead6e90c9` at `.ai-qa/evidence/run-fb26677f-05f7-42e0-a7a0-af966255dc86/files/evidence-fa2fd1fd-73fc-4179-a06c-a32ead6e90c9-ai-qa-live-reg1.png`.
+  - `evidence-ebd3511a-5d89-4a8a-ab00-7a978e0bd845` at `.ai-qa/evidence/run-dffdb39c-ab6a-42aa-a9cc-316575e2ce5d/files/evidence-ebd3511a-5d89-4a8a-ab00-7a978e0bd845-ai-qa-live-reg2.png`.
+- Every screenshot reverified as `sha256:fe6b5805ff9ade7a3bb96a5478ad3da8d2f301f4039decc36d8c4f5ddb664fd8`; the identical hash is expected because the fixture rendered identical deterministic authenticated state.
+- Each run has exact one-to-one evidence-index/event parity, and every Markdown report contains its JSON report's exact `integrity.verifiedAt` timestamp.
+- Visual inspection confirmed that the screenshot shows `Authenticated home` and `Current account: qa@example.test` without the password.
+- The fixture password value is absent from project state and reports. Trust exists only at `/private/tmp/ai-qa-machine.0jP1NE/ai-qa/trust.json`; the only fixture `.ai-qa` directory is `fixtures/web-app/.ai-qa/`.
 
 ## Target
 
