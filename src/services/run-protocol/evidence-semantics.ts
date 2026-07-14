@@ -33,12 +33,15 @@ export function validatePassEvidenceFreshness(
         : [];
     }),
   );
-  const completedInteractions = [...completedByActionId].flatMap(
-    ([actionId, event]) => {
-      const plan = plans.get(actionId);
-      return plan?.payload.kind === "interaction" ? [{ event, plan }] : [];
-    },
-  );
+  const latestInteractionByStep = new Map<string, RunEvent>();
+  for (const [actionId, event] of completedByActionId) {
+    const plan = plans.get(actionId);
+    if (plan?.payload.kind !== "interaction") continue;
+    const latest = latestInteractionByStep.get(plan.payload.stepId);
+    if (latest === undefined || event.sequence > latest.sequence) {
+      latestInteractionByStep.set(plan.payload.stepId, event);
+    }
+  }
   const evidenceById = new Map(
     events.flatMap((event) => {
       if (event.type !== "evidence") return [];
@@ -60,6 +63,25 @@ export function validatePassEvidenceFreshness(
         : [];
     });
 
+    for (const assertion of assertions) {
+      if (assertion.payload.status !== "satisfied") continue;
+      const stepId = assertion.payload.stepId;
+      if (stepId === undefined) {
+        throw staleEvidence(assertion.event.id);
+      }
+      validateObservations({
+        eventsById: byId,
+        plans,
+        completedByActionId,
+        observationIds: assertion.payload.observationIds,
+        stepId,
+        freshnessSequence:
+          latestInteractionByStep.get(stepId)?.sequence ?? 0,
+        beforeSequence: assertion.event.sequence,
+        assertionId: assertion.event.id,
+      });
+    }
+
     for (const evidenceId of result.evidenceIds) {
       const evidence = evidenceById.get(evidenceId);
       if (
@@ -77,21 +99,10 @@ export function validatePassEvidenceFreshness(
 
       for (const assertion of citingAssertions) {
         const stepId = assertion.payload.stepId;
-        const latestInteraction = completedInteractions
-          .filter(
-            ({ event, plan }) =>
-              stepId !== undefined &&
-              plan.payload.stepId === stepId &&
-              event.sequence < assertion.event.sequence,
-          )
-          .reduce<RunEvent | undefined>(
-            (latest, { event }) =>
-              latest === undefined || event.sequence > latest.sequence
-                ? event
-                : latest,
-            undefined,
-          );
-        const freshnessSequence = latestInteraction?.sequence ?? 0;
+        const freshnessSequence =
+          stepId === undefined
+            ? 0
+            : (latestInteractionByStep.get(stepId)?.sequence ?? 0);
         const capture = plans.get(evidence.payload.captureActionId);
         const captureCompleted = completedByActionId.get(
           evidence.payload.captureActionId,
@@ -109,17 +120,6 @@ export function validatePassEvidenceFreshness(
           throw staleEvidence(assertion.event.id, evidenceId);
         }
 
-        validateObservations({
-          eventsById: byId,
-          plans,
-          completedByActionId,
-          observationIds: assertion.payload.observationIds,
-          stepId,
-          freshnessSequence,
-          beforeSequence: assertion.event.sequence,
-          assertionId: assertion.event.id,
-          evidenceId,
-        });
         validateObservations({
           eventsById: byId,
           plans,
@@ -154,7 +154,7 @@ function validateObservations(input: {
   freshnessSequence: number;
   beforeSequence: number;
   assertionId: string;
-  evidenceId: string;
+  evidenceId?: string;
 }): void {
   if (input.observationIds.length === 0) {
     throw staleEvidence(input.assertionId, input.evidenceId);
@@ -185,14 +185,14 @@ function validateObservations(input: {
 
 function staleEvidence(
   assertionId: string | undefined,
-  evidenceId: string,
+  evidenceId?: string,
 ): AiQaError {
   return new AiQaError(
     "verdict.stale_post_action_evidence",
     "Post-action evidence must be captured from fresh observations for the asserted step",
     {
       ...(assertionId === undefined ? {} : { assertionId }),
-      evidenceId,
+      ...(evidenceId === undefined ? {} : { evidenceId }),
     },
   );
 }

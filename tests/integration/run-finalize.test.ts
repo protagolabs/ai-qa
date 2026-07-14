@@ -49,7 +49,12 @@ const config: ProjectConfig = {
   secretReferences: {},
 };
 
-async function createRun() {
+async function createRun(
+  options: {
+    screenshots?: "required" | "on-failure" | "optional";
+    requiredEvidence?: string[];
+  } = {},
+) {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-finalize-project-"));
   const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-finalize-home-"));
   await confirmProjectTrust({
@@ -69,13 +74,15 @@ async function createRun() {
           {
             id: "authenticated-home-visible",
             description: "Authenticated home is visible",
-            requiredEvidence: ["post-action-screenshot"],
+            requiredEvidence: options.requiredEvidence ?? [
+              "post-action-screenshot",
+            ],
           },
         ],
         readiness: { platform: "web", status: "ready", checks: [] },
       }),
       evidencePolicy: {
-        screenshots: "required",
+        screenshots: options.screenshots ?? "required",
         defaultSensitivity: "internal",
       },
       startedAt,
@@ -167,6 +174,66 @@ async function recordSupportedCriterion(
     stepId,
   });
   return { assertion, evidence };
+}
+
+async function recordObservationForStep(
+  fixture: Awaited<ReturnType<typeof createRun>>,
+  stepId: string,
+  idempotencyKey: string,
+) {
+  const action = await fixture.protocol.planAction({
+    idempotencyKey,
+    kind: "observation",
+    intent: "Observe authenticated home",
+    tool: "chrome-devtools-mcp",
+    target: { description: "Authenticated home" },
+    stepId,
+  });
+  await fixture.protocol.completeAction({
+    actionId: action.id,
+    phase: "completed",
+    toolResult: { summary: "Observed authenticated home" },
+  });
+  return fixture.protocol.addObservation({
+    actionId: action.id,
+    summary: "Authenticated home is visible",
+    state: { screen: "home" },
+  });
+}
+
+function recordSemanticAssertion(
+  fixture: Awaited<ReturnType<typeof createRun>>,
+  stepId: string,
+  observationId: string,
+) {
+  return fixture.protocol.recordAssertion({
+    criterionId: "authenticated-home-visible",
+    status: "satisfied",
+    assertionKinds: ["semantic-ui"],
+    actual: "Authenticated home is visible",
+    expected: "Authenticated home is visible",
+    observationIds: [observationId],
+    evidenceIds: [],
+    stepId,
+  });
+}
+
+function recordSemanticPass(
+  fixture: Awaited<ReturnType<typeof createRun>>,
+  assertionId: string,
+) {
+  return fixture.verdicts.set({
+    classification: "pass",
+    summary: "Authenticated home is supported by a semantic assertion",
+    criterionResults: [
+      {
+        criterionId: "authenticated-home-visible",
+        status: "satisfied",
+        assertionIds: [assertionId],
+        evidenceIds: [],
+      },
+    ],
+  });
 }
 
 async function recordStalePass(fixture: Awaited<ReturnType<typeof createRun>>) {
@@ -493,6 +560,147 @@ describe("finalizeRun", () => {
     ).rejects.toMatchObject({
       code: "verdict.stale_post_action_evidence",
     });
+  });
+
+  it("rejects a stale assertion observation when screenshots are optional", async () => {
+    const fixture = await createRun({
+      screenshots: "optional",
+      requiredEvidence: ["semantic-ui"],
+    });
+    const stepId = "step-login";
+    const beforeAction = await fixture.protocol.planAction({
+      idempotencyKey: "observe-before-login",
+      kind: "observation",
+      intent: "Observe the login form before submission",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId,
+    });
+    await fixture.protocol.completeAction({
+      actionId: beforeAction.id,
+      phase: "completed",
+      toolResult: { summary: "Observed the login form" },
+    });
+    const staleObservation = await fixture.protocol.addObservation({
+      actionId: beforeAction.id,
+      summary: "The login form is visible",
+      state: { screen: "login" },
+    });
+    const interaction = await fixture.protocol.planAction({
+      idempotencyKey: "submit-login",
+      kind: "interaction",
+      intent: "Submit valid credentials",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId,
+    });
+    await fixture.protocol.completeAction({
+      actionId: interaction.id,
+      phase: "completed",
+      toolResult: { summary: "Credentials submitted" },
+    });
+    const assertion = await fixture.protocol.recordAssertion({
+      criterionId: "authenticated-home-visible",
+      status: "satisfied",
+      assertionKinds: ["semantic-ui"],
+      actual: "Authenticated home is visible",
+      expected: "Authenticated home is visible",
+      observationIds: [staleObservation.id],
+      evidenceIds: [],
+      stepId,
+    });
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "A pre-login observation cannot support the post-login pass",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [assertion.id],
+          evidenceIds: [],
+        },
+      ],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({
+      code: "verdict.stale_post_action_evidence",
+    });
+  });
+
+  it("accepts a fresh assertion observation when screenshots are optional", async () => {
+    const fixture = await createRun({
+      screenshots: "optional",
+      requiredEvidence: ["semantic-ui"],
+    });
+    const stepId = "step-login";
+    const interaction = await fixture.protocol.planAction({
+      idempotencyKey: "submit-before-observation",
+      kind: "interaction",
+      intent: "Submit valid credentials",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId,
+    });
+    await fixture.protocol.completeAction({
+      actionId: interaction.id,
+      phase: "completed",
+      toolResult: { summary: "Credentials submitted" },
+    });
+    const observation = await recordObservationForStep(
+      fixture,
+      stepId,
+      "observe-after-login",
+    );
+    const assertion = await recordSemanticAssertion(
+      fixture,
+      stepId,
+      observation.id,
+    );
+    await recordSemanticPass(fixture, assertion.id);
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).resolves.toMatchObject({ status: "completed", verdict: "pass" });
+  });
+
+  it("preserves observation-only passes without interactions", async () => {
+    const fixture = await createRun({
+      screenshots: "optional",
+      requiredEvidence: ["semantic-ui"],
+    });
+    const stepId = "step-static-page";
+    const observation = await recordObservationForStep(
+      fixture,
+      stepId,
+      "observe-static-page",
+    );
+    const assertion = await recordSemanticAssertion(
+      fixture,
+      stepId,
+      observation.id,
+    );
+    await recordSemanticPass(fixture, assertion.id);
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).resolves.toMatchObject({ status: "completed", verdict: "pass" });
   });
 
   it("revalidates pre-action evidence on a completed finalize retry", async () => {
