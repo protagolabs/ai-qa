@@ -29,4 +29,14 @@ describe("filesystem integrity helpers", () => {
       readJsonLines(path, z.object({ id: z.number().int() })),
     ).rejects.toThrow();
   });
+
+  it("rejects a non-empty JSONL file without a final newline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-jsonl-tail-"));
+    const path = join(root, "records.jsonl");
+    await writeFile(path, '{"id":1}');
+
+    await expect(
+      readJsonLines(path, z.object({ id: z.number().int() })),
+    ).rejects.toThrow("newline-terminated");
+  });
 });

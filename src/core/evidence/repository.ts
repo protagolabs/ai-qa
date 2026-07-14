@@ -15,7 +15,7 @@ import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
-import { readJsonLines } from "../fs/json-lines.js";
+import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
 import { actionIdSchema, runIdSchema } from "../runs/schema.js";
 import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
@@ -132,7 +132,6 @@ export class EvidenceRepository {
 
     let copiedPath: string | undefined;
     let ownsCopiedPath = false;
-    let appendStarted = false;
     try {
       const records = await this.readAll();
       const sourceHash = sha256(await readFile(input.sourcePath));
@@ -190,17 +189,11 @@ export class EvidenceRepository {
         idempotencyKey: input.idempotencyKey,
       });
 
-      const handle = await open(this.paths.index, "a", 0o600);
-      appendStarted = true;
-      try {
-        await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await writeJsonLines(this.paths.index, [...records, record]);
+      ownsCopiedPath = false;
       return record;
     } catch (error: unknown) {
-      if (copiedPath !== undefined && ownsCopiedPath && !appendStarted) {
+      if (copiedPath !== undefined && ownsCopiedPath) {
         try {
           await rm(copiedPath);
         } catch {

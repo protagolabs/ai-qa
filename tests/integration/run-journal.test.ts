@@ -50,6 +50,35 @@ const readyPayload = exploratoryRunInputSchema.parse({
 });
 
 describe("RunJournal", () => {
+  it("persists newline-terminated replacements across journal instances", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    const journal = await RunJournal.create(projectRoot, "run-1", now);
+    await journal.append({
+      type: "run",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "start-run-1",
+      payload: { phase: "started" },
+      relatedIds: [],
+    });
+    await journal.append({
+      type: "decision",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "decision-run-1",
+      payload: { reason: "persist both events" },
+      relatedIds: [],
+    });
+    const path = join(projectRoot, ".ai-qa", "runs", "run-1", "events.jsonl");
+    const reopened = RunJournal.open(projectRoot, "run-1", now);
+
+    expect(await readFile(path, "utf8")).toMatch(/[^\n]\n$/u);
+    await expect(reopened.readAll()).resolves.toHaveLength(2);
+  });
+
   it("serializes sequence numbers and makes idempotent retries stable", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
     const journal = await RunJournal.create(

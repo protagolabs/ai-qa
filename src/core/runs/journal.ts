@@ -3,7 +3,7 @@ import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
-import { readJsonLines } from "../fs/json-lines.js";
+import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -183,13 +183,8 @@ export class RunJournal {
       timestamp,
       ...input,
     });
-    const handle = await open(this.path, "a", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    const nextEvents = [...events, event];
+    await writeJsonLines(this.path, nextEvents);
     events.push(event);
     return event;
   }

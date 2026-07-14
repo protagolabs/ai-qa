@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 import { z } from "zod";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
@@ -38,19 +39,32 @@ export class TrustStore {
   }
 
   async trust(identity: RepositoryIdentity, confirmedAt: Date): Promise<void> {
-    const current = await this.read();
-    const entry = {
-      canonicalPath: identity.canonicalPath,
-      fingerprint: identity.fingerprint,
-      confirmedAt: confirmedAt.toISOString(),
-    };
-    const entries = current.entries.filter(
-      (value) => value.canonicalPath !== identity.canonicalPath,
-    );
-    await atomicWriteFile(
-      this.path,
-      `${JSON.stringify({ schemaVersion: 1, entries: [...entries, entry] }, null, 2)}\n`,
-    );
+    await mkdir(this.aiQaHome, { recursive: true, mode: 0o700 });
+    const release = await lockfile.lock(this.aiQaHome, {
+      realpath: false,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+    });
+    try {
+      const current = await this.read();
+      const entry = {
+        canonicalPath: identity.canonicalPath,
+        fingerprint: identity.fingerprint,
+        confirmedAt: confirmedAt.toISOString(),
+      };
+      const entries = current.entries.filter(
+        (value) => value.canonicalPath !== identity.canonicalPath,
+      );
+      await atomicWriteFile(
+        this.path,
+        `${JSON.stringify(
+          { schemaVersion: 1, entries: [...entries, entry] },
+          null,
+          2,
+        )}\n`,
+      );
+    } finally {
+      await release();
+    }
   }
 
   async isTrusted(identity: RepositoryIdentity): Promise<boolean> {

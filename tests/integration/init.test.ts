@@ -337,6 +337,27 @@ describe("trust confirm CLI", () => {
 });
 
 describe("machine trust boundary", () => {
+  it("preserves every concurrent trust confirmation", async () => {
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-trust-home-"));
+    const roots = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        mkdtemp(join(tmpdir(), "ai-qa-trust-project-")),
+      ),
+    );
+    const identities = await Promise.all(roots.map(readRepositoryIdentity));
+    const store = new TrustStore(aiQaHome);
+
+    await Promise.all(
+      identities.map((identity) =>
+        store.trust(identity, new Date("2026-07-13T00:00:00.000Z")),
+      ),
+    );
+
+    await expect(
+      Promise.all(identities.map((identity) => store.isTrusted(identity))),
+    ).resolves.toEqual(Array.from({ length: 20 }, () => true));
+  });
+
   it("invalidates trust when repository identity changes", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-identity-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-home-"));

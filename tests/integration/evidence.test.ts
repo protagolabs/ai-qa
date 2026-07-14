@@ -145,6 +145,44 @@ describe("actionPayloadSchema", () => {
 });
 
 describe("EvidenceRepository", () => {
+  it("persists newline-terminated replacements across repository instances", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-"));
+    const firstSource = join(projectRoot, "first.png");
+    const secondSource = join(projectRoot, "second.png");
+    await writeFile(firstSource, "first");
+    await writeFile(secondSource, "second");
+    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    await repository.registerRaw({
+      sourcePath: firstSource,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-first",
+      idempotencyKey: "first",
+    });
+    await repository.registerRaw({
+      sourcePath: secondSource,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-second",
+      idempotencyKey: "second",
+    });
+    const path = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const reopened = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+
+    expect(await readFile(path, "utf8")).toMatch(/[^\n]\n$/u);
+    await expect(reopened.readAll()).resolves.toHaveLength(2);
+  });
+
   it("waits for a realistic evidence critical section instead of failing after 350 ms", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-lock-"));
     const firstSource = join(projectRoot, "first.png");
