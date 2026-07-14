@@ -1,5 +1,6 @@
 import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import {
   calculateCaseContentHash,
   calculateWebVariantHash,
@@ -86,14 +87,16 @@ export async function generateRunReport(
     input.runId,
     true,
   );
-  const writes: Promise<void>[] = [];
-  if (paths.jsonPath !== undefined) {
-    writes.push(atomicWriteFile(resolve(directory, "report.json"), json));
-  }
-  if (paths.markdownPath !== undefined) {
-    writes.push(atomicWriteFile(resolve(directory, "report.md"), markdown));
-  }
-  await Promise.all(writes);
+  await withReportLock(directory, async () => {
+    const writes: Promise<void>[] = [];
+    if (paths.jsonPath !== undefined) {
+      writes.push(atomicWriteFile(resolve(directory, "report.json"), json));
+    }
+    if (paths.markdownPath !== undefined) {
+      writes.push(atomicWriteFile(resolve(directory, "report.md"), markdown));
+    }
+    await Promise.all(writes);
+  });
   return { report: verified.report, ...paths };
 }
 
@@ -107,36 +110,54 @@ export async function exportProjectLocalRunReport(
     input.runId,
     false,
   );
-  let persistedJson: RunReport | undefined;
-  if (paths.jsonPath !== undefined) {
-    const path = resolve(directory, "report.json");
-    await requireRegularReportFile(path, input.runId, paths.jsonPath);
-    try {
-      persistedJson = runReportSchema.parse(
-        JSON.parse(await readFile(path, "utf8")),
-      );
-    } catch {
-      throw reportIntegrityError(input.runId, paths.jsonPath);
+  await withReportLock(directory, async () => {
+    let persistedJson: RunReport | undefined;
+    if (paths.jsonPath !== undefined) {
+      const path = resolve(directory, "report.json");
+      await requireRegularReportFile(path, input.runId, paths.jsonPath);
+      try {
+        persistedJson = runReportSchema.parse(
+          JSON.parse(await readFile(path, "utf8")),
+        );
+      } catch {
+        throw reportIntegrityError(input.runId, paths.jsonPath);
+      }
+      if (
+        persistedJson.run.id !== input.runId ||
+        canonicalJson(stableReportContent(persistedJson)) !==
+          canonicalJson(stableReportContent(verified.report))
+      ) {
+        throw reportIntegrityError(input.runId, paths.jsonPath);
+      }
     }
-    if (
-      persistedJson.run.id !== input.runId ||
-      canonicalJson(stableReportContent(persistedJson)) !==
-        canonicalJson(stableReportContent(verified.report))
-    ) {
-      throw reportIntegrityError(input.runId, paths.jsonPath);
+    if (paths.markdownPath !== undefined) {
+      const path = resolve(directory, "report.md");
+      await requireRegularReportFile(path, input.runId, paths.markdownPath);
+      const markdown = await readFile(path, "utf8");
+      const expectedReport =
+        persistedJson ??
+        reportWithMarkdownTimestamps(verified.report, markdown);
+      if (markdown !== renderRunReportMarkdown(expectedReport)) {
+        throw reportIntegrityError(input.runId, paths.markdownPath);
+      }
     }
-  }
-  if (paths.markdownPath !== undefined) {
-    const path = resolve(directory, "report.md");
-    await requireRegularReportFile(path, input.runId, paths.markdownPath);
-    const markdown = await readFile(path, "utf8");
-    const expectedReport =
-      persistedJson ?? reportWithMarkdownTimestamps(verified.report, markdown);
-    if (markdown !== renderRunReportMarkdown(expectedReport)) {
-      throw reportIntegrityError(input.runId, paths.markdownPath);
-    }
-  }
+  });
   return paths;
+}
+
+async function withReportLock<T>(
+  directory: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const release = await lockfile.lock(directory, {
+    realpath: false,
+    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+  });
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
 }
 
 async function buildVerifiedRunReport(

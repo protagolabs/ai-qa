@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import {
@@ -276,6 +277,155 @@ async function appendDuplicateTypedEvidenceEvent(
 }
 
 describe("generateRunReport", () => {
+  it("waits for the per-run report lock before replacing an artifact set", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      "run-1",
+    );
+    const release = await lockfile.lock(directory, { realpath: false });
+    let settled = false;
+    let verificationReached!: () => void;
+    const verified = new Promise<void>((resolve) => {
+      verificationReached = resolve;
+    });
+    const generation = generateRunReport({
+      ...fixture,
+      runId: "run-1",
+      now: () => {
+        verificationReached();
+        return new Date("2026-07-13T00:30:00.000Z");
+      },
+    }).finally(() => {
+      settled = true;
+    });
+
+    try {
+      await verified;
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(settled).toBe(false);
+    } finally {
+      await release();
+    }
+    await expect(generation).resolves.toMatchObject({
+      jsonPath: ".ai-qa/reports/runs/run-1/report.json",
+      markdownPath: ".ai-qa/reports/runs/run-1/report.md",
+    });
+  });
+
+  it("keeps concurrent generated JSON and Markdown artifacts coherent", async () => {
+    const fixture = await completedRun();
+    const firstTimestamp = "2026-07-13T00:30:00.000Z";
+    const secondTimestamp = "2026-07-13T00:35:00.000Z";
+
+    await Promise.all([
+      generateRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date(firstTimestamp),
+      }),
+      generateRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date(secondTimestamp),
+      }),
+    ]);
+
+    const directory = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      "run-1",
+    );
+    const json = runReportSchema.parse(
+      JSON.parse(await readFile(join(directory, "report.json"), "utf8")),
+    );
+    const markdown = await readFile(join(directory, "report.md"), "utf8");
+    expect([firstTimestamp, secondTimestamp]).toContain(
+      json.integrity.verifiedAt,
+    );
+    expect(json.generatedAt).toBe(json.integrity.verifiedAt);
+    expect(markdown).toContain(`- Generated: ${json.generatedAt}\n`);
+    expect(markdown).toContain(`Verified at ${json.integrity.verifiedAt}.`);
+    await expect(
+      exportProjectLocalRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date("2026-07-13T00:40:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      jsonPath: ".ai-qa/reports/runs/run-1/report.json",
+      markdownPath: ".ai-qa/reports/runs/run-1/report.md",
+    });
+  });
+
+  it("serializes generation and export at the per-run artifact boundary", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      "run-1",
+    );
+    const release = await lockfile.lock(directory, { realpath: false });
+    let generationVerificationReached!: () => void;
+    const generationVerified = new Promise<void>((resolve) => {
+      generationVerificationReached = resolve;
+    });
+    let exportVerificationReached!: () => void;
+    const exportVerified = new Promise<void>((resolve) => {
+      exportVerificationReached = resolve;
+    });
+    let generationSettled = false;
+    let exportSettled = false;
+    const generation = generateRunReport({
+      ...fixture,
+      runId: "run-1",
+      now: () => {
+        generationVerificationReached();
+        return new Date("2026-07-13T00:30:00.000Z");
+      },
+    }).finally(() => {
+      generationSettled = true;
+    });
+    const exported = exportProjectLocalRunReport({
+      ...fixture,
+      runId: "run-1",
+      now: () => {
+        exportVerificationReached();
+        return new Date("2026-07-13T00:35:00.000Z");
+      },
+    }).finally(() => {
+      exportSettled = true;
+    });
+
+    try {
+      await Promise.all([generationVerified, exportVerified]);
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(generationSettled).toBe(false);
+      expect(exportSettled).toBe(false);
+    } finally {
+      await release();
+    }
+    await expect(Promise.all([generation, exported])).resolves.toEqual([
+      expect.objectContaining({
+        jsonPath: ".ai-qa/reports/runs/run-1/report.json",
+        markdownPath: ".ai-qa/reports/runs/run-1/report.md",
+      }),
+      {
+        jsonPath: ".ai-qa/reports/runs/run-1/report.json",
+        markdownPath: ".ai-qa/reports/runs/run-1/report.md",
+      },
+    ]);
+  });
+
   it("writes configured project-local JSON and Markdown with deterministic identity", async () => {
     const fixture = await completedRun();
 
@@ -769,6 +919,18 @@ describe("generateRunReport", () => {
 });
 
 describe("report CLI and project-local export", () => {
+  it("preserves the missing-report domain error before lock acquisition", async () => {
+    const fixture = await completedRun();
+
+    await expect(
+      exportProjectLocalRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: generatedNow,
+      }),
+    ).rejects.toMatchObject({ code: "report.not_generated" });
+  });
+
   it("generates and exports only project-relative configured paths", async () => {
     const fixture = await completedRun();
     const captured = createCapturedCli({
