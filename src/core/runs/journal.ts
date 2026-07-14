@@ -149,18 +149,30 @@ export class RunJournal {
         retries: { retries: 3, minTimeout: 50 },
       });
     } catch (error: unknown) {
-      if (
-        isNodeError(error, "ENOENT") ||
-        (error instanceof AiQaError &&
-          error.code === "storage.integrity_error" &&
-          isMissingStoragePath(error))
-      ) {
-        throw new AiQaError("run.not_found", "Run does not exist", {
-          runId: this.runId,
-        });
-      }
+      if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
       throw error;
     }
+  }
+
+  private async throwMissingRunOrJournal(): Promise<never> {
+    try {
+      await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "runs",
+        this.runId,
+        "work-order.json",
+      ]);
+    } catch (error: unknown) {
+      if (!isMissingStoragePath(error)) throw error;
+      throw new AiQaError("run.not_found", "Run does not exist", {
+        runId: this.runId,
+      });
+    }
+    throw new AiQaError(
+      "journal.integrity_error",
+      "Run journal integrity verification failed",
+      { runId: this.runId },
+    );
   }
 
   private async appendToSnapshot(
@@ -199,8 +211,13 @@ export class RunJournal {
   }
 }
 
-function isMissingStoragePath(error: AiQaError): boolean {
-  return error.details.causeCode === "ENOENT";
+function isMissingStoragePath(error: unknown): boolean {
+  return (
+    isNodeError(error, "ENOENT") ||
+    (error instanceof AiQaError &&
+      error.code === "storage.integrity_error" &&
+      error.details.causeCode === "ENOENT")
+  );
 }
 
 function isNodeError(error: unknown, code: string): boolean {

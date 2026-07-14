@@ -291,6 +291,22 @@ describe("strict work-order integrity", () => {
     });
   });
 
+  it("treats a missing journal after a valid work order as partial corruption", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-partial-run-order-"),
+    );
+    const { repository } = await createRepositoryRun(projectRoot);
+    await rm(join(runDirectory(projectRoot), "events.jsonl"));
+
+    await expect(
+      repository.readVerifiedWorkOrder("run-1"),
+    ).rejects.toMatchObject({
+      code: "work_order.integrity_error",
+      message: "Work order integrity verification failed",
+      details: { runId: "run-1" },
+    });
+  });
+
   it("does not misreport a symlinked work order as missing", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-symlinked-order-"));
     const { repository } = await createRepositoryRun(projectRoot);

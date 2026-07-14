@@ -109,12 +109,22 @@ export class RunRepository {
 
   async readVerifiedWorkOrder(runId: string): Promise<WorkOrder> {
     resolveRunPaths(this.projectRoot, runId);
+    let serialized: string;
     try {
       const workOrderPath = await requireProjectLocalRegularFile(
         this.projectRoot,
         [".ai-qa", "runs", runId, "work-order.json"],
       );
-      const raw: unknown = JSON.parse(await readFile(workOrderPath, "utf8"));
+      serialized = await readFile(workOrderPath, "utf8");
+    } catch (error: unknown) {
+      if (isMissingStoragePath(error)) {
+        throw new AiQaError("run.not_found", "Run does not exist", { runId });
+      }
+      throw workOrderIntegrityError(runId);
+    }
+
+    try {
+      const raw: unknown = JSON.parse(serialized);
       const workOrder = workOrderSchema.parse(raw);
       const rawHash = sha256Canonical(raw);
       const validatedHash = sha256Canonical(workOrder);
@@ -130,20 +140,8 @@ export class RunRepository {
         throw new Error("work order hash mismatch");
       }
       return deepFreezeWorkOrder(workOrder) as WorkOrder;
-    } catch (error: unknown) {
-      if (
-        isNodeError(error, "ENOENT") ||
-        (error instanceof AiQaError &&
-          error.code === "storage.integrity_error" &&
-          error.details.causeCode === "ENOENT")
-      ) {
-        throw new AiQaError("run.not_found", "Run does not exist", { runId });
-      }
-      throw new AiQaError(
-        "work_order.integrity_error",
-        "Work order integrity verification failed",
-        { runId },
-      );
+    } catch {
+      throw workOrderIntegrityError(runId);
     }
   }
 
@@ -151,6 +149,23 @@ export class RunRepository {
     resolveRunPaths(this.projectRoot, runId);
     return RunJournal.open(this.projectRoot, runId, this.now);
   }
+}
+
+function workOrderIntegrityError(runId: string): AiQaError {
+  return new AiQaError(
+    "work_order.integrity_error",
+    "Work order integrity verification failed",
+    { runId },
+  );
+}
+
+function isMissingStoragePath(error: unknown): boolean {
+  return (
+    isNodeError(error, "ENOENT") ||
+    (error instanceof AiQaError &&
+      error.code === "storage.integrity_error" &&
+      error.details.causeCode === "ENOENT")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

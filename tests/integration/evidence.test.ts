@@ -654,6 +654,40 @@ describe("registerEvidence", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("treats a missing journal in an existing run as partial corruption", async () => {
+    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const source = join(projectRoot, "partial-run.png");
+    await writeFile(source, Buffer.from("partial-run-image"));
+    await rm(join(projectRoot, ".ai-qa", "runs", "run-1", "events.jsonl"));
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        aiQaHome,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "partial-run-evidence",
+        },
+        criterionIds: [],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({
+      code: "journal.integrity_error",
+      message: "Run journal integrity verification failed",
+      details: { runId: "run-1" },
+    });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence", "run-1")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects forged protocol metadata before mutating evidence storage", async () => {
     const { projectRoot, aiQaHome, captureActionId, runRepository } =
       await createTrustedRun();
