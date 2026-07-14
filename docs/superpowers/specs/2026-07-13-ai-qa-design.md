@@ -68,6 +68,8 @@ The CLI owns the canonical project configuration, event log, per-run evidence in
 
 The executable is global, but every target project has an independent `.ai-qa/` directory. Commands must resolve and confirm the project root before mutation. Data from two projects must never share a run, case, evidence index, or report directory.
 
+Every `.ai-qa` storage ancestor and artifact is verified with `lstat` and `realpath` before use. Symlinked or non-canonical directories and files are rejected rather than followed, including links that resolve back inside the project.
+
 ### 4.4 Mandatory write-back
 
 The AI may call Chrome DevTools MCP, Pepper, or Appium directly. Every meaningful action, observation, assertion, screenshot, recovery decision, and verdict must still be registered through `ai-qa`. A flow that is not completely written back cannot be promoted to an active regression case.
@@ -351,6 +353,8 @@ Required event types are:
 
 An `action` event has a `phase` of `planned`, `completed`, or `unknown`. Before invoking an external platform tool, the agent appends the `planned` event and receives the action ID and idempotency key. After the tool returns, it appends a second `action` event with `completed` or `unknown` phase referencing the planned action. This makes a crash between intent and write-back visible instead of silently losing the operation.
 
+Journal mutation holds the run lock and commits the complete JSON Lines snapshot through atomic replacement. Every non-empty `events.jsonl` has a mandatory final newline; truncated or unterminated journals fail integrity validation rather than being partially accepted.
+
 Regression events reference the required `stepId`. Additional recovery actions reference `recoveryForStepId`; they cannot replace, skip, or reorder a required step.
 
 ### 9.4 Evidence
@@ -368,6 +372,10 @@ Evidence metadata includes:
 Raw evidence is immutable. Redacted and annotated files are new derived artifacts and never overwrite the raw file.
 
 Evidence files and their append-only index live under `.ai-qa/evidence/<run-id>/`. Each run owns its evidence index and lock, so parallel platform runs never contend on a shared mutable registry. A project-wide evidence view is derived from per-run indexes and can be rebuilt; it is not another source of truth.
+
+Each evidence-index mutation holds the per-run index lock and commits the complete JSON Lines snapshot through atomic replacement with a mandatory final newline. The index and typed `evidence` events have exact one-to-one canonical parity: duplicate, missing, extra, or mismatched records are integrity failures.
+
+For Web, every planned platform action records `tool: "chrome-devtools-mcp"`; every evidence record uses `sourceTool: "chrome-devtools-mcp"` and must match its completed evidence-capture action. Output from another controller cannot be relabeled as Chrome DevTools evidence.
 
 `evidence add` calculates and stores the content hash before accepting the evidence event. The CLI re-verifies registered evidence on `run resume`, before `run finish`, and before report generation or export. A mismatch before completion prevents the current verdict from being finalized and requires a typed `blocked:evidence` verdict or replacement evidence. A mismatch discovered after completion produces an integrity error and refuses a normal report/export without rewriting the historical verdict.
 
@@ -410,9 +418,9 @@ Run verdict is independent of execution status:
 pass | fail | blocked | not_verified
 ```
 
-An exploratory session is not a separate entity. It is a run with `kind: exploratory`; a regression execution is a run with `kind: regression`. `execution` separately records `local` or `ci`. `completed` requires a terminal verdict. A cancelled run is terminal and receives a `not_verified` verdict with a cancellation reason.
+An exploratory session is not a separate entity. It is a run with `kind: exploratory`; a regression execution is a run with `kind: regression`. `execution` separately records `local` or `ci`. `completed` requires a terminal verdict. Cancellation is lifecycle-owned: only `run cancel` creates the terminal canonical `not_verified/cancelled` verdict, its summary matches the lifecycle reason, and its `criterionResults` is exactly empty.
 
-The append-only log may contain verdict revisions, but it has exactly one effective verdict. `verdict set` creates the first verdict. A later correction must use `verdict revise --supersedes <verdict-id>` and may occur only before `run finish`; implicit last-wins behavior is forbidden. `run finish` rejects zero effective verdicts, multiple unsuperseded verdicts, or a supersession chain that does not end at the effective verdict. Completed and cancelled runs cannot revise verdicts.
+The append-only log may contain verdict revisions, but it has exactly one effective verdict. `verdict set` creates the first verdict; an identical retry returns the original event without appending a second verdict. A later correction must use `verdict revise --supersedes <verdict-id>` and may occur only before `run finish`; implicit last-wins behavior is forbidden. `verdict set` and `verdict revise` reject `not_verified/cancelled`. `run finish` rejects zero effective verdicts, multiple unsuperseded verdicts, or a supersession chain that does not end at the effective verdict. Completed and cancelled runs cannot revise verdicts.
 
 ### 9.6 Regression run groups
 
@@ -478,6 +486,10 @@ An exploratory run defaults to 100 tool calls, 10 recovery actions, and a 30-min
 
 A tool call is any external Chrome DevTools MCP, Pepper, or Appium invocation, including read-only observation and screenshot calls. A recovery action is a state-changing external invocation marked `recoveryForStepId`. Generic budget exhaustion produces `not_verified` with reason `budget_exhausted`; when evidence identifies repeated platform-tool failure as the cause, the result is `blocked:tool`.
 
+### 9.8 Run reports
+
+Configured JSON and Markdown generation and project-local export use one per-run report-directory lock for the complete multi-format operation. Reports are built from a locked, integrity-verified journal plus exact-parity evidence state; JSON and Markdown must describe the same run, verdict, evidence, and integrity verification time. A stale or mismatched artifact is rejected instead of exported as a verified report.
+
 ## 10. CLI surface
 
 The CLI command groups are:
@@ -502,9 +514,9 @@ ai-qa report              Report generation and export
 Important commands include:
 
 ```text
-ai-qa init
-ai-qa configure
-ai-qa doctor --platform <platform> --json
+ai-qa init --stdin-json
+ai-qa configure --stdin-json
+ai-qa doctor --platform <platform> --json --stdin-json
 ai-qa setup plan --platform <platform>
 ai-qa setup apply <plan-id>
 ai-qa skill install --global
@@ -513,19 +525,19 @@ ai-qa skill check
 ai-qa skill sync [--global]
 ai-qa run start --kind exploratory --platform <platform> --execution local --stdin-json
 ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json
-ai-qa action complete <action-id> --stdin-json
+ai-qa action complete <action-id> --run <run-id> --stdin-json
 ai-qa observation add --run <run-id> --stdin-json
 ai-qa assertion record --run <run-id> --step <step-id> --stdin-json
 ai-qa evidence add --run <run-id> --file <path> --stdin-json
 ai-qa decision record --run <run-id> --stdin-json
-ai-qa recovery resolve <action-id> --stdin-json
+ai-qa recovery resolve <action-id> --run <run-id> --stdin-json
 ai-qa blocker record --run <run-id> --stdin-json
 ai-qa verdict set --run <run-id> --stdin-json
 ai-qa verdict revise --run <run-id> --supersedes <verdict-id> --stdin-json
-ai-qa case draft --from-run <run-id>
+ai-qa case draft --from-run <run-id> --stdin-json
 ai-qa case validate <case-id> --revision <revision>
-ai-qa case activate <case-id> --revision <revision>
-ai-qa run start --kind regression --case <case-id> --platform <platform> --execution local|ci
+ai-qa case activate <case-id> --revision <revision> --stdin-json
+ai-qa run start --kind regression --case <case-id> --platform <platform> --execution local|ci --stdin-json
 ai-qa run resume <run-id>
 ai-qa run cancel <run-id> --reason <reason>
 ai-qa run finish <run-id>
@@ -535,7 +547,7 @@ ai-qa run-group cancel <run-group-id> --reason <reason>
 ai-qa run-group finish <run-group-id>
 ai-qa report generate <run-id>
 ai-qa report generate --group <run-group-id>
-ai-qa report export <run-id> --adapter <adapter-id>
+ai-qa report export <run-id> --adapter project-local
 ai-qa report export --group <run-group-id> --adapter <adapter-id>
 ```
 
@@ -585,12 +597,15 @@ Discuss and confirm the exploratory goal, acceptance criteria, and required evid
 -> register planned action and receive idempotency key
 -> invoke platform tool
 -> register completed or unknown action result
--> observe resulting UI and capture required evidence
--> register observation and assertions
+-> on the same step ID, plan and complete a fresh observation action, then register the resulting UI state
+-> on that step ID, plan and complete evidence capture, then register evidence citing the capture action and fresh observation
+-> register assertions on that step, citing the fresh observation and evidence
 -> repeat
 -> record evidence-backed verdict
 -> finish run
 ```
+
+Pre-action evidence, an observation recorded before the interaction terminal result, or evidence captured before the fresh post-action observation cannot support `pass`, case promotion, or a verified report claim.
 
 ### 11.4 Case promotion
 
@@ -626,6 +641,7 @@ Before accepting a terminal verdict, `run finish` verifies:
 - Every planned action has a completed result or an explicit recovery resolution.
 - No unknown action remains unresolved or indeterminate for a `pass` verdict.
 - Required observations, assertions, and evidence checkpoints are present and linked to their step IDs.
+- Each satisfied post-action chain orders interaction, terminal result, fresh observation, evidence capture, and assertion on the same required step ID.
 - Every acceptance criterion is covered by the verdict and cited assertion/evidence IDs.
 - Recovery actions and total tool calls remained within the frozen budget and deadline.
 - Extra recovery actions did not replace or reorder required product steps.

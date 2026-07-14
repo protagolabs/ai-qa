@@ -1,11 +1,25 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
-import type { WorkOrder } from "../../src/core/runs/schema.js";
+import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
+import { evidenceRecordSchema } from "../../src/core/evidence/schema.js";
+import { readJsonLines } from "../../src/core/fs/json-lines.js";
+import { runReportSchema } from "../../src/core/reports/schema.js";
+import {
+  actionPayloadSchema,
+  assertionPayloadSchema,
+  evidenceEventPayloadSchema,
+  observationPayloadSchema,
+} from "../../src/core/runs/event-payloads.js";
+import {
+  runEventSchema,
+  type RunEvent,
+  type WorkOrder,
+} from "../../src/core/runs/schema.js";
 import {
   activateCaseRevision,
   draftCaseFromRun,
@@ -13,7 +27,10 @@ import {
 } from "../../src/services/case-promotion/draft-case.js";
 import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
-import { generateRunReport } from "../../src/services/report-generation/generate-run-report.js";
+import {
+  exportProjectLocalRunReport,
+  generateRunReport,
+} from "../../src/services/report-generation/generate-run-report.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
@@ -84,6 +101,176 @@ interface RunProof {
   assertionIds: string[];
   assertionKinds: string[][];
   evidenceId: string;
+}
+
+interface ReportPaths {
+  jsonPath?: string;
+  markdownPath?: string;
+}
+
+async function expectCoherentWebArtifacts(input: {
+  projectRoot: string;
+  workOrder: WorkOrder;
+  report: ReportPaths;
+  exported: ReportPaths;
+}): Promise<void> {
+  expect(input.workOrder.platform).toBe("web");
+  const events = await readJsonLines(
+    join(
+      input.projectRoot,
+      ".ai-qa",
+      "runs",
+      input.workOrder.runId,
+      "events.jsonl",
+    ),
+    runEventSchema,
+  );
+  const actionEvents = events.filter((event) => event.type === "action");
+  const evidenceRecords = await readJsonLines(
+    join(
+      input.projectRoot,
+      ".ai-qa",
+      "evidence",
+      input.workOrder.runId,
+      "index.jsonl",
+    ),
+    evidenceRecordSchema,
+  );
+  expect(actionEvents.length).toBeGreaterThan(0);
+  expect(
+    actionEvents.every((event) => event.tool === "chrome-devtools-mcp"),
+  ).toBe(true);
+  expect(evidenceRecords.length).toBeGreaterThan(0);
+  expect(
+    evidenceRecords.every(
+      (record) => record.sourceTool === "chrome-devtools-mcp",
+    ),
+  ).toBe(true);
+  expect(new Set(evidenceRecords.map((record) => record.id)).size).toBe(
+    evidenceRecords.length,
+  );
+  expect(() =>
+    validateEvidenceParity(events, evidenceRecords, input.workOrder.runId),
+  ).not.toThrow();
+
+  for (const record of evidenceRecords) {
+    expectFreshPostActionChain(events, record.id);
+  }
+
+  if (
+    input.report.jsonPath === undefined ||
+    input.report.markdownPath === undefined
+  ) {
+    throw new Error("Web E2E requires configured JSON and Markdown reports");
+  }
+  expect(input.exported).toEqual({
+    jsonPath: input.report.jsonPath,
+    markdownPath: input.report.markdownPath,
+  });
+  const json = runReportSchema.parse(
+    JSON.parse(
+      await readFile(join(input.projectRoot, input.report.jsonPath), "utf8"),
+    ),
+  );
+  const markdown = await readFile(
+    join(input.projectRoot, input.report.markdownPath),
+    "utf8",
+  );
+  expect(json.run).toMatchObject({
+    id: input.workOrder.runId,
+    platform: "web",
+    status: "completed",
+  });
+  expect(json.verdict.classification).toBe("pass");
+  expect(json.timeline.map((entry) => entry.eventId)).toEqual(
+    events.map((event) => event.id),
+  );
+  expect(
+    [...json.evidence].sort((left, right) => left.id.localeCompare(right.id)),
+  ).toEqual(
+    evidenceRecords
+      .map((record) => ({
+        id: record.id,
+        contentHash: record.contentHash,
+        path: record.projectRelativePath,
+        evidenceKinds: record.evidenceKinds,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  );
+  expect(markdown).toContain(`Verified at ${json.integrity.verifiedAt}.`);
+}
+
+function expectFreshPostActionChain(
+  events: readonly RunEvent[],
+  evidenceId: string,
+): void {
+  const evidenceEvent = events.find(
+    (event) =>
+      event.type === "evidence" &&
+      evidenceEventPayloadSchema.parse(event.payload).id === evidenceId,
+  );
+  if (evidenceEvent === undefined) throw new Error("Missing evidence event");
+  const evidence = evidenceEventPayloadSchema.parse(evidenceEvent.payload);
+  const capture = events.find(
+    (event) => event.type === "action" && event.id === evidence.captureActionId,
+  );
+  if (capture === undefined) throw new Error("Missing evidence-capture action");
+  const capturePayload = actionPayloadSchema.parse(capture.payload);
+  if (
+    capturePayload.phase !== "planned" ||
+    capturePayload.kind !== "evidence-capture"
+  ) {
+    throw new Error("Evidence must cite a planned evidence-capture action");
+  }
+  const captureTerminal = events.find((event) => {
+    if (event.type !== "action") return false;
+    const payload = actionPayloadSchema.parse(event.payload);
+    return payload.phase === "completed" && payload.actionId === capture.id;
+  });
+  if (captureTerminal === undefined)
+    throw new Error("Missing completed evidence-capture terminal");
+  const interaction = events.find((event) => {
+    if (event.type !== "action") return false;
+    const payload = actionPayloadSchema.parse(event.payload);
+    return (
+      payload.phase === "planned" &&
+      payload.kind === "interaction" &&
+      payload.stepId === capturePayload.stepId
+    );
+  });
+  if (interaction === undefined) throw new Error("Missing step interaction");
+  const interactionTerminal = events.find((event) => {
+    if (event.type !== "action") return false;
+    const payload = actionPayloadSchema.parse(event.payload);
+    return payload.phase === "completed" && payload.actionId === interaction.id;
+  });
+  if (interactionTerminal === undefined)
+    throw new Error("Missing interaction terminal");
+  expect(evidence.observationIds.length).toBeGreaterThan(0);
+  for (const observationId of evidence.observationIds) {
+    const observation = events.find(
+      (event) => event.type === "observation" && event.id === observationId,
+    );
+    if (observation === undefined) throw new Error("Missing observation");
+    expect(observationPayloadSchema.parse(observation.payload).stepId).toBe(
+      capturePayload.stepId,
+    );
+    expect(interactionTerminal.sequence).toBeLessThan(observation.sequence);
+    expect(observation.sequence).toBeLessThan(capture.sequence);
+  }
+  expect(capture.sequence).toBeLessThan(captureTerminal.sequence);
+  expect(captureTerminal.sequence).toBeLessThan(evidenceEvent.sequence);
+  const assertion = events.find((event) => {
+    if (event.type !== "assertion") return false;
+    const payload = assertionPayloadSchema.parse(event.payload);
+    return (
+      payload.status === "satisfied" &&
+      payload.stepId === capturePayload.stepId &&
+      payload.evidenceIds.includes(evidenceId)
+    );
+  });
+  if (assertion === undefined) throw new Error("Missing step assertion");
+  expect(evidenceEvent.sequence).toBeLessThan(assertion.sequence);
 }
 
 async function recordSuccessfulLogin(input: {
@@ -292,7 +479,13 @@ async function replayActiveCase(input: {
     runId: workOrder.runId,
     now,
   });
-  return { workOrder, result, report };
+  const exported = await exportProjectLocalRunReport({
+    projectRoot: input.projectRoot,
+    aiQaHome: input.aiQaHome,
+    runId: workOrder.runId,
+    now,
+  });
+  return { workOrder, result, report, exported };
 }
 
 describe("Increment 1 Web vertical slice services", () => {
@@ -363,6 +556,18 @@ describe("Increment 1 Web vertical slice services", () => {
       runId: exploratory.runId,
       now,
     });
+    const exploratoryExport = await exportProjectLocalRunReport({
+      projectRoot,
+      aiQaHome,
+      runId: exploratory.runId,
+      now,
+    });
+    await expectCoherentWebArtifacts({
+      projectRoot,
+      workOrder: exploratory,
+      report: exploratoryReport,
+      exported: exploratoryExport,
+    });
     const draft = await draftCaseFromRun({
       projectRoot,
       runId: exploratory.runId,
@@ -431,6 +636,14 @@ describe("Increment 1 Web vertical slice services", () => {
     expect(replays[0]!.workOrder.pinnedCase!.platformVariantHash).toBe(
       replays[1]!.workOrder.pinnedCase!.platformVariantHash,
     );
+    for (const replay of replays) {
+      await expectCoherentWebArtifacts({
+        projectRoot,
+        workOrder: replay.workOrder,
+        report: replay.report,
+        exported: replay.exported,
+      });
+    }
     expect({
       exploratoryVerdict: exploratoryResult.completed.verdict,
       activeRevision: active.revision,
@@ -459,6 +672,10 @@ describe("Increment 1 Web vertical slice services", () => {
     for (const replay of replays) {
       expect(replay.report.jsonPath).toContain(replay.workOrder.runId);
       expect(replay.report.markdownPath).toContain(replay.workOrder.runId);
+      expect(replay.exported).toEqual({
+        jsonPath: replay.report.jsonPath,
+        markdownPath: replay.report.markdownPath,
+      });
     }
   });
 });
