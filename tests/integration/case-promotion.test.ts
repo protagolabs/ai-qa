@@ -782,6 +782,57 @@ describe("case promotion", () => {
     ).rejects.toMatchObject({ code: "case.content_hash_mismatch" });
   });
 
+  it("keeps a duplicate-index source as an inactive draft", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
+    const indexPath = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-source",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+    const draft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-source",
+      input: {
+        caseId: "duplicate-source-evidence",
+        title: "Duplicate source evidence",
+        webSteps: [
+          {
+            sourceActionId: plannedActionId,
+            intent: "Submit valid credentials",
+            target: {
+              description: "Login button",
+              stability: "stable",
+              stabilityRationale: "Unique application-owned control",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "Visible account text",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+
+    expect(draft.promotion.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "case.evidence_invalid" }),
+      ]),
+    );
+    await expect(
+      activateCaseRevision({
+        projectRoot,
+        caseId: draft.caseId,
+        revision: draft.revision,
+        reviewConfirmed: true,
+        now: runNow,
+      }),
+    ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+  });
+
   it("rejects an assertion checkpoint that cites proof from before another step", async () => {
     const { projectRoot, plannedActionId } = await createCompletedPassRun({
       mislinkedStructuredProof: true,

@@ -664,6 +664,49 @@ describe("registerEvidence", () => {
     });
   });
 
+  it("rejects duplicate index records after an idempotent retry", async () => {
+    const { projectRoot, aiQaHome, captureActionId, runRepository } =
+      await createTrustedRun();
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, Buffer.from("original-image"));
+    const input = {
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal" as const,
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId,
+        idempotencyKey: "capture-duplicate-retry",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [],
+      now: fixedNow,
+    };
+    await registerEvidence(input);
+    const indexPath = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+
+    await expect(registerEvidence(input)).rejects.toMatchObject({
+      code: "evidence.integrity_error",
+    });
+    expect(
+      (await runRepository.journal("run-1").readAll()).filter(
+        (event) => event.type === "evidence",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("enforces machine trust before reading malformed run state", async () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-evidence-untrusted-"),

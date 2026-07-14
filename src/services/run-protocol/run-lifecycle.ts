@@ -1,4 +1,5 @@
 import { AiQaError } from "../../core/errors.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import {
@@ -47,11 +48,12 @@ export async function resumeRun(input: {
     validateVerdictHistory(events, workOrder);
     const lifecycle = validateRunLifecycleHistory(events, runId);
     requireMutableLifecycle(lifecycle.current);
-    await new EvidenceRepository(
+    const evidence = await new EvidenceRepository(
       trusted.projectRoot,
       runId,
       input.now,
     ).verifyAll();
+    validateEvidenceParity(events, evidence, runId);
     const append =
       lifecycle.current.payload.phase === "interrupted"
         ? resumedAppend(runId, lifecycle.current.event.id)

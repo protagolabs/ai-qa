@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import {
   EvidenceRepository,
   registerRawEvidenceInputSchema,
@@ -58,7 +59,7 @@ export async function registerEvidence(input: {
   const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
   requireKnownCriteria(workOrder, citations.criterionIds);
   const journal = runRepository.journal(input.runId);
-  return journal.appendPrepared(async (events) => {
+  const record = await journal.appendPrepared(async (events) => {
     const lifecycle = validateRunLifecycleHistory(events, input.runId);
     if (lifecycle.current.payload.phase === "interrupted") {
       throw new AiQaError(
@@ -123,6 +124,15 @@ export async function registerEvidence(input: {
       resolve: () => record,
     };
   });
+  await journal.readLocked(async (events) => {
+    const records = await new EvidenceRepository(
+      trusted.projectRoot,
+      input.runId,
+      input.now,
+    ).verifyAll();
+    validateEvidenceParity(events, records, input.runId);
+  });
+  return record;
 }
 
 function evidenceAppendInput(payload: EvidenceEventPayload): AppendRunEvent {

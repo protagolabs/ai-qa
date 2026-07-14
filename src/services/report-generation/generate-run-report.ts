@@ -8,11 +8,8 @@ import { CaseRepository } from "../../core/cases/repository.js";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
 import type { ProjectConfig } from "../../core/config/schema.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
-import {
-  evidenceRecordSchema,
-  type EvidenceRecord,
-} from "../../core/evidence/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import { runReportSchema, type RunReport } from "../../core/reports/schema.js";
@@ -494,47 +491,6 @@ async function validatePinnedRegressionCase(
         expectedPlatformVariantHash: pinned.platformVariantHash,
         actualPlatformVariantHash: platformVariantHash,
       },
-    );
-  }
-}
-
-function validateEvidenceParity(
-  events: readonly RunEvent[],
-  records: readonly EvidenceRecord[],
-  runId: string,
-): void {
-  try {
-    const indexed = new Map(records.map((record) => [record.id, record]));
-    if (indexed.size !== records.length) {
-      throw new Error("duplicate evidence index record");
-    }
-    const eventRecords = new Map<string, EvidenceRecord>();
-    for (const event of events) {
-      if (event.type !== "evidence") continue;
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
-      const { criterionIds, observationIds, ...recordInput } = payload;
-      void criterionIds;
-      void observationIds;
-      const record = evidenceRecordSchema.parse(recordInput);
-      if (eventRecords.has(record.id)) throw new Error("duplicate evidence");
-      eventRecords.set(record.id, record);
-    }
-    if (indexed.size !== eventRecords.size) throw new Error("count mismatch");
-    for (const [id, record] of indexed) {
-      const eventRecord = eventRecords.get(id);
-      if (
-        record.runId !== runId ||
-        eventRecord === undefined ||
-        canonicalJson(record) !== canonicalJson(eventRecord)
-      ) {
-        throw new Error("evidence record mismatch");
-      }
-    }
-  } catch {
-    throw new AiQaError(
-      "evidence.integrity_error",
-      "Evidence index does not match typed run evidence events",
-      { runId },
     );
   }
 }

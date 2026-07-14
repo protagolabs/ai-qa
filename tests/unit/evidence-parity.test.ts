@@ -1,0 +1,62 @@
+import { describe, expect, it } from "vitest";
+import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
+import { evidenceRecordSchema } from "../../src/core/evidence/schema.js";
+import { runEventSchema } from "../../src/core/runs/schema.js";
+
+const record = evidenceRecordSchema.parse({
+  schemaVersion: 1,
+  id: "evidence-proof",
+  runId: "run-1",
+  projectRelativePath: ".ai-qa/evidence/run-1/files/evidence-proof-screen.png",
+  contentHash: `sha256:${"0".repeat(64)}`,
+  mediaType: "image/png",
+  platform: "web",
+  sourceTool: "chrome-devtools-mcp",
+  capturedAt: "2026-07-13T00:00:00.000Z",
+  classification: "raw",
+  sensitivity: "internal",
+  evidenceKinds: ["post-action-screenshot"],
+  captureActionId: "event-capture",
+  idempotencyKey: "capture-proof",
+});
+
+const event = runEventSchema.parse({
+  schemaVersion: 1,
+  id: "event-evidence-proof",
+  runId: "run-1",
+  sequence: 1,
+  timestamp: "2026-07-13T00:00:00.000Z",
+  actor: "ai-qa",
+  platform: "web",
+  tool: "ai-qa",
+  type: "evidence",
+  idempotencyKey: "capture-proof",
+  payload: {
+    ...record,
+    criterionIds: ["criterion-proof"],
+    observationIds: ["event-observation"],
+  },
+  relatedIds: ["event-capture", "event-observation"],
+});
+
+describe("validateEvidenceParity", () => {
+  it("rejects an index record without its typed event", () => {
+    let thrown: unknown;
+    try {
+      validateEvidenceParity([], [record], "run-1");
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "evidence.integrity_error" });
+  });
+
+  it("rejects a typed event without its index record", () => {
+    let thrown: unknown;
+    try {
+      validateEvidenceParity([event], [], "run-1");
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "evidence.integrity_error" });
+  });
+});

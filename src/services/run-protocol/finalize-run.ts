@@ -5,6 +5,7 @@ import {
   calculateWebVariantHash,
 } from "../../core/cases/schema.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import {
@@ -115,6 +116,7 @@ export async function finalizeRun(input: {
       runId,
       input.now,
     ).verifyAll();
+    validateEvidenceParity(events, evidence, runId);
     const effective = effectiveVerdictFrom(verdicts);
     if (effective === undefined) {
       throw new AiQaError(

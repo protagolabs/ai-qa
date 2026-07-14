@@ -698,6 +698,28 @@ describe("report CLI and project-local export", () => {
     expect(await readFile(reportPath, "utf8")).toBe(beforeReport);
   });
 
+  it("rejects duplicate evidence index records before export", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const indexPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+
+    await expect(
+      exportProjectLocalRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: generatedNow,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
   it("rejects export through a symlinked report ancestor", async () => {
     const fixture = await completedRun();
     await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });

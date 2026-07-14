@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -189,6 +189,41 @@ async function appendInterrupted(
 }
 
 describe("finalizeRun", () => {
+  it("rejects duplicate evidence index records before finish", async () => {
+    const fixture = await createRun();
+    const support = await recordSupportedCriterion(fixture);
+    const indexPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+    await fixture.verdicts.set({
+      classification: "pass",
+      summary: "Login verified",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied",
+          assertionIds: [support.assertion.id],
+          evidenceIds: [support.evidence.id],
+        },
+      ],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
   it("verifies evidence before resolving active-run verdict cardinality", async () => {
     const fixture = await createRun();
     const support = await recordSupportedCriterion(fixture);
@@ -660,6 +695,34 @@ describe("run lifecycle", () => {
         now,
       }),
     ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
+  it("rejects duplicate evidence index records before resuming", async () => {
+    const fixture = await createRun();
+    await recordSupportedCriterion(fixture);
+    const indexPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, `${index}${index}`);
+
+    await expect(
+      resumeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+
+    const phases = (await fixture.repository.journal("run-1").readAll())
+      .filter((event) => event.type === "run")
+      .map((event) => (event.payload as { phase: string }).phase);
+    expect(phases).toEqual(["started"]);
   });
 
   it("requires a fresh observation after resume before interaction", async () => {

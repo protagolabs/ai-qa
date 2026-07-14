@@ -9,11 +9,9 @@ import {
   type WebCaseStep,
 } from "../../core/cases/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
-import {
-  evidenceRecordSchema,
-  type EvidenceRecord,
-} from "../../core/evidence/schema.js";
+import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -279,42 +277,8 @@ async function readVerifiedEvidence(
       runId,
       now,
     ).verifyAll();
-    const indexedById = new Map(evidence.map((record) => [record.id, record]));
-    const eventRecords = events.flatMap((event) => {
-      if (event.type !== "evidence") return [];
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
-      return [
-        evidenceRecordSchema.parse({
-          schemaVersion: payload.schemaVersion,
-          id: payload.id,
-          runId: payload.runId,
-          projectRelativePath: payload.projectRelativePath,
-          contentHash: payload.contentHash,
-          mediaType: payload.mediaType,
-          platform: payload.platform,
-          sourceTool: payload.sourceTool,
-          capturedAt: payload.capturedAt,
-          classification: payload.classification,
-          sensitivity: payload.sensitivity,
-          evidenceKinds: payload.evidenceKinds,
-          captureActionId: payload.captureActionId,
-          ...(payload.parentEvidenceId === undefined
-            ? {}
-            : { parentEvidenceId: payload.parentEvidenceId }),
-          idempotencyKey: payload.idempotencyKey,
-        }),
-      ];
-    });
-    const valid =
-      evidence.length === eventRecords.length &&
-      eventRecords.every((record) => {
-        const indexed = indexedById.get(record.id);
-        return (
-          indexed !== undefined &&
-          canonicalJson(indexed) === canonicalJson(record)
-        );
-      });
-    return { evidence, valid };
+    validateEvidenceParity(events, evidence, runId);
+    return { evidence, valid: true };
   } catch {
     return { evidence: [], valid: false };
   }
