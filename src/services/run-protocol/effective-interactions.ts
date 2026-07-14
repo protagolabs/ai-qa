@@ -127,6 +127,8 @@ export function effectiveInteractionSuccesses(
       observationTerminal === undefined ||
       !observationTerminalPayload.success ||
       observationTerminalPayload.data.phase !== "completed" ||
+      observationPlan.event.sequence <= terminalEvent.sequence ||
+      observationTerminal.sequence <= terminalEvent.sequence ||
       observation.sequence <= terminalEvent.sequence ||
       observationTerminal.sequence >= observation.sequence ||
       recovery.event.sequence <= observation.sequence

@@ -11,6 +11,7 @@ import {
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../src/core/tools.js";
+import { effectiveInteractionSuccesses } from "../../src/services/run-protocol/effective-interactions.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import {
   planActionInputSchema,
@@ -320,6 +321,66 @@ describe("typed run protocol", () => {
     await expect(
       service.planAction({
         idempotencyKey: "retry-after-cross-step-recovery",
+        kind: "interaction",
+        intent: "Retry login",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Login button" },
+        recoveryForStepId: "step-login",
+      }),
+    ).rejects.toMatchObject({ code: "recovery.retry_not_permitted" });
+  });
+
+  it("rejects recovery backed by a pre-unknown observation action", async () => {
+    const { service, repository } = await createTrustedRun();
+    const observationAction = await service.planAction({
+      idempotencyKey: "observe-before-temporal-unknown",
+      kind: "observation",
+      intent: "Prepare an observation before the interaction",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "The login form was inspected" },
+    });
+    const action = await service.planAction({
+      idempotencyKey: "temporal-unknown",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const lateObservation = await service.addObservation({
+      actionId: observationAction.id,
+      summary: "The login form remains visible",
+      state: { applied: false },
+    });
+    const beforeRecovery = await repository.journal("run-1").readAll();
+
+    await expect(
+      service.resolveUnknownAction({
+        actionId: action.id,
+        resolution: "not_applied",
+        observationId: lateObservation.id,
+        rationale: "A late event cannot refresh an earlier observation action",
+      }),
+    ).rejects.toMatchObject({
+      code: "recovery.fresh_observation_required",
+    });
+    await expect(repository.journal("run-1").readAll()).resolves.toEqual(
+      beforeRecovery,
+    );
+    await expect(
+      service.planAction({
+        idempotencyKey: "retry-after-temporally-stale-recovery",
         kind: "interaction",
         intent: "Retry login",
         tool: "chrome-devtools-mcp",
@@ -967,6 +1028,125 @@ describe("typed run protocol", () => {
         recoveryForStepId: "step-login",
       }),
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+  });
+
+  it("rejects forged recovery history backed by a pre-unknown observation action", async () => {
+    const { service, repository } = await createTrustedRun();
+    const observationAction = await service.planAction({
+      idempotencyKey: "forge-observation-before-temporal-unknown",
+      kind: "observation",
+      intent: "Prepare an observation before the interaction",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "The login form was inspected" },
+    });
+    const action = await service.planAction({
+      idempotencyKey: "forged-temporal-unknown",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const lateObservation = await service.addObservation({
+      actionId: observationAction.id,
+      summary: "The login form remains visible",
+      state: { applied: false },
+    });
+    await repository.journal("run-1").append({
+      type: "recovery",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `recovery:${action.id}`,
+      payload: {
+        actionId: action.id,
+        resolution: "not_applied",
+        observationId: lateObservation.id,
+        rationale: "Forged temporally stale recovery",
+      },
+      relatedIds: [action.id, lateObservation.id],
+    });
+    const forgedHistory = await repository.journal("run-1").readAll();
+
+    await expect(
+      service.planAction({
+        idempotencyKey: "retry-after-forged-temporal-recovery",
+        kind: "interaction",
+        intent: "Retry login",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Login button" },
+        recoveryForStepId: "step-login",
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    await expect(repository.journal("run-1").readAll()).resolves.toEqual(
+      forgedHistory,
+    );
+  });
+
+  it("excludes applied recovery backed by a pre-unknown observation action", async () => {
+    const { service, repository } = await createTrustedRun();
+    const observationAction = await service.planAction({
+      idempotencyKey: "effective-observation-before-temporal-unknown",
+      kind: "observation",
+      intent: "Prepare an observation before the interaction",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: observationAction.id,
+      phase: "completed",
+      toolResult: { summary: "The login form was inspected" },
+    });
+    const action = await service.planAction({
+      idempotencyKey: "effective-temporal-unknown",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const lateObservation = await service.addObservation({
+      actionId: observationAction.id,
+      summary: "Authenticated home is visible",
+      state: { applied: true },
+    });
+    await repository.journal("run-1").append({
+      type: "recovery",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `recovery:${action.id}`,
+      payload: {
+        actionId: action.id,
+        resolution: "applied",
+        observationId: lateObservation.id,
+        rationale: "Forged temporally stale applied recovery",
+      },
+      relatedIds: [action.id, lateObservation.id],
+    });
+
+    expect(
+      effectiveInteractionSuccesses(
+        await repository.journal("run-1").readAll(),
+      ),
+    ).toEqual([]);
   });
 
   it("rejects malformed typed events before appending more protocol state", async () => {

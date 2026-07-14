@@ -342,23 +342,12 @@ export class RunProtocolService {
         parsed.actionId,
         "unknown",
       );
-      const observation = findObservation(events, parsed.observationId);
-      if (
-        observation === undefined ||
-        observation.sequence <= terminal.event.sequence
-      ) {
-        throw new AiQaError(
-          "recovery.fresh_observation_required",
-          "A fresh observation is required to resolve an unknown action",
-          { actionId: parsed.actionId, observationId: parsed.observationId },
-        );
-      }
-      const observationPayload = observationPayloadSchema.parse(
-        observation.payload,
+      requireFreshRecoveryObservation(
+        events,
+        planned,
+        terminal,
+        parsed.observationId,
       );
-      if (observationPayload.stepId !== planned.payload.stepId) {
-        throw protocolIntegrityError();
-      }
       const candidate = protocolAppendInput({
         type: "recovery",
         actor: "ai-qa",
@@ -663,6 +652,61 @@ function requireObservation(
   return observation;
 }
 
+function requireFreshRecoveryObservation(
+  events: readonly RunEvent[],
+  recoveredPlan: PlannedAction,
+  unknownTerminal: TerminalAction,
+  observationId: string,
+): void {
+  const observation = findObservation(events, observationId);
+  if (observation === undefined) {
+    throw freshRecoveryObservationRequired(
+      recoveredPlan.event.id,
+      observationId,
+    );
+  }
+  const observationPayload = observationPayloadSchema.parse(
+    observation.payload,
+  );
+  const observationPlan = requirePlannedAction(
+    events,
+    observationPayload.actionId,
+  );
+  const observationTerminal = requireSingleTerminal(
+    events,
+    observationPayload.actionId,
+    "completed",
+  );
+  if (
+    observationPlan.event.sequence <= unknownTerminal.event.sequence ||
+    observationTerminal.event.sequence <= unknownTerminal.event.sequence ||
+    observation.sequence <= unknownTerminal.event.sequence
+  ) {
+    throw freshRecoveryObservationRequired(
+      recoveredPlan.event.id,
+      observationId,
+    );
+  }
+  if (
+    observationPlan.payload.kind !== "observation" ||
+    observationPlan.payload.stepId !== recoveredPlan.payload.stepId ||
+    observationPayload.stepId !== recoveredPlan.payload.stepId
+  ) {
+    throw protocolIntegrityError();
+  }
+}
+
+function freshRecoveryObservationRequired(
+  actionId: string,
+  observationId: string,
+): AiQaError {
+  return new AiQaError(
+    "recovery.fresh_observation_required",
+    "A fresh observation is required to resolve an unknown action",
+    { actionId, observationId },
+  );
+}
+
 function findObservation(
   events: readonly RunEvent[],
   observationId: string,
@@ -924,12 +968,29 @@ export function validateProtocolEvents(
           const observationPayload = observationPayloadSchema.safeParse(
             observation?.payload,
           );
+          const observationPlan = observationPayload.success
+            ? plans.get(observationPayload.data.actionId)
+            : undefined;
+          const observationTerminal = observationPayload.success
+            ? terminals.get(observationPayload.data.actionId)
+            : undefined;
           requireSemantic(plan !== undefined);
           requireSemantic(terminal?.payload.phase === "unknown");
           requireSemantic(observation !== undefined);
           requireSemantic(observationPayload.success);
+          requireSemantic(observationPlan?.payload.kind === "observation");
+          requireSemantic(observationTerminal?.payload.phase === "completed");
           requireSemantic(
             observationPayload.data.stepId === plan.payload.stepId,
+          );
+          requireSemantic(
+            observationPlan.payload.stepId === plan.payload.stepId,
+          );
+          requireSemantic(
+            observationPlan.event.sequence > terminal.event.sequence,
+          );
+          requireSemantic(
+            observationTerminal.event.sequence > terminal.event.sequence,
           );
           requireSemantic(observation.sequence > terminal.event.sequence);
           requireSemantic(!recoveryActions.has(payload.actionId));
