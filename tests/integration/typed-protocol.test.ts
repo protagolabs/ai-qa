@@ -8,6 +8,7 @@ import { resolveRunPaths } from "../../src/core/runs/paths.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
+  runEventSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../src/core/tools.js";
@@ -1147,6 +1148,66 @@ describe("typed run protocol", () => {
         await repository.journal("run-1").readAll(),
       ),
     ).toEqual([]);
+  });
+
+  it("excludes applied recovery when a schema-valid observation plan follows its terminal", async () => {
+    const { service, repository } = await createTrustedRun();
+    const action = await service.planAction({
+      idempotencyKey: "ordered-recovery-interaction",
+      kind: "interaction",
+      intent: "Submit the login form",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login button" },
+      stepId: "step-login",
+    });
+    await service.completeAction({
+      actionId: action.id,
+      phase: "unknown",
+      toolResult: { summary: "The submission result is ambiguous" },
+    });
+    const observationPlan = await service.planAction({
+      idempotencyKey: "ordered-recovery-observation",
+      kind: "observation",
+      intent: "Inspect whether login was submitted",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Login form" },
+      stepId: "step-login",
+    });
+    const observationTerminal = await service.completeAction({
+      actionId: observationPlan.id,
+      phase: "completed",
+      toolResult: { summary: "The login form was inspected" },
+    });
+    const observation = await service.addObservation({
+      actionId: observationPlan.id,
+      summary: "Authenticated home is visible",
+      state: { applied: true },
+    });
+    await service.resolveUnknownAction({
+      actionId: action.id,
+      resolution: "applied",
+      observationId: observation.id,
+      rationale: "Fresh state confirms the login applied",
+    });
+    const schemaValidOutOfOrderEvents = (
+      await repository.journal("run-1").readAll()
+    )
+      .map((event) =>
+        runEventSchema.parse({
+          ...event,
+          sequence:
+            event.id === observationPlan.id
+              ? observationTerminal.sequence
+              : event.id === observationTerminal.id
+                ? observationPlan.sequence
+                : event.sequence,
+        }),
+      )
+      .sort((left, right) => left.sequence - right.sequence);
+
+    expect(effectiveInteractionSuccesses(schemaValidOutOfOrderEvents)).toEqual(
+      [],
+    );
   });
 
   it("rejects malformed typed events before appending more protocol state", async () => {

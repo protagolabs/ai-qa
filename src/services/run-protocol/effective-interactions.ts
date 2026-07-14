@@ -130,6 +130,7 @@ export function effectiveInteractionSuccesses(
       observationPlan.event.sequence <= terminalEvent.sequence ||
       observationTerminal.sequence <= terminalEvent.sequence ||
       observation.sequence <= terminalEvent.sequence ||
+      observationPlan.event.sequence >= observationTerminal.sequence ||
       observationTerminal.sequence >= observation.sequence ||
       recovery.event.sequence <= observation.sequence
     ) {
