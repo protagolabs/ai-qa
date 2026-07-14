@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
-import { evidenceRecordSchema } from "../../src/core/evidence/schema.js";
+import {
+  evidenceRecordSchema,
+  type EvidenceRecord,
+} from "../../src/core/evidence/schema.js";
 import { readJsonLines } from "../../src/core/fs/json-lines.js";
 import { runReportSchema } from "../../src/core/reports/schema.js";
 import {
@@ -197,7 +200,69 @@ async function expectCoherentWebArtifacts(input: {
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   );
-  expect(markdown).toContain(`Verified at ${json.integrity.verifiedAt}.`);
+  expectMarkdownReportCoherence(markdown, json, events, evidenceRecords);
+}
+
+function expectMarkdownReportCoherence(
+  markdown: string,
+  json: ReturnType<typeof runReportSchema.parse>,
+  events: readonly RunEvent[],
+  evidenceRecords: readonly EvidenceRecord[],
+): void {
+  requireMarkdownFragment(
+    markdown,
+    `# AI QA Run ${json.run.id}`,
+    "run identity",
+  );
+  requireMarkdownFragment(
+    markdown,
+    `- Status: \`${json.run.status}\``,
+    "terminal status",
+  );
+  requireMarkdownFragment(
+    markdown,
+    `- Verdict: \`${json.verdict.classification}\``,
+    "terminal verdict",
+  );
+  for (const record of evidenceRecords) {
+    requireMarkdownFragment(
+      markdown,
+      `- \`${record.id}\` —`,
+      `evidence ${record.id}`,
+    );
+    requireMarkdownFragment(
+      markdown,
+      `\`${record.contentHash}\``,
+      `evidence hash ${record.id}`,
+    );
+    requireMarkdownFragment(
+      markdown,
+      `\`${record.projectRelativePath}\``,
+      `evidence path ${record.id}`,
+    );
+  }
+  for (const event of events) {
+    requireMarkdownFragment(
+      markdown,
+      `${event.sequence}. \`${event.type}\` \`${event.id}\` —`,
+      `timeline event ${event.id}`,
+    );
+  }
+  requireMarkdownFragment(
+    markdown,
+    `Verified at ${json.integrity.verifiedAt}.`,
+    "integrity verification time",
+  );
+}
+
+function requireMarkdownFragment(
+  markdown: string,
+  fragment: string,
+  label: string,
+): void {
+  if (!markdown.includes(fragment)) {
+    throw new Error(`Markdown report is missing its ${label}`);
+  }
 }
 
 function expectFreshPostActionChain(
@@ -222,13 +287,19 @@ function expectFreshPostActionChain(
   ) {
     throw new Error("Evidence must cite a planned evidence-capture action");
   }
-  const captureTerminal = events.find((event) => {
+  const captureTerminals = events.filter((event) => {
     if (event.type !== "action") return false;
     const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "completed" && payload.actionId === capture.id;
+    return payload.phase !== "planned" && payload.actionId === capture.id;
   });
-  if (captureTerminal === undefined)
+  if (
+    captureTerminals.length !== 1 ||
+    actionPayloadSchema.parse(captureTerminals[0]!.payload).phase !==
+      "completed"
+  ) {
     throw new Error("Missing completed evidence-capture terminal");
+  }
+  const captureTerminal = captureTerminals[0]!;
   const interaction = events.find((event) => {
     if (event.type !== "action") return false;
     const payload = actionPayloadSchema.parse(event.payload);
@@ -239,38 +310,233 @@ function expectFreshPostActionChain(
     );
   });
   if (interaction === undefined) throw new Error("Missing step interaction");
-  const interactionTerminal = events.find((event) => {
+  const interactionTerminals = events.filter((event) => {
     if (event.type !== "action") return false;
     const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "completed" && payload.actionId === interaction.id;
+    return payload.phase !== "planned" && payload.actionId === interaction.id;
   });
-  if (interactionTerminal === undefined)
+  if (
+    interactionTerminals.length !== 1 ||
+    actionPayloadSchema.parse(interactionTerminals[0]!.payload).phase !==
+      "completed"
+  ) {
     throw new Error("Missing interaction terminal");
+  }
+  const interactionTerminal = interactionTerminals[0]!;
   expect(evidence.observationIds.length).toBeGreaterThan(0);
   for (const observationId of evidence.observationIds) {
-    const observation = events.find(
+    const observations = events.filter(
       (event) => event.type === "observation" && event.id === observationId,
     );
-    if (observation === undefined) throw new Error("Missing observation");
-    expect(observationPayloadSchema.parse(observation.payload).stepId).toBe(
-      capturePayload.stepId,
+    if (observations.length !== 1) throw new Error("Missing observation");
+    const observation = observations[0]!;
+    const observationPayload = observationPayloadSchema.parse(
+      observation.payload,
     );
-    expect(interactionTerminal.sequence).toBeLessThan(observation.sequence);
+    const observationAction = events.find(
+      (event) =>
+        event.type === "action" && event.id === observationPayload.actionId,
+    );
+    const observationActionPayload =
+      observationAction === undefined
+        ? undefined
+        : actionPayloadSchema.parse(observationAction.payload);
+    const observationTerminals =
+      observationAction === undefined
+        ? []
+        : events.filter((event) => {
+            if (event.type !== "action") return false;
+            const payload = actionPayloadSchema.parse(event.payload);
+            return (
+              payload.phase !== "planned" &&
+              payload.actionId === observationAction.id
+            );
+          });
+    if (
+      observationAction === undefined ||
+      observationActionPayload?.phase !== "planned" ||
+      observationActionPayload.kind !== "observation" ||
+      observationActionPayload.stepId !== capturePayload.stepId ||
+      observationPayload.stepId !== capturePayload.stepId ||
+      observationTerminals.length !== 1 ||
+      actionPayloadSchema.parse(observationTerminals[0]!.payload).phase !==
+        "completed"
+    ) {
+      throw new Error(
+        "Evidence observation must cite a completed observation action",
+      );
+    }
+    const observationTerminal = observationTerminals[0]!;
+    expect(interactionTerminal.sequence).toBeLessThan(
+      observationAction.sequence,
+    );
+    expect(observationAction.sequence).toBeLessThan(
+      observationTerminal.sequence,
+    );
+    expect(observationTerminal.sequence).toBeLessThan(observation.sequence);
     expect(observation.sequence).toBeLessThan(capture.sequence);
   }
   expect(capture.sequence).toBeLessThan(captureTerminal.sequence);
   expect(captureTerminal.sequence).toBeLessThan(evidenceEvent.sequence);
-  const assertion = events.find((event) => {
+  const assertions = events.filter((event) => {
     if (event.type !== "assertion") return false;
     const payload = assertionPayloadSchema.parse(event.payload);
     return (
-      payload.status === "satisfied" &&
-      payload.stepId === capturePayload.stepId &&
-      payload.evidenceIds.includes(evidenceId)
+      payload.status === "satisfied" && payload.evidenceIds.includes(evidenceId)
     );
   });
-  if (assertion === undefined) throw new Error("Missing step assertion");
-  expect(evidenceEvent.sequence).toBeLessThan(assertion.sequence);
+  if (assertions.length === 0) throw new Error("Missing step assertion");
+  for (const assertion of assertions) {
+    const payload = assertionPayloadSchema.parse(assertion.payload);
+    if (
+      payload.stepId !== capturePayload.stepId ||
+      !evidence.observationIds.every((id) =>
+        payload.observationIds.includes(id),
+      ) ||
+      !evidence.criterionIds.includes(payload.criterionId)
+    ) {
+      throw new Error(
+        "Every evidence assertion must cite its fresh observations",
+      );
+    }
+    expect(evidenceEvent.sequence).toBeLessThan(assertion.sequence);
+  }
+  expect(
+    [
+      ...new Set(
+        assertions.map(
+          (assertion) =>
+            assertionPayloadSchema.parse(assertion.payload).criterionId,
+        ),
+      ),
+    ].sort(),
+  ).toEqual([...new Set(evidence.criterionIds)].sort());
+}
+
+async function expectIntegrityMutationsRejected(input: {
+  projectRoot: string;
+  workOrder: WorkOrder;
+  report: ReportPaths;
+  exported: ReportPaths;
+}): Promise<void> {
+  if (input.report.markdownPath === undefined) {
+    throw new Error("Web E2E requires a Markdown report mutation target");
+  }
+  const eventsPath = join(
+    input.projectRoot,
+    ".ai-qa",
+    "runs",
+    input.workOrder.runId,
+    "events.jsonl",
+  );
+  const originalEvents = await readFile(eventsPath, "utf8");
+  const events = originalEvents
+    .trimEnd()
+    .split("\n")
+    .map((line) => runEventSchema.parse(JSON.parse(line)));
+  const evidenceEvent = events.find((event) => event.type === "evidence");
+  if (evidenceEvent === undefined) throw new Error("Missing evidence fixture");
+  const evidence = evidenceEventPayloadSchema.parse(evidenceEvent.payload);
+  const observation = events.find(
+    (event) =>
+      event.type === "observation" && event.id === evidence.observationIds[0],
+  );
+  if (observation === undefined)
+    throw new Error("Missing observation mutation fixture");
+  const observationPayload = observationPayloadSchema.parse(
+    observation.payload,
+  );
+  const interaction = events.find((event) => {
+    if (event.type !== "action") return false;
+    const payload = actionPayloadSchema.parse(event.payload);
+    return (
+      payload.phase === "planned" &&
+      payload.kind === "interaction" &&
+      payload.stepId === observationPayload.stepId
+    );
+  });
+  if (interaction === undefined)
+    throw new Error("Missing interaction mutation fixture");
+  const assertion = events.find((event) => {
+    if (event.type !== "assertion") return false;
+    const payload = assertionPayloadSchema.parse(event.payload);
+    return payload.evidenceIds.includes(evidence.id);
+  });
+  if (assertion === undefined) throw new Error("Missing assertion fixture");
+  const assertionPayload = assertionPayloadSchema.parse(assertion.payload);
+  const markdownPath = join(input.projectRoot, input.report.markdownPath);
+  const originalMarkdown = await readFile(markdownPath, "utf8");
+  const jsonPath = input.report.jsonPath;
+  if (jsonPath === undefined) throw new Error("Missing JSON report fixture");
+  const report = runReportSchema.parse(
+    JSON.parse(await readFile(join(input.projectRoot, jsonPath), "utf8")),
+  );
+  const outcomes: Record<string, string> = {};
+  const probe = async (
+    label: string,
+    path: string,
+    original: string,
+    mutated: string,
+  ): Promise<void> => {
+    await writeFile(path, mutated);
+    try {
+      await expectCoherentWebArtifacts(input);
+      outcomes[label] = "accepted";
+    } catch (error: unknown) {
+      outcomes[label] = error instanceof Error ? error.message : String(error);
+    } finally {
+      await writeFile(path, original);
+    }
+  };
+
+  const wrongObservationAction = events.map((event) =>
+    event.id === observation.id
+      ? runEventSchema.parse({
+          ...event,
+          payload: { ...observationPayload, actionId: interaction.id },
+        })
+      : event,
+  );
+  await probe(
+    "observation-action-chain",
+    eventsPath,
+    originalEvents,
+    serializeRunEvents(wrongObservationAction),
+  );
+
+  const missingAssertionObservation = events.map((event) =>
+    event.id === assertion.id
+      ? runEventSchema.parse({
+          ...event,
+          payload: { ...assertionPayload, observationIds: [] },
+        })
+      : event,
+  );
+  await probe(
+    "assertion-observation-citation",
+    eventsPath,
+    originalEvents,
+    serializeRunEvents(missingAssertionObservation),
+  );
+
+  await probe(
+    "markdown-content",
+    markdownPath,
+    originalMarkdown,
+    `# Truncated report\n\n## Integrity\n\nVerified at ${report.integrity.verifiedAt}.\n`,
+  );
+
+  expect(outcomes).toEqual({
+    "observation-action-chain":
+      "Evidence observation must cite a completed observation action",
+    "assertion-observation-citation":
+      "Every evidence assertion must cite its fresh observations",
+    "markdown-content": "Markdown report is missing its run identity",
+  });
+}
+
+function serializeRunEvents(events: readonly RunEvent[]): string {
+  return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
 }
 
 async function recordSuccessfulLogin(input: {
@@ -563,6 +829,12 @@ describe("Increment 1 Web vertical slice services", () => {
       now,
     });
     await expectCoherentWebArtifacts({
+      projectRoot,
+      workOrder: exploratory,
+      report: exploratoryReport,
+      exported: exploratoryExport,
+    });
+    await expectIntegrityMutationsRejected({
       projectRoot,
       workOrder: exploratory,
       report: exploratoryReport,
