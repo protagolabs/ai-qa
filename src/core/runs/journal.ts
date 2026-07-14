@@ -108,16 +108,7 @@ export class RunJournal {
   async readLocked<T>(
     inspect: (events: readonly RunEvent[]) => T | Promise<T>,
   ): Promise<T> {
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "runs",
-      this.runId,
-      "events.jsonl",
-    ]);
-    const release = await lockfile.lock(this.path, {
-      realpath: false,
-      retries: { retries: 3, minTimeout: 50 },
-    });
+    const release = await this.lock();
     try {
       return await inspect(await this.readAll());
     } finally {
@@ -128,16 +119,7 @@ export class RunJournal {
   async appendPrepared<T>(
     prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
   ): Promise<T> {
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "runs",
-      this.runId,
-      "events.jsonl",
-    ]);
-    const release = await lockfile.lock(this.path, {
-      realpath: false,
-      retries: { retries: 3, minTimeout: 50 },
-    });
+    const release = await this.lock();
     try {
       const events = await this.readAll();
       const prepared = await prepare(events);
@@ -151,6 +133,33 @@ export class RunJournal {
       return prepared.resolve(event);
     } finally {
       await release();
+    }
+  }
+
+  private async lock(): Promise<() => Promise<void>> {
+    try {
+      await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "runs",
+        this.runId,
+        "events.jsonl",
+      ]);
+      return await lockfile.lock(this.path, {
+        realpath: false,
+        retries: { retries: 3, minTimeout: 50 },
+      });
+    } catch (error: unknown) {
+      if (
+        isNodeError(error, "ENOENT") ||
+        (error instanceof AiQaError &&
+          error.code === "storage.integrity_error" &&
+          isMissingStoragePath(error))
+      ) {
+        throw new AiQaError("run.not_found", "Run does not exist", {
+          runId: this.runId,
+        });
+      }
+      throw error;
     }
   }
 
@@ -188,6 +197,10 @@ export class RunJournal {
     events.push(event);
     return event;
   }
+}
+
+function isMissingStoragePath(error: AiQaError): boolean {
+  return error.details.causeCode === "ENOENT";
 }
 
 function isNodeError(error: unknown, code: string): boolean {

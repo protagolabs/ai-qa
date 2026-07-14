@@ -1,6 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { ZodError } from "zod";
-import { AiQaError } from "../core/errors.js";
+import { AiQaError, normalizeUnknownError } from "../core/errors.js";
 import { registerActionCommands } from "./commands/action.js";
 import { registerAssertionCommands } from "./commands/assertion.js";
 import { registerBlockerCommands } from "./commands/blocker.js";
@@ -104,6 +104,16 @@ export async function runCli(
       );
       return 1;
     }
-    throw error;
+    const normalized = normalizeUnknownError(error);
+    context.writeStderr(
+      `${JSON.stringify({
+        error: {
+          code: normalized.code,
+          message: normalized.message,
+          details: normalized.details,
+        },
+      })}\n`,
+    );
+    return 1;
   }
 }

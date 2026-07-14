@@ -1279,6 +1279,78 @@ describe("preflight result runs", () => {
 });
 
 describe("verdict and lifecycle CLI", () => {
+  it.each([
+    {
+      name: "filesystem",
+      failure: Object.assign(new Error("private path /private/project"), {
+        code: "EIO",
+        syscall: "write",
+        path: "/private/project/output.json",
+        input: "private input",
+      }),
+      expected: {
+        code: "filesystem.operation_failed",
+        message: "A filesystem operation failed",
+        details: { code: "EIO", syscall: "write" },
+      },
+    },
+    {
+      name: "non-system",
+      failure: new Error("private internal detail"),
+      expected: {
+        code: "internal.unexpected_error",
+        message: "An unexpected internal error occurred",
+        details: {},
+      },
+    },
+  ])(
+    "normalizes an unknown $name failure into one JSON response",
+    async ({ failure, expected }) => {
+      const captured = createCapturedCli({
+        writeStdout: () => {
+          throw failure;
+        },
+      });
+
+      const exitCode = await runCli(["--version"], captured.context);
+
+      expect(exitCode).toBe(1);
+      expect(captured.stdout).toEqual([]);
+      expect(captured.stderr).toHaveLength(1);
+      expect(captured.stderr[0]?.endsWith("\n")).toBe(true);
+      expect(JSON.parse(captured.stderr[0]!)).toEqual({ error: expected });
+      expect(captured.stderr[0]).not.toContain("private");
+      expect(captured.stderr[0]?.toLowerCase()).not.toContain("stack");
+    },
+  );
+
+  it("returns one structured JSON error for a missing run", async () => {
+    const fixture = await createPreflightProject();
+    const captured = createCapturedCli({
+      cwd: fixture.projectRoot,
+      env: { AI_QA_HOME: fixture.aiQaHome },
+      now,
+    });
+
+    const exitCode = await runCli(
+      ["--project", fixture.projectRoot, "run", "finish", "run-missing"],
+      captured.context,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(captured.stdout).toEqual([]);
+    expect(captured.stderr).toHaveLength(1);
+    expect(captured.stderr.join("").endsWith("\n")).toBe(true);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "run.not_found",
+        message: "Run does not exist",
+        details: { runId: "run-missing" },
+      },
+    });
+    expect(captured.stderr.join("").toLowerCase()).not.toContain("stack");
+  });
+
   it("does not advertise finish while an action is incomplete", async () => {
     const fixture = await createRun();
     await fixture.protocol.planAction({

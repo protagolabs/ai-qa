@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,6 +50,96 @@ const readyPayload = exploratoryRunInputSchema.parse({
 });
 
 describe("RunJournal", () => {
+  it("maps a missing journal to run.not_found before a locked read", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = RunJournal.open(
+      projectRoot,
+      "run-missing",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+
+    await expect(journal.readLocked(() => undefined)).rejects.toMatchObject({
+      code: "run.not_found",
+      message: "Run does not exist",
+      details: { runId: "run-missing" },
+    });
+  });
+
+  it("maps a missing journal to run.not_found before an append", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = RunJournal.open(
+      projectRoot,
+      "run-missing",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+
+    await expect(
+      journal.append({
+        type: "decision",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        payload: { reason: "missing journal" },
+        relatedIds: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "run.not_found",
+      message: "Run does not exist",
+      details: { runId: "run-missing" },
+    });
+  });
+
+  it("preserves non-missing storage integrity failures before locked reads", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = await RunJournal.create(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    await rm(eventsPath);
+    await mkdir(eventsPath);
+
+    await expect(journal.readLocked(() => undefined)).rejects.toMatchObject({
+      code: "storage.integrity_error",
+    });
+  });
+
+  it("preserves non-missing storage integrity failures before appends", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = await RunJournal.create(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    await rm(eventsPath);
+    await mkdir(eventsPath);
+
+    await expect(
+      journal.append({
+        type: "decision",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        payload: { reason: "invalid journal storage" },
+        relatedIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
   it("persists newline-terminated replacements across journal instances", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
