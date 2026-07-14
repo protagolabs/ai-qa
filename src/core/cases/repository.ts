@@ -186,6 +186,12 @@ export class CaseRepository {
     revision = z.number().int().positive().parse(revision);
     const confirmed = activationSchema.parse(confirmation);
     const paths = this.paths(caseId);
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "cases",
+      caseId,
+      "case.yaml",
+    ]);
     return this.withCaseWriteLock(paths, undefined, async () => {
       const value = await this.validateRevision(caseId, revision);
       const index = await this.readIndex(caseId);

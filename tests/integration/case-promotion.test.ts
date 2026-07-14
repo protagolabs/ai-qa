@@ -1,5 +1,6 @@
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   open,
@@ -393,6 +394,33 @@ async function createCompletedUnknownRun(): Promise<{
 }
 
 describe("case promotion", () => {
+  it("validates case storage before acquiring activation locks", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-case-outside-"));
+    const casesRoot = join(projectRoot, ".ai-qa", "cases");
+    await mkdir(casesRoot, { recursive: true });
+    await symlink(outside, join(casesRoot, "symlinked-activation"));
+    await chmod(outside, 0o500);
+
+    try {
+      await expect(
+        new CaseRepository(projectRoot, runNow).activate(
+          "symlinked-activation",
+          1,
+          {
+            confirmedBy: "user",
+            confirmedAt: "2026-07-13T00:10:00.000Z",
+          },
+        ),
+      ).rejects.toMatchObject({ code: "storage.integrity_error" });
+      await expect(
+        access(join(outside, "case.yaml.lock")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await chmod(outside, 0o700);
+    }
+  });
+
   it("preserves case.not_found for a genuinely missing case", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-missing-"));
     await mkdir(join(projectRoot, ".ai-qa", "cases"), { recursive: true });
