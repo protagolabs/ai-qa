@@ -1129,6 +1129,41 @@ describe("run lifecycle", () => {
       reason: "User stopped exploratory QA",
     });
   });
+
+  it("rejects a historical cancellation verdict with criterion citations", async () => {
+    const fixture = await createRun();
+    const payload = {
+      classification: "not_verified" as const,
+      reasonCode: "cancelled" as const,
+      summary: "Forged historical cancellation",
+      criterionResults: [
+        {
+          criterionId: "authenticated-home-visible",
+          status: "satisfied" as const,
+          assertionIds: ["event-forged"],
+          evidenceIds: ["evidence-forged"],
+        },
+      ],
+    };
+    await fixture.repository.journal("run-1").append({
+      type: "verdict",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `verdict:${sha256Canonical(payload)}`,
+      payload,
+      relatedIds: ["event-forged", "evidence-forged"],
+    });
+
+    await expect(
+      finalizeRun({
+        projectRoot: fixture.projectRoot,
+        aiQaHome: fixture.aiQaHome,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+  });
 });
 
 describe("preflight result runs", () => {

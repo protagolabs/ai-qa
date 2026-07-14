@@ -408,6 +408,27 @@ describe("generateRunReport", () => {
         startedAt,
       }),
     );
+    const verdicts = new VerdictService(
+      project.projectRoot,
+      project.aiQaHome,
+      "run-1",
+      eventNow,
+    );
+    await expect(
+      verdicts.set({
+        classification: "not_verified",
+        reasonCode: "cancelled",
+        summary: "Forged cancellation",
+        criterionResults: [
+          {
+            criterionId: "login-flow-reviewed",
+            status: "satisfied",
+            assertionIds: ["event-forged"],
+            evidenceIds: ["evidence-forged"],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "verdict.cancel_requires_lifecycle" });
     await cancelRun({
       ...project,
       runId: "run-1",
@@ -427,6 +448,60 @@ describe("generateRunReport", () => {
       reasonCode: "cancelled",
       summary: "User stopped exploratory QA",
     });
+    expect(generated.report.verdict.criterionResults).toEqual([]);
+  });
+
+  it("rejects a historical cancellation verdict with criterion citations", async () => {
+    const project = await initializedProject(config());
+    const repository = new RunRepository(project.projectRoot, eventNow);
+    await repository.create(
+      createExploratoryWorkOrder({
+        projectId: "sample-web",
+        runId: "run-1",
+        input: exploratoryRunInputSchema.parse({
+          goal: "Explore the login flow",
+          acceptanceCriteria: [
+            {
+              id: "login-flow-reviewed",
+              description: "Login flow is reviewed",
+              requiredEvidence: ["screenshot"],
+            },
+          ],
+          readiness: { platform: "web", status: "ready", checks: [] },
+        }),
+        evidencePolicy: {
+          screenshots: "required",
+          defaultSensitivity: "internal",
+        },
+        startedAt,
+      }),
+    );
+    const payload = {
+      classification: "not_verified" as const,
+      reasonCode: "cancelled" as const,
+      summary: "Forged historical cancellation",
+      criterionResults: [
+        {
+          criterionId: "login-flow-reviewed",
+          status: "satisfied" as const,
+          assertionIds: ["event-forged"],
+          evidenceIds: ["evidence-forged"],
+        },
+      ],
+    };
+    await repository.journal("run-1").append({
+      type: "verdict",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `verdict:${sha256Canonical(payload)}`,
+      payload,
+      relatedIds: ["event-forged", "evidence-forged"],
+    });
+
+    await expect(
+      generateRunReport({ ...project, runId: "run-1", now: generatedNow }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
   it("refuses raw evidence tampering before creating report output", async () => {

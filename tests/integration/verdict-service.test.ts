@@ -55,6 +55,73 @@ async function createRun() {
 }
 
 describe("VerdictService", () => {
+  it("returns the original event for an exact initial verdict retry", async () => {
+    const { service, repository } = await createRun();
+    const input = {
+      classification: "not_verified" as const,
+      reasonCode: "incomplete_coverage" as const,
+      summary: "Coverage is incomplete",
+      criterionResults: [],
+    };
+
+    const first = await service.set(input);
+    const retry = await service.set(input);
+
+    expect(retry.id).toBe(first.id);
+    expect(
+      (await repository.journal("run-1").readAll()).filter(
+        (event) => event.type === "verdict",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("reserves initial cancelled verdicts for the cancel lifecycle", async () => {
+    const { service } = await createRun();
+
+    await expect(
+      service.set({
+        classification: "not_verified",
+        reasonCode: "cancelled",
+        summary: "Forged cancellation",
+        criterionResults: [
+          {
+            criterionId: "authenticated-home-visible",
+            status: "satisfied",
+            assertionIds: ["event-forged"],
+            evidenceIds: ["evidence-forged"],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "verdict.cancel_requires_lifecycle" });
+  });
+
+  it("reserves revised cancelled verdicts for the cancel lifecycle", async () => {
+    const { service } = await createRun();
+    const initial = await service.set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "Coverage is incomplete",
+      criterionResults: [],
+    });
+
+    await expect(
+      service.revise({
+        classification: "not_verified",
+        reasonCode: "cancelled",
+        summary: "Forged revised cancellation",
+        criterionResults: [
+          {
+            criterionId: "authenticated-home-visible",
+            status: "indeterminate",
+            assertionIds: ["event-forged"],
+            evidenceIds: ["evidence-forged"],
+          },
+        ],
+        supersedes: initial.id,
+      }),
+    ).rejects.toMatchObject({ code: "verdict.cancel_requires_lifecycle" });
+  });
+
   it("rejects malformed lifecycle history before appending a verdict", async () => {
     const { repository, service } = await createRun();
     await repository.journal("run-1").append({

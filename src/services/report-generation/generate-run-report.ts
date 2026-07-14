@@ -435,11 +435,12 @@ function validateTerminalVerdict(
     if (
       verdict.classification !== "not_verified" ||
       verdict.reasonCode !== "cancelled" ||
+      verdict.criterionResults.length !== 0 ||
       reason !== verdict.summary
     ) {
       throw new AiQaError(
         "run_protocol.integrity_error",
-        "Cancelled lifecycle does not match its cancellation verdict",
+        "Cancelled lifecycle does not match its canonical cancellation verdict",
         { runId: terminal.runId },
       );
     }

@@ -56,6 +56,7 @@ export class VerdictService {
 
   async set(input: VerdictPayload): Promise<RunEvent> {
     const payload = verdictPayloadSchema.parse(input);
+    requireLifecycleOwnedCancellation(payload);
     if (payload.supersedes !== undefined) {
       throw new AiQaError(
         "verdict.supersedes_forbidden",
@@ -70,13 +71,20 @@ export class VerdictService {
         "verdict",
       );
       requireBlockedVerdictReferences(events, payload);
+      const candidate = verdictAppendInput(payload);
+      const retry = verdicts.find(
+        ({ event }) =>
+          event.idempotencyKey === candidate.idempotencyKey &&
+          canonicalJson(event.payload) === canonicalJson(payload),
+      );
+      if (retry !== undefined) return candidate;
       if (verdicts.length !== 0) {
         throw new AiQaError(
           "verdict.already_set",
           "Use verdict revise after the initial verdict",
         );
       }
-      return verdictAppendInput(payload);
+      return candidate;
     });
   }
 
@@ -84,6 +92,7 @@ export class VerdictService {
     input: VerdictPayload & { supersedes: string },
   ): Promise<RunEvent> {
     const payload = verdictPayloadSchema.parse(input);
+    requireLifecycleOwnedCancellation(payload);
     if (payload.supersedes === undefined) {
       throw new AiQaError(
         "verdict.supersedes_required",
@@ -147,7 +156,8 @@ export class VerdictService {
         if (
           current?.payload.classification === "not_verified" &&
           current.payload.reasonCode === "cancelled" &&
-          current.payload.summary === summary
+          current.payload.summary === summary &&
+          current.payload.criterionResults.length === 0
         ) {
           return appendInput(current.event);
         }
@@ -232,6 +242,7 @@ export function validateVerdictHistory(
         blockers.set(event.id, payload);
       } else if (event.type === "verdict") {
         const payload = verdictPayloadSchema.parse(event.payload);
+        requireCanonicalCancellationShape(payload);
         if (
           !payload.criterionResults.every((result) =>
             knownCriteria.has(result.criterionId),
@@ -349,6 +360,31 @@ function verdictRelatedIds(payload: VerdictPayload): string[] {
       ...result.evidenceIds,
     ]),
   ];
+}
+
+function requireLifecycleOwnedCancellation(payload: VerdictPayload): void {
+  if (
+    payload.classification === "not_verified" &&
+    payload.reasonCode === "cancelled"
+  ) {
+    throw new AiQaError(
+      "verdict.cancel_requires_lifecycle",
+      "Cancelled verdicts can only be created by run cancel",
+    );
+  }
+}
+
+function requireCanonicalCancellationShape(payload: VerdictPayload): void {
+  if (
+    payload.classification === "not_verified" &&
+    payload.reasonCode === "cancelled" &&
+    payload.criterionResults.length !== 0
+  ) {
+    throw new AiQaError(
+      "run_protocol.integrity_error",
+      "Cancellation verdicts cannot contain criterion results",
+    );
+  }
 }
 
 function requireMetadata(
