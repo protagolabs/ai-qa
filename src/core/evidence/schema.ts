@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { actionIdSchema, runIdSchema } from "../runs/schema.js";
+import { webControllerSchema } from "../tools.js";
 
 export const evidenceIdSchema = z
   .string()
@@ -43,7 +44,7 @@ export const evidenceRecordSchema = z
     contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     mediaType: z.string().min(1),
     platform: z.literal("web"),
-    sourceTool: z.string().min(1),
+    sourceTool: webControllerSchema,
     capturedAt: z.string().datetime(),
     classification: z.enum(["raw", "redacted", "annotated"]),
     sensitivity: z.enum(["public", "internal", "sensitive"]),

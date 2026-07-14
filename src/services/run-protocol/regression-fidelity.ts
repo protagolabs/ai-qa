@@ -1,5 +1,6 @@
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
+import { WEB_CONTROLLER } from "../../core/tools.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -106,7 +107,7 @@ export function validateRegressionFidelity(
           { stepId: payload.stepId },
         );
       }
-      if (event.tool !== "chrome-devtools-mcp") {
+      if (event.tool !== WEB_CONTROLLER) {
         throw replayError(
           "replay.tool_mismatch",
           "Regression actions must use the pinned platform tool",

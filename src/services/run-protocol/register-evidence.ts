@@ -15,6 +15,7 @@ import {
   actionPayloadSchema,
   evidenceEventPayloadSchema,
   observationPayloadSchema,
+  type ActionPayload,
   type EvidenceEventPayload,
 } from "../../core/runs/event-payloads.js";
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
@@ -26,6 +27,7 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
+import { WEB_CONTROLLER } from "../../core/tools.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 
@@ -88,7 +90,17 @@ export async function registerEvidence(input: {
       existing === undefined
         ? undefined
         : parseExistingEvidenceEvent(existing, payload.idempotencyKey);
-    requireCompletedCaptureAction(events, payload.captureActionId);
+    const capture = requireCompletedCaptureAction(
+      events,
+      payload.captureActionId,
+    );
+    if (payload.sourceTool !== capture.event.tool) {
+      throw new AiQaError(
+        "evidence.source_tool_mismatch",
+        "Evidence source tool must match its completed capture action",
+        { captureActionId: payload.captureActionId },
+      );
+    }
     requireValidObservations(events, citations.observationIds);
 
     const repository = new EvidenceRepository(
@@ -231,7 +243,10 @@ function idempotencyConflict(idempotencyKey: string): AiQaError {
 function requireCompletedCaptureAction(
   events: readonly RunEvent[],
   captureActionId: string,
-): void {
+): {
+  event: RunEvent;
+  payload: Extract<ActionPayload, { phase: "planned" }>;
+} {
   const actions = events
     .filter((event) => event.type === "action")
     .map((event) => {
@@ -243,13 +258,15 @@ function requireCompletedCaptureAction(
     });
   const planned = actions.find(
     ({ event, payload }) =>
-      event.id === captureActionId && payload.phase === "planned",
+      event.id === captureActionId &&
+      payload.phase === "planned" &&
+      payload.kind === "evidence-capture",
   );
-  if (
-    planned === undefined ||
-    planned.payload.phase !== "planned" ||
-    planned.payload.kind !== "evidence-capture"
-  ) {
+  if (planned === undefined) {
+    throw invalidCaptureAction(captureActionId);
+  }
+  const plannedPayload = planned.payload;
+  if (plannedPayload.phase !== "planned") {
     throw invalidCaptureAction(captureActionId);
   }
   const terminals = actions.filter(
@@ -259,6 +276,10 @@ function requireCompletedCaptureAction(
   if (terminals.length !== 1 || terminals[0]?.payload.phase !== "completed") {
     throw invalidCaptureAction(captureActionId);
   }
+  if (planned.event.tool !== WEB_CONTROLLER) {
+    throw invalidCaptureAction(captureActionId);
+  }
+  return { event: planned.event, payload: plannedPayload };
 }
 
 function invalidCaptureAction(captureActionId: string): AiQaError {

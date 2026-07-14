@@ -22,6 +22,7 @@ import {
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import type { RunEvent, WorkOrder } from "../../core/runs/schema.js";
+import { WEB_CONTROLLER } from "../../core/tools.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
@@ -120,7 +121,7 @@ export async function draftCaseFromRun(input: {
     id: stableStepId(index + 1, step.intent),
     sourceActionId: step.sourceActionId,
     intent: step.intent,
-    tool: "chrome-devtools-mcp",
+    tool: WEB_CONTROLLER,
     target: step.target,
     expectedState: step.expectedState,
     assertionStrategy: step.assertionStrategy,

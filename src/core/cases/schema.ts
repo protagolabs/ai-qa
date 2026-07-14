@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sha256Canonical } from "../canonical-json.js";
 import { acceptanceCriterionSchema } from "../runs/schema.js";
+import { webControllerSchema } from "../tools.js";
 
 export const caseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
 
@@ -24,7 +25,7 @@ export const webCaseStepSchema = z
     id: z.string(),
     sourceActionId: z.string(),
     intent: z.string().min(1),
-    tool: z.literal("chrome-devtools-mcp"),
+    tool: webControllerSchema,
     target: z
       .object({
         description: z.string().min(1),

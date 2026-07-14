@@ -952,6 +952,72 @@ describe("case promotion", () => {
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
+  it("rejects a forged controller before emitting a case step", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
+    const journal = new RunRepository(projectRoot, runNow).journal(
+      "run-source",
+    );
+    const forged = await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "web",
+      tool: "fake-browser",
+      idempotencyKey: "forged-controller-action",
+      payload: {
+        phase: "planned",
+        kind: "interaction",
+        intent: "Submit valid credentials with a forged controller",
+        stepId: "step-forged-controller",
+        target: { description: "Login button" },
+      },
+      relatedIds: [],
+    });
+    await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "web",
+      tool: "fake-browser",
+      idempotencyKey: `complete:${forged.id}`,
+      payload: {
+        phase: "completed",
+        actionId: forged.id,
+        toolResult: { summary: "Credentials submitted" },
+      },
+      relatedIds: [forged.id],
+    });
+
+    await expect(
+      draftCaseFromRun({
+        projectRoot,
+        runId: "run-source",
+        input: {
+          caseId: "forged-controller",
+          title: "Forged controller",
+          webSteps: [
+            {
+              sourceActionId: forged.id,
+              intent: "Submit valid credentials",
+              target: {
+                description: "Login button",
+                stability: "stable",
+                stabilityRationale: "Unique application-owned control",
+              },
+              expectedState: "Authenticated home is visible",
+              assertionStrategy: "Visible account text",
+              evidenceCheckpoints: ["post-action-screenshot"],
+            },
+          ],
+          excludedActions: [
+            {
+              actionId: plannedActionId,
+              reason: "Replaced by the forged controller test action",
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+  });
+
   it("rejects an assertion checkpoint that cites proof from before another step", async () => {
     const { projectRoot, plannedActionId } = await createCompletedPassRun({
       mislinkedStructuredProof: true,

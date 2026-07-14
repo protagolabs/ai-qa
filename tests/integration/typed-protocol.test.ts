@@ -10,8 +10,12 @@ import {
   exploratoryRunInputSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
+import { WEB_CONTROLLER } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import {
+  planActionInputSchema,
+  RunProtocolService,
+} from "../../src/services/run-protocol/run-protocol-service.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
@@ -180,6 +184,18 @@ async function addCurrentObservation(
 }
 
 describe("typed run protocol", () => {
+  it("rejects an exploratory action from an unconfigured controller", () => {
+    expect(
+      planActionInputSchema.safeParse({
+        idempotencyKey: "fake-controller",
+        kind: "interaction",
+        intent: "Click with an unconfigured tool",
+        tool: "fake-browser",
+        target: { description: "Login button" },
+      }).success,
+    ).toBe(false);
+  });
+
   it("plans an action and requires a fresh observation to resolve an unknown result", async () => {
     const { service } = await createTrustedRun();
     const planned = await service.planAction({
@@ -272,7 +288,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "submit-login",
       kind: "interaction" as const,
       intent: "Submit login",
-      tool: "chrome-devtools-mcp",
+      tool: WEB_CONTROLLER,
       target: { description: "Login button" },
     };
     const planned = await service.planAction(input);
@@ -325,7 +341,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "concurrent-plan",
       kind: "interaction" as const,
       intent: "Perform one concurrent action",
-      tool: "chrome-devtools-mcp",
+      tool: WEB_CONTROLLER,
       target: { description: "Button" },
     };
     const [firstPlan, secondPlan] = await Promise.all([
@@ -399,7 +415,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "only-tool-call",
       kind: "interaction" as const,
       intent: "Use the only call",
-      tool: "chrome-devtools-mcp",
+      tool: WEB_CONTROLLER,
       target: { description: "Page" },
       stepId: "step-budget",
     };

@@ -5,6 +5,7 @@ import {
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
 import { jsonValueSchema } from "../json-value.js";
+import { webControllerSchema } from "../tools.js";
 
 export const criterionIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
 
@@ -76,7 +77,7 @@ export const requiredStepSchema = z
     id: stepIdSchema,
     order: z.number().int().nonnegative(),
     intent: z.string().trim().min(1),
-    tool: z.literal("chrome-devtools-mcp"),
+    tool: webControllerSchema,
     target: z
       .object({
         description: z.string().trim().min(1),

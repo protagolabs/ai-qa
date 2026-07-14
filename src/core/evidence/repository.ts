@@ -18,12 +18,13 @@ import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
 import { actionIdSchema, runIdSchema } from "../runs/schema.js";
+import { webControllerSchema, type WebController } from "../tools.js";
 import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
 
 export interface RegisterRawEvidenceInput {
   sourcePath: string;
   mediaType: string;
-  sourceTool: string;
+  sourceTool: WebController;
   sensitivity: "public" | "internal" | "sensitive";
   evidenceKinds: string[];
   captureActionId: string;
@@ -35,7 +36,7 @@ export const registerRawEvidenceInputSchema: z.ZodType<RegisterRawEvidenceInput>
     .object({
       sourcePath: z.string().min(1),
       mediaType: z.string().trim().min(1),
-      sourceTool: z.string().trim().min(1),
+      sourceTool: webControllerSchema,
       sensitivity: z.enum(["public", "internal", "sensitive"]),
       evidenceKinds: z.array(z.string().trim().min(1)).min(1),
       captureActionId: actionIdSchema,

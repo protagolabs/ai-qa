@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { webControllerSchema } from "../tools.js";
 
 export const projectConfigSchema = z.object({
   schemaVersion: z.literal(1),
@@ -14,7 +15,7 @@ export const projectConfigSchema = z.object({
   }),
   environments: z.record(z.string(), z.unknown()),
   tools: z.object({
-    web: z.object({ controller: z.literal("chrome-devtools-mcp") }),
+    web: z.object({ controller: webControllerSchema }),
   }),
   evidencePolicy: z.object({
     screenshots: z.enum(["required", "on-failure", "optional"]),

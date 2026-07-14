@@ -3,6 +3,7 @@ import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
+import { WEB_CONTROLLER, webControllerSchema } from "../../core/tools.js";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import {
   actionPayloadSchema,
@@ -35,7 +36,7 @@ export const planActionInputSchema = z
     idempotencyKey: z.string().trim().min(1),
     kind: z.enum(["interaction", "observation", "evidence-capture"]),
     intent: z.string().trim().min(1),
-    tool: z.string().trim().min(1),
+    tool: webControllerSchema,
     target: z
       .object({
         description: z.string().trim().min(1),
@@ -776,7 +777,7 @@ export function validateProtocolEvents(
               idempotencyKey: event.idempotencyKey,
               relatedIds: [],
             });
-            requireSemantic(event.tool.trim().length > 0);
+            requireSemantic(event.tool === WEB_CONTROLLER);
             requireSemantic(
               typeof event.idempotencyKey === "string" &&
                 event.idempotencyKey.trim().length > 0,
@@ -878,6 +879,8 @@ export function validateProtocolEvents(
           requireSemantic(payload.runId === runId);
           requireSemantic(plan?.payload.kind === "evidence-capture");
           requireSemantic(terminal?.payload.phase === "completed");
+          requireSemantic(payload.sourceTool === WEB_CONTROLLER);
+          requireSemantic(payload.sourceTool === plan?.event.tool);
           requireSemantic(
             payload.criterionIds.every((id) => knownCriteria.has(id)),
           );

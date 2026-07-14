@@ -14,13 +14,17 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
-import { EvidenceRepository } from "../../src/core/evidence/repository.js";
+import {
+  EvidenceRepository,
+  registerRawEvidenceInputSchema,
+} from "../../src/core/evidence/repository.js";
 import { actionPayloadSchema } from "../../src/core/runs/event-payloads.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
+import { WEB_CONTROLLER } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
@@ -145,6 +149,20 @@ describe("actionPayloadSchema", () => {
 });
 
 describe("EvidenceRepository", () => {
+  it("rejects an unconfigured evidence source tool", () => {
+    expect(
+      registerRawEvidenceInputSchema.safeParse({
+        sourcePath: "/tmp/screen.png",
+        mediaType: "image/png",
+        sourceTool: "fake-browser",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId: "event-capture",
+        idempotencyKey: "fake-source",
+      }).success,
+    ).toBe(false);
+  });
+
   it("persists newline-terminated replacements across repository instances", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-"));
     const firstSource = join(projectRoot, "first.png");
@@ -298,7 +316,7 @@ describe("EvidenceRepository", () => {
     const input = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: "chrome-devtools-mcp",
+      sourceTool: WEB_CONTROLLER,
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: "event-capture-action",
@@ -320,7 +338,7 @@ describe("EvidenceRepository", () => {
     const input = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: "chrome-devtools-mcp",
+      sourceTool: WEB_CONTROLLER,
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: "event-capture-action",
@@ -620,7 +638,7 @@ describe("registerEvidence", () => {
     const payload = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: "chrome-devtools-mcp",
+      sourceTool: WEB_CONTROLLER,
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: planned.id,
@@ -676,7 +694,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: "chrome-devtools-mcp",
+        sourceTool: WEB_CONTROLLER,
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,
@@ -1061,7 +1079,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: "chrome-devtools-mcp",
+        sourceTool: WEB_CONTROLLER,
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,
@@ -1099,7 +1117,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: "chrome-devtools-mcp",
+        sourceTool: WEB_CONTROLLER,
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,
