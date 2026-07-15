@@ -93,6 +93,7 @@ export async function prepareRegressionWorkOrder(
       screenshots: config.evidencePolicy.screenshots,
       defaultSensitivity: config.evidencePolicy.defaultSensitivity,
     },
+    recordingPolicy: config.recordingPolicy,
     budget: calculateRegressionBudget(requiredSteps.length, startedAt),
     pinnedCase: {
       caseId: revision.caseId,

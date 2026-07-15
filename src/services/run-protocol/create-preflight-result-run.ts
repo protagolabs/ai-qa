@@ -85,6 +85,7 @@ export async function createPreflightResultRun(
         screenshots: config.evidencePolicy.screenshots,
         defaultSensitivity: config.evidencePolicy.defaultSensitivity,
       },
+      recordingPolicy: config.recordingPolicy,
       startedAt: input.now(),
       preflightResult: true,
     }) as WorkOrder;

@@ -78,7 +78,8 @@ const criteria = [
 
 function config(): ProjectConfig {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    recordingPolicy: { mode: "local-only" },
     project: { id: "fixture-web", name: "Web QA fixture" },
     targets: { web: { entryUrl: "http://127.0.0.1:4173/login" } },
     environments: {},

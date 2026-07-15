@@ -51,7 +51,8 @@ function config(
   } = {},
 ): ProjectConfig {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    recordingPolicy: { mode: "local-only" },
     project: { id: "sample-web", name: "Sample Web" },
     targets: { web: { entryUrl: "https://example.com" } },
     environments: {},

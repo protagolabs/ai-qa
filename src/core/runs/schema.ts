@@ -115,6 +115,10 @@ const workOrderBaseSchema = z
         defaultSensitivity: z.enum(["public", "internal", "sensitive"]),
       })
       .strict(),
+    recordingPolicy: z
+      .object({ mode: z.enum(["local-only", "project-skill"]) })
+      .strict()
+      .optional(),
     budget: executionBudgetSchema,
     pinnedCase: z
       .object({
@@ -221,6 +225,12 @@ export const workOrderSchema = workOrderBaseSchema.superRefine(
 
 export type WorkOrder = z.infer<typeof workOrderSchema>;
 
+export function effectiveWorkOrderRecordingMode(
+  workOrder: WorkOrder,
+): "local-only" | "project-skill" {
+  return workOrder.recordingPolicy?.mode ?? "local-only";
+}
+
 export function deepFreezeWorkOrder(workOrder: WorkOrder): Readonly<WorkOrder> {
   const freeze = (value: unknown): void => {
     if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
@@ -241,6 +251,7 @@ export function createExploratoryWorkOrder(input: {
     screenshots: "required" | "on-failure" | "optional";
     defaultSensitivity: "public" | "internal" | "sensitive";
   };
+  recordingPolicy?: { mode: "local-only" | "project-skill" };
   startedAt: Date;
   preflightResult?: true;
 }): Readonly<WorkOrder> {
@@ -264,6 +275,7 @@ export function createExploratoryWorkOrder(input: {
       ? {}
       : { preflightResult: input.preflightResult }),
     evidencePolicy: input.evidencePolicy,
+    recordingPolicy: input.recordingPolicy ?? { mode: "local-only" },
     budget: { maxToolCalls: 100, maxRecoveryActions: 10, deadline },
   });
   return deepFreezeWorkOrder(value);

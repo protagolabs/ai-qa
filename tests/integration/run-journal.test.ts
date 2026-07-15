@@ -16,7 +16,8 @@ import { confirmProjectTrust } from "../../src/services/trust/confirm-project-tr
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const config: ProjectConfig = {
-  schemaVersion: 1,
+  schemaVersion: 2,
+  recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "https://example.com" } },
   environments: {},

@@ -8,15 +8,24 @@ import {
   requireProjectLocalDirectory,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
-import { projectConfigSchema, type ProjectConfig } from "./schema.js";
+import {
+  normalizeProjectConfig,
+  projectConfigV2Schema,
+  storedProjectConfigSchema,
+  type EffectiveProjectConfig,
+  type ProjectConfigV2,
+  type StoredProjectConfig,
+} from "./schema.js";
 
-function serialize(config: ProjectConfig): string {
-  return stringify(projectConfigSchema.parse(config), { sortMapEntries: true });
+function serialize(config: ProjectConfigV2): string {
+  return stringify(projectConfigV2Schema.parse(config), {
+    sortMapEntries: true,
+  });
 }
 
 export async function createProjectConfig(
   projectRoot: string,
-  config: ProjectConfig,
+  config: ProjectConfigV2,
 ): Promise<void> {
   const directory = await requireProjectLocalDirectory(projectRoot, [".ai-qa"]);
   const path = resolve(directory, "config.yaml");
@@ -69,17 +78,23 @@ export async function createProjectConfig(
 
 export async function readProjectConfig(
   projectRoot: string,
-): Promise<ProjectConfig> {
+): Promise<EffectiveProjectConfig> {
+  return normalizeProjectConfig(await readStoredProjectConfig(projectRoot));
+}
+
+export async function readStoredProjectConfig(
+  projectRoot: string,
+): Promise<StoredProjectConfig> {
   const path = await requireProjectLocalRegularFile(projectRoot, [
     ".ai-qa",
     "config.yaml",
   ]);
-  return projectConfigSchema.parse(parse(await readFile(path, "utf8")));
+  return storedProjectConfigSchema.parse(parse(await readFile(path, "utf8")));
 }
 
 export async function writeProjectConfig(
   projectRoot: string,
-  config: ProjectConfig,
+  config: ProjectConfigV2,
 ): Promise<void> {
   const path = await requireProjectLocalRegularFile(projectRoot, [
     ".ai-qa",

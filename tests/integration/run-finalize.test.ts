@@ -28,7 +28,8 @@ const now = () => new Date("2026-07-13T00:10:00.000Z");
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 
 const config: ProjectConfig = {
-  schemaVersion: 1,
+  schemaVersion: 2,
+  recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "https://example.com" } },
   environments: {},

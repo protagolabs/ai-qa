@@ -38,7 +38,8 @@ vi.mock("node:crypto", async (importOriginal) => {
 const execFileAsync = promisify(execFile);
 
 const confirmedConfig: ProjectConfig = {
-  schemaVersion: 1,
+  schemaVersion: 2,
+  recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "http://127.0.0.1:3000" } },
   environments: {},

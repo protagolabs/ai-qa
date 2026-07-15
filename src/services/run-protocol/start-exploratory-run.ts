@@ -37,6 +37,7 @@ export async function startExploratoryRun(input: {
       screenshots: config.evidencePolicy.screenshots,
       defaultSensitivity: config.evidencePolicy.defaultSensitivity,
     },
+    recordingPolicy: config.recordingPolicy,
     startedAt: input.now(),
   });
   await new RunRepository(trusted.projectRoot, input.now).create(workOrder);

@@ -1,12 +1,90 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalJson,
+  sha256Canonical,
+} from "../../src/core/canonical-json.js";
+import {
   createExploratoryWorkOrder,
+  effectiveWorkOrderRecordingMode,
   exploratoryRunInputSchema,
   runIdSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
+import { projectConfigV2 } from "../helpers/project-fixture.js";
 
 describe("exploratory work orders", () => {
+  it("preserves legacy bytes and hashes while deriving local-only recording", () => {
+    const legacy = {
+      schemaVersion: 1,
+      protocolVersion: "1.0.0",
+      runId: "run-legacy",
+      kind: "exploratory",
+      execution: "local",
+      projectId: "sample-web",
+      platform: "web",
+      startedAt: "2026-07-13T00:00:00.000Z",
+      goal: "Verify successful login",
+      acceptanceCriteria: [
+        {
+          id: "authenticated-home-visible",
+          description: "Authenticated home is visible",
+          requiredEvidence: ["post-action-screenshot"],
+        },
+      ],
+      requiredSteps: [],
+      readiness: { platform: "web", status: "ready", checks: [] },
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      budget: {
+        maxToolCalls: 100,
+        maxRecoveryActions: 10,
+        deadline: "2026-07-13T00:30:00.000Z",
+      },
+    };
+    const bytes = canonicalJson(legacy);
+    const hash = sha256Canonical(legacy);
+
+    const parsed = workOrderSchema.parse(legacy);
+
+    expect(canonicalJson(parsed)).toBe(bytes);
+    expect(sha256Canonical(parsed)).toBe(hash);
+    expect(parsed).not.toHaveProperty("recordingPolicy");
+    expect(effectiveWorkOrderRecordingMode(parsed)).toBe("local-only");
+  });
+
+  it("snapshots the config recording mode in new work orders", () => {
+    const config = projectConfigV2("project-skill");
+    const input = exploratoryRunInputSchema.parse({
+      goal: "Verify successful login",
+      acceptanceCriteria: [
+        {
+          id: "authenticated-home-visible",
+          description: "Authenticated home is visible",
+          requiredEvidence: ["post-action-screenshot"],
+        },
+      ],
+      readiness: { platform: "web", status: "ready", checks: [] },
+    });
+    const workOrder = createExploratoryWorkOrder({
+      projectId: config.project.id,
+      runId: "run-1",
+      input,
+      evidencePolicy: {
+        screenshots: config.evidencePolicy.screenshots,
+        defaultSensitivity: config.evidencePolicy.defaultSensitivity,
+      },
+      recordingPolicy: config.recordingPolicy,
+      startedAt: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    config.recordingPolicy.mode = "local-only";
+
+    expect(effectiveWorkOrderRecordingMode(workOrder)).toBe("project-skill");
+    expect(Object.isFrozen(workOrder.recordingPolicy)).toBe(true);
+  });
+
   it("requires stable criterion IDs and freezes finite defaults", () => {
     const input = exploratoryRunInputSchema.parse({
       goal: "Verify successful login",
