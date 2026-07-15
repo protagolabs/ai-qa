@@ -266,6 +266,49 @@ describe("project setup preview", () => {
 });
 
 describe("project Skill CLI", () => {
+  it("rejects the global replacement flag before project trust, reads, or writes", async () => {
+    const projectRoot = await temporaryProject("ai-qa-skill-scope-cli-");
+    const aiQaHome = await temporaryProject("ai-qa-untrusted-home-");
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("project-skill"),
+    );
+    const originalSkill = prepareProjectSkill({
+      source: projectSkillSource(),
+      secretReferences: SECRET_REFERENCES,
+    }).content;
+    await writeSkill(projectRoot, originalSkill);
+    const captured = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.reject(new Error("stdin must not be read")),
+    });
+
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "sync",
+          "--stdin-json",
+          "--confirm-managed-replacement",
+        ],
+        captured.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
+      error: { code: "skill.conflicting_scope_options" },
+    });
+    expect(captured.stdout).toEqual([]);
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+    await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
+      originalSkill,
+    );
+  });
+
   it("generates only a missing Project Skill through preview and checksum confirmation", async () => {
     const projectRoot = await temporaryProject("ai-qa-skill-generate-cli-");
     const aiQaHome = await temporaryProject("ai-qa-home-");

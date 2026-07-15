@@ -264,6 +264,12 @@ export function registerSkillCommands(
     false,
   );
   syncCommand.action(async (options: SyncSkillOptions) => {
+    if (options.global !== true && options.confirmManagedReplacement === true) {
+      throw new AiQaError(
+        "skill.conflicting_scope_options",
+        "Global Skill replacement confirmation cannot be used for a project Skill",
+      );
+    }
     if (options.global === true) {
       if (
         options.stdinJson === true ||
