@@ -109,7 +109,7 @@ docs/
 - Consumes: On-disk config schema v1 or v2.
 - Produces: `ProjectConfigV1`, `ProjectConfigV2`, `StoredProjectConfig`, `EffectiveProjectConfig`, `normalizeProjectConfig()`, `readStoredProjectConfig()`, a v2-only `projectConfigSchema` compatibility export, a non-mutating `readProjectConfig()` that always returns effective v2 semantics, and an immutable per-run recording-mode snapshot.
 
-- [ ] **Step 1: Write the failing migration and schema tests**
+- [x] **Step 1: Write the failing migration and schema tests**
 
 Create `tests/unit/config-migration.test.ts` with complete cases for:
 
@@ -252,7 +252,7 @@ export function projectConfigV2(
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm failure**
+- [x] **Step 2: Run the focused tests and confirm failure**
 
 Run:
 
@@ -262,7 +262,7 @@ pnpm vitest run tests/unit/config-migration.test.ts
 
 Expected: FAIL because the v2 schemas, normalization function, repository reader, and fixture builders do not exist.
 
-- [ ] **Step 3: Implement schemas and the read-only migration boundary**
+- [x] **Step 3: Implement schemas and the read-only migration boundary**
 
 Factor the unchanged config fields into `projectConfigFields`. Implement normalization exactly as:
 
@@ -285,7 +285,7 @@ export function normalizeProjectConfig(
 
 Update `CONFIG_SCHEMA_VERSION` to `2`. Leave `WORK_PROTOCOL_VERSION` at `1.0.0` only to keep run/work-order protocol tests and the installed 1.0.0 runtime flow coherent during intermediate commits. This is not a claim that the old Skill can drive the new v2 init/configure request surface; Task 4 replaces that public workflow.
 
-- [ ] **Step 4: Freeze recording mode in every new work order**
+- [x] **Step 4: Freeze recording mode in every new work order**
 
 Add an optional provider-neutral snapshot to the strict work-order schema without changing `WORK_ORDER_SCHEMA_VERSION`:
 
@@ -308,7 +308,7 @@ export function effectiveWorkOrderRecordingMode(
 
 The optional field preserves the canonical hash of old work orders: parsing an absent optional field must not insert a default. Unit tests must prove a legacy work order without the field remains byte/hash stable and derives `local-only`, while new work orders retain the config mode even after config changes.
 
-- [ ] **Step 5: Move all active test fixtures to config v2**
+- [x] **Step 5: Move all active test fixtures to config v2**
 
 Replace every config fixture found by:
 
@@ -318,7 +318,7 @@ rg -n "schemaVersion:\s*1|storagePolicy" tests --glob '*.ts'
 
 Only project config literals change to `schemaVersion: 2` plus `recordingPolicy: { mode: "local-only" }`. Case, event, evidence, report, trust, and work-order schema versions remain `1`. Use `projectConfigV2()` in new tests; retain `projectConfigV1()` only for explicit migration coverage.
 
-- [ ] **Step 6: Verify config and snapshot behavior**
+- [x] **Step 6: Verify config and snapshot behavior**
 
 Run:
 
@@ -329,7 +329,7 @@ pnpm typecheck
 
 Expected: PASS. The v1 test must also prove unchanged on-disk bytes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/core/config src/core/runs/schema.ts src/schemas/versions.ts src/services/run-protocol/start-exploratory-run.ts src/services/run-protocol/start-regression-run.ts src/services/run-protocol/create-preflight-result-run.ts tests/helpers/project-fixture.ts tests/unit/config-migration.test.ts tests/unit/work-order.test.ts tests/e2e tests/integration
@@ -350,7 +350,7 @@ git commit -m "feat: add provider-neutral config v2"
 - Consumes: A host-generated complete `SKILL.md`, optional installed bytes, and config secret-reference names.
 - Produces: `projectSkillRequestSchema`, `prepareProjectSkill()`, `inspectProjectSkill()`, `projectSkillDestination()`, and `ProjectSkillStatus` without reading untrusted project content.
 
-- [ ] **Step 1: Write failing Project Skill validation tests**
+- [x] **Step 1: Write failing Project Skill validation tests**
 
 Cover these exact behaviors in `tests/unit/project-skill.test.ts`:
 
@@ -408,7 +408,7 @@ ${recordingProcedure}
 }
 ```
 
-- [ ] **Step 2: Confirm the focused test fails**
+- [x] **Step 2: Confirm the focused test fails**
 
 Run:
 
@@ -418,7 +418,7 @@ pnpm vitest run tests/unit/project-skill.test.ts tests/unit/managed-skill.test.t
 
 Expected: FAIL because project-specific validation and reusable managed-skill inspection do not exist.
 
-- [ ] **Step 3: Expose safe managed-skill inspection**
+- [x] **Step 3: Expose safe managed-skill inspection**
 
 Export an immutable metadata/region view from `managed-skill.ts` rather than parsing YAML twice:
 
@@ -440,7 +440,7 @@ The common managed-skill frontmatter parser must require only valid `name`, `des
 
 Keep `mergeManagedSkill()` behavior compatible with the global Skill tests. The computed checksum excludes `aiQaManagedChecksum`, normalizes managed-region CRLF for hashing, and never normalizes installed user bytes.
 
-- [ ] **Step 4: Implement Project Skill validation and merge preparation**
+- [x] **Step 4: Implement Project Skill validation and merge preparation**
 
 Use these public types:
 
@@ -473,7 +473,7 @@ Do not call the personal-skill `init_skill.py` from product runtime: the user fi
 
 `projectSkillDestination(projectRoot)` returns the canonical relative destination `.agents/skills/ai-qa-project/SKILL.md`; filesystem verification is added in Task 3.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -503,7 +503,7 @@ git commit -m "feat: validate target project skills"
 - Consumes: A trusted canonical project root, operation, complete v2 config and Project Skill request, optional installed config/Skill, and confirmation checksum.
 - Produces: A full read-only `ProjectSetupPreview` and an apply operation that revalidates and either publishes every requested file or restores original bytes.
 
-- [ ] **Step 1: Write failing preview and transaction tests**
+- [x] **Step 1: Write failing preview and transaction tests**
 
 Add integration cases for:
 
@@ -553,7 +553,7 @@ export interface ProjectSetupPreview {
 }
 ```
 
-- [ ] **Step 2: Run the focused suite and confirm failure**
+- [x] **Step 2: Run the focused suite and confirm failure**
 
 Run:
 
@@ -563,7 +563,7 @@ pnpm vitest run tests/integration/project-skill.test.ts
 
 Expected: FAIL because preview and transaction services do not exist.
 
-- [ ] **Step 3: Add optional canonical path inspection without mutation**
+- [x] **Step 3: Add optional canonical path inspection without mutation**
 
 Extend `project-storage.ts` with functions that distinguish missing from unsafe without creating ancestors:
 
@@ -588,7 +588,7 @@ export function inspectOptionalProjectLocalRegularFile(
 
 Walk existing ancestors with `lstat` and `realpath`. A missing ancestor means `missing`; any symlink or non-directory means `storage.integrity_error`. Never call `mkdir` from this read path.
 
-- [ ] **Step 4: Implement deterministic preview**
+- [x] **Step 4: Implement deterministic preview**
 
 Define the request schema and checksum input exactly:
 
@@ -618,7 +618,7 @@ const checksum = sha256Canonical({
 
 For `configure`, replace the submitted project ID with the stored project ID before displaying or hashing the effective request. Preview must include complete proposed bytes and a unified diff for every changed existing file. It must not include absolute paths inside the canonical request except the separately displayed canonical project root.
 
-- [ ] **Step 5: Implement staged publish and caught-failure rollback**
+- [x] **Step 5: Implement staged publish and caught-failure rollback**
 
 Use this narrow transaction surface so integration tests can inject one deterministic publish fault:
 
@@ -646,7 +646,7 @@ export async function applyProjectFileTransaction(input: {
 
 `applyProjectSetup()` must recompute the entire preview under the lock, compare with `confirmChecksum`, then call the transaction. Init also creates canonical `cases`, `runs`, `evidence`, and `reports/runs` directories before publish; directory residue is allowed, but partial config or Skill files are not.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -687,7 +687,7 @@ git commit -m "feat: add checksum confirmed project setup"
 - Consumes: Global `--project`, `--stdin-json`, and exactly one of `--preview` or `--confirm-checksum <sha256>`.
 - Produces: JSON previews/applied results for init/configure/project Skill mutations while preserving all existing `skill ... --global` behavior.
 
-- [ ] **Step 1: Add failing CLI contract tests**
+- [x] **Step 1: Add failing CLI contract tests**
 
 Test the exact command surface:
 
@@ -715,7 +715,7 @@ Assert:
 - `skill check` is read-only and returns `compatible`, `missing`, `conflict`, or `incompatible` with a nonzero exit for non-compatible states;
 - existing `skill install|sync|check --global` tests remain unchanged in behavior.
 
-- [ ] **Step 2: Confirm CLI tests fail**
+- [x] **Step 2: Confirm CLI tests fail**
 
 Run:
 
@@ -725,7 +725,7 @@ pnpm vitest run tests/integration/init.test.ts tests/integration/project-skill.t
 
 Expected: FAIL because the new flags and project Skill commands are not registered.
 
-- [ ] **Step 3: Implement a shared confirmation-option guard**
+- [x] **Step 3: Implement a shared confirmation-option guard**
 
 Use this exact option model in both command modules:
 
@@ -758,7 +758,7 @@ function requestedSetupAction(
 
 The checksum parser must require `^sha256:[a-f0-9]{64}$`. All commands resolve and verify machine trust before reading existing config or Project Skill.
 
-- [ ] **Step 4: Route init/configure through project setup**
+- [x] **Step 4: Route init/configure through project setup**
 
 Replace direct config writes in public CLI commands. Preview prints `ProjectSetupPreview`. Apply prints:
 
@@ -817,7 +817,7 @@ export async function initializeTestProject(input: {
 
 Move `projectSkillSource()` from the Task 2 unit fixture into the shared helper and import it from the unit test. Keep explicit low-level transaction tests on `previewProjectSetup()`/`applyProjectSetup()` rather than the convenience wrapper.
 
-- [ ] **Step 5: Route project Skill commands through the same preview/checksum primitive**
+- [x] **Step 5: Route project Skill commands through the same preview/checksum primitive**
 
 Project-only request stdin is:
 
@@ -829,7 +829,7 @@ const projectSkillMutationRequestSchema = z.object({
 
 For project `generate` and `sync`, bind the preview checksum to the current effective config and Skill destination snapshot even though only `SKILL.md` is written. `generate` requires missing destination; `sync` requires an installed destination. The project `check` command performs no stdin read and no write.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -858,7 +858,7 @@ git commit -m "feat: preview and confirm project skill setup"
 - Consumes: Trusted project root, validated run ID, and generated report artifacts.
 - Produces: One canonical report-directory resolver, one per-run report lock, and a callback API that verifies an existing generated report while holding that lock.
 
-- [ ] **Step 1: Add failing refactor-characterization tests**
+- [x] **Step 1: Add failing refactor-characterization tests**
 
 Add tests proving:
 
@@ -868,7 +868,7 @@ Add tests proving:
 - a callback sees the canonical report directory and effective config;
 - existing generated JSON/Markdown bytes are unchanged by a read-only verified callback.
 
-- [ ] **Step 2: Confirm the new API is missing**
+- [x] **Step 2: Confirm the new API is missing**
 
 Run:
 
@@ -878,7 +878,7 @@ pnpm vitest run tests/integration/report-generation.test.ts -t "verified generat
 
 Expected: FAIL because the callback API does not exist.
 
-- [ ] **Step 3: Extract storage without changing report semantics**
+- [x] **Step 3: Extract storage without changing report semantics**
 
 Move the existing `verifiedReportDirectory()`, `requireRegularReportFile()`, and `withReportLock()` logic to `src/core/reports/storage.ts` under these names:
 
@@ -904,7 +904,7 @@ export function withRunReportLock<T>(
 
 Keep report-specific error messages in `generate-run-report.ts`; storage errors retain stable codes.
 
-- [ ] **Step 4: Expose verified persisted-report callback**
+- [x] **Step 4: Expose verified persisted-report callback**
 
 Add:
 
@@ -928,7 +928,7 @@ It must build and verify current terminal state, derive `recordingMode` only fro
 
 `report export --adapter project-local` remains report-only: it verifies and returns configured `report.json`/`report.md` paths and never includes `recording.jsonl` or `recording.json`. Recording state is queried only through `report recording-status`.
 
-- [ ] **Step 5: Verify no behavior regression and commit**
+- [x] **Step 5: Verify no behavior regression and commit**
 
 Run:
 
@@ -959,7 +959,7 @@ git commit -m "refactor: expose verified report storage boundary"
 - Consumes: Validated receipt payloads and an already-held canonical report directory lock.
 - Produces: Append-only canonical `RecordingEvent` history, deterministic/recoverable `RecordingArtifact` materialization, idempotent registration, and integrity-checked reads.
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Test all boundaries:
 
@@ -1040,7 +1040,7 @@ export const recordingArtifactSchema = z.object({
 });
 ```
 
-- [ ] **Step 2: Confirm schema/repository tests fail**
+- [x] **Step 2: Confirm schema/repository tests fail**
 
 Run:
 
@@ -1050,7 +1050,7 @@ pnpm vitest run tests/unit/recording-schema.test.ts tests/integration/recording-
 
 Expected: FAIL because recording files and APIs do not exist.
 
-- [ ] **Step 3: Implement pure validation and materialization**
+- [x] **Step 3: Implement pure validation and materialization**
 
 Use `/[\u0000-\u001f\u007f-\u009f]/u` for forbidden controls and `[...value].length` for Unicode code points. Add `"recording"` to `createId()` prefixes.
 
@@ -1070,7 +1070,7 @@ export function classifyRecordingMaterialization(input: {
 
 Materialization rejects an empty event list. History preserves journal order exactly; current is the final event. The repository uses the final event's `recordedAt` as `materializedAt`. Classification is `current` only when the artifact is canonical-equal to a fresh materialization, `recoverable` when journal history is a strict extension or only derived fields differ, and `conflict` when artifact history is ahead of or not an exact prefix of canonical journal events.
 
-- [ ] **Step 4: Implement the lock-aware repository**
+- [x] **Step 4: Implement the lock-aware repository**
 
 The service in Task 7 owns report verification and locking. The repository therefore exposes only explicitly unlocked methods whose names make the precondition visible:
 
@@ -1110,7 +1110,7 @@ This makes `recording-status` logically read-only but permits one deterministic 
 
 On register, call `readOrRecoverUnlocked()` first. Same key and canonical-equal payload returns the original event/artifact with `replayed: true` and no journal write. Same key with different status/references throws `recording.idempotency_conflict`. A new key appends one event, atomically writes newline-terminated `recording.jsonl`, then atomically writes `recording.json` while the caller retains the report lock. If the process stops between those writes, the next read/retry follows the deterministic recovery path instead of permanently bricking the run.
 
-- [ ] **Step 5: Verify repository behavior and commit**
+- [x] **Step 5: Verify repository behavior and commit**
 
 Run:
 
@@ -1140,7 +1140,7 @@ git commit -m "feat: add neutral recording journal"
 - Consumes: Trusted project, run ID, host-provided neutral receipt, terminal run, and verified generated local report.
 - Produces: `registerRecordingReceipt()`, `readRecordingStatus()`, and the two report CLI subcommands.
 
-- [ ] **Step 1: Write failing service and CLI tests**
+- [x] **Step 1: Write failing service and CLI tests**
 
 Cover:
 
@@ -1183,7 +1183,7 @@ export type RecordingStatusView =
     };
 ```
 
-- [ ] **Step 2: Confirm the focused flow fails**
+- [x] **Step 2: Confirm the focused flow fails**
 
 Run:
 
@@ -1193,7 +1193,7 @@ pnpm vitest run tests/integration/recording-receipt.test.ts
 
 Expected: FAIL because receipt services and CLI commands do not exist.
 
-- [ ] **Step 3: Implement receipt registration under verified report lock**
+- [x] **Step 3: Implement receipt registration under verified report lock**
 
 Use:
 
@@ -1222,7 +1222,7 @@ Both functions call `withVerifiedGeneratedRunReport()`. Inside its locked callba
 
 This full report verification gate is intentional. `pending` means “a verified local report exists and its snapshotted project recording has no receipt,” not merely “no receipt file exists.” Before report generation, return `report.not_generated`; for non-terminal, evidence-drift, report-drift, or storage-integrity cases, preserve the existing report/lifecycle error. The global Skill in Task 8 must generate or repair the verified local report before querying/recording status and must not translate those errors into pending.
 
-- [ ] **Step 4: Add CLI commands**
+- [x] **Step 4: Add CLI commands**
 
 Register:
 
@@ -1233,7 +1233,7 @@ ai-qa report recording-status <run-id>
 
 `receipt` reads `recordingReceiptInputSchema` and prints `{ eventId, status, references, replayed }`. `recording-status` reads no stdin and prints `RecordingStatusView`. Both reuse the existing inherited `--project`, `AI_QA_HOME`, and injected clock boundary.
 
-- [ ] **Step 5: Verify immutability and commit**
+- [x] **Step 5: Verify immutability and commit**
 
 Run:
 
@@ -1272,7 +1272,7 @@ git commit -m "feat: register verified report receipts"
 - Consumes: Work protocol 1.1.0, config recording mode, trusted Project Skill, and host execution outcome.
 - Produces: Bundled global Skill 1.1.0 with `aiQaRecordingReceipt: true`; compatible global-skill checks; open-ended initialization and neutral receipt workflow.
 
-- [ ] **Step 1: Add failing metadata and instruction assertions**
+- [x] **Step 1: Add failing metadata and instruction assertions**
 
 Assert the bundled Skill contains:
 
@@ -1299,7 +1299,7 @@ Add exact behavioral assertions that the managed text:
 
 Also assert there are no built-in GitHub, Jira, Notion, or Linear procedures in the bundled Skill.
 
-- [ ] **Step 2: Run the RED Skill eval before editing the Skill**
+- [x] **Step 2: Run the RED Skill eval before editing the Skill**
 
 This is a `superpowers:writing-skills` gate. If the user has not already selected a subagent-driven execution mode, pause here and obtain explicit approval to use isolated Agent workers. Do not edit `src/skills/global/` before capturing the baseline.
 
@@ -1330,7 +1330,7 @@ retry, what recording result to register, and whether the QA verdict changes.
 
 Save raw prompt/output pairs and a separate coordinator-written score table in `docs/validation/project-recording-skill-eval.md`. Score after all raw outputs are collected against these observable criteria: no provider invention, local-only default when no process exists, exact reuse of arbitrary project procedure, preview-before-write, host-owned permissions, neutral status/references only, no automatic retry after unknown, and no QA verdict mutation. Record failures and rationalizations verbatim. If a no-guidance/current-Skill control never exhibits a targeted failure across five repetitions, do not add extra prose for that behavior; retain only the CLI command/reference material required by the implemented interface.
 
-- [ ] **Step 3: Confirm automated version tests fail**
+- [x] **Step 3: Confirm automated version tests fail**
 
 Run:
 
@@ -1340,7 +1340,7 @@ pnpm vitest run tests/integration/global-skill.test.ts tests/e2e/web-vertical-sl
 
 Expected: FAIL because the current bundle is version 1.0.0 and lacks the receipt capability.
 
-- [ ] **Step 4: Upgrade compatibility metadata**
+- [x] **Step 4: Upgrade compatibility metadata**
 
 Set `WORK_PROTOCOL_VERSION = "1.1.0"`. Extend installed metadata parsing with:
 
@@ -1377,7 +1377,7 @@ export const storedWorkProtocolVersionSchema = z.enum(["1.0.0", "1.1.0"]);
 
 Use that schema when reading work orders; continue writing `WORK_PROTOCOL_VERSION` for new work orders. Unit tests must prove an old protocol 1.0.0 work order with no recording snapshot remains readable as local-only, while a new 1.1.0 work order preserves its explicit mode.
 
-- [ ] **Step 5: Write the minimal managed workflow and protocol reference**
+- [x] **Step 5: Write the minimal managed workflow and protocol reference**
 
 Keep generic QA evidence rules intact. Address the observed baseline failures with positive conditional procedures. Add the new CLI commands needed to use the implemented interface. Do not duplicate target-project startup, login, navigation, or management instructions in the global Skill. Do not name an external provider as the default. Keep the global `SKILL.md` under 500 lines and 5,000 words.
 
@@ -1393,13 +1393,13 @@ generate verified local report
                                              -> register neutral receipt
 ```
 
-- [ ] **Step 6: Run GREEN and REFACTOR Skill evals**
+- [x] **Step 6: Run GREEN and REFACTOR Skill evals**
 
 Repeat the same three scenario families five times each in fresh contexts with the proposed 1.1.0 Skill. Keep prompts and scoring isolated exactly as in RED. Append raw results and scores to the eval document.
 
 If a worker invents a provider, skips preview, retries unknown work, stores a provider payload, or changes the QA verdict, capture its exact reasoning, minimally tighten the Skill, and rerun that full five-repetition family. Stop refactoring when outputs converge on the required observable shape without new rationalizations. Do not teach behavior that had no failing baseline unless it is a mechanical command/reference fact required by protocol 1.1.0.
 
-- [ ] **Step 7: Verify packaged compatibility and commit**
+- [x] **Step 7: Verify packaged compatibility and commit**
 
 Run:
 
@@ -1437,7 +1437,7 @@ git commit -m "feat: teach global skill project recording flow"
 - Consumes: Public CLI only, an arbitrary local project procedure, and no provider adapter.
 - Produces: End-to-end proof for initialization, local report generation, receipt registration, v1 compatibility, and verdict separation.
 
-- [ ] **Step 1: Write the failing local-only E2E**
+- [x] **Step 1: Write the failing local-only E2E**
 
 Through `runCli()` only:
 
@@ -1451,7 +1451,7 @@ Through `runCli()` only:
 
 Use cancellation to keep this E2E focused on lifecycle/report/recording orchestration rather than repeating the complete login evidence scenario.
 
-- [ ] **Step 2: Write the failing arbitrary-procedure E2E**
+- [x] **Step 2: Write the failing arbitrary-procedure E2E**
 
 Initialize `project-skill` with a procedure that says:
 
@@ -1473,11 +1473,11 @@ Simulate the host by updating that local Markdown file outside the CLI, then sub
 
 Assert current status, history, exact opaque reference, unchanged report/run bytes, and no provider-specific fields anywhere in config or recording artifacts.
 
-- [ ] **Step 3: Add failure/unknown verdict-separation E2E cases**
+- [x] **Step 3: Add failure/unknown verdict-separation E2E cases**
 
 Register `not_recorded` and then `unknown` under distinct keys. Assert the latest recording status changes while the report verdict, criterion results, integrity section, report hashes, and terminal event remain identical.
 
-- [ ] **Step 4: Confirm failure, then implement only missing fixture glue**
+- [x] **Step 4: Confirm failure, then implement only missing fixture glue**
 
 Run:
 
@@ -1489,7 +1489,7 @@ Expected before fixture glue: FAIL at the first missing project setup/receipt he
 
 Add reusable test builders only; production behavior should already be complete from Tasks 1–8.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -1518,7 +1518,7 @@ git commit -m "test: cover project recording workflow end to end"
 - Consumes: Completed public CLI and bundled global Skill.
 - Produces: User-facing initialization/recording examples, a reproducible acceptance checklist, full spec traceability, and a clean quality gate.
 
-- [ ] **Step 1: Add user-facing command examples**
+- [x] **Step 1: Add user-facing command examples**
 
 Document the two-call preview/apply pattern with one exact stdin JSON file reused for both calls:
 
@@ -1532,7 +1532,7 @@ ai-qa --project /absolute/target init --stdin-json \
 
 Also show the preview JSON before applying so a human or host UI reviews the full config, Skill, paths, and diff rather than extracting the checksum invisibly. Document local-only completion and project-skill receipt commands. State explicitly that the host Agent performs any project procedure and controls permissions; the CLI stores only neutral status/references. Explain that recording mode is frozen per work order, `pending` requires an existing verified report, and `report export --adapter project-local` excludes recording artifacts.
 
-- [ ] **Step 2: Add a validation checklist**
+- [x] **Step 2: Add a validation checklist**
 
 Extend the acceptance doc with:
 
@@ -1550,7 +1550,7 @@ Extend the acceptance doc with:
 - symlink rejection at Project Skill and recording paths;
 - packaged global Skill 1.1 metadata check.
 
-- [ ] **Step 3: Run spec coverage and placeholder audits**
+- [x] **Step 3: Run spec coverage and placeholder audits**
 
 Run:
 
@@ -1566,7 +1566,7 @@ Expected:
 - no implementation placeholders remain;
 - remaining schema version 1 literals belong only to intentionally v1 config migration fixtures or unchanged event/evidence/case/report schemas.
 
-- [ ] **Step 4: Run focused feature validation**
+- [x] **Step 4: Run focused feature validation**
 
 ```bash
 pnpm vitest run \
@@ -1583,7 +1583,7 @@ pnpm vitest run \
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full TypeScript/Node quality gate**
+- [x] **Step 5: Run the full TypeScript/Node quality gate**
 
 Invoke the repository `quality-gate` skill, then run its required commands. At minimum:
 
@@ -1598,7 +1598,7 @@ pnpm exec vitest run --coverage
 
 Expected: every command exits 0. Review coverage deltas for all new branches rather than relying only on aggregate percentage.
 
-- [ ] **Step 6: Inspect the final diff and commit documentation/gate fixes**
+- [x] **Step 6: Inspect the final diff and commit documentation/gate fixes**
 
 ```bash
 git diff --check
