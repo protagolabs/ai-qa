@@ -720,4 +720,154 @@ describe("project file transaction ownership", () => {
       readFile(join(projectRoot, CONFIG_PATH), "utf8"),
     ).resolves.toBe(originalConfig);
   });
+
+  it("does not publish a replaced second stage and rolls back the first file", async () => {
+    const projectRoot = await temporaryProject("ai-qa-stage-publish-replaced-");
+    const uuid = "00000000-0000-4000-8000-000000000003";
+    const configStage = join(projectRoot, `${CONFIG_PATH}.${uuid}.stage`);
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+
+    await expect(
+      applyProjectFileTransaction({
+        projectRoot,
+        writes: [
+          {
+            relativeSegments: [".ai-qa", "config.yaml"],
+            content: "expected config stage\n",
+          },
+          {
+            relativeSegments: [
+              ".agents",
+              "skills",
+              "ai-qa-project",
+              "SKILL.md",
+            ],
+            content: "expected skill stage\n",
+          },
+        ],
+        expectedDestinations: [
+          { relativePath: CONFIG_PATH, state: "missing" },
+          { relativePath: SKILL_PATH, state: "missing" },
+        ],
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex !== 1) return;
+            await unlink(configStage);
+            await writeFile(configStage, "unowned replacement stage\n");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+    await expectMissing(join(projectRoot, SKILL_PATH));
+    await expect(readFile(configStage, "utf8")).resolves.toBe(
+      "unowned replacement stage\n",
+    );
+  });
+
+  it("does not publish an in-place modified second stage and rolls back", async () => {
+    const projectRoot = await temporaryProject("ai-qa-stage-publish-modified-");
+    const uuid = "00000000-0000-4000-8000-000000000004";
+    const configStage = join(projectRoot, `${CONFIG_PATH}.${uuid}.stage`);
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+
+    await expect(
+      applyProjectFileTransaction({
+        projectRoot,
+        writes: [
+          {
+            relativeSegments: [".ai-qa", "config.yaml"],
+            content: "expected config stage\n",
+          },
+          {
+            relativeSegments: [
+              ".agents",
+              "skills",
+              "ai-qa-project",
+              "SKILL.md",
+            ],
+            content: "expected skill stage\n",
+          },
+        ],
+        expectedDestinations: [
+          { relativePath: CONFIG_PATH, state: "missing" },
+          { relativePath: SKILL_PATH, state: "missing" },
+        ],
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex === 1) {
+              await writeFile(configStage, "modified stage bytes\n");
+            }
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+    await expectMissing(join(projectRoot, SKILL_PATH));
+    await expectMissing(configStage);
+  });
+
+  it("does not restore a replaced backup after the first publish", async () => {
+    const projectRoot = await temporaryProject(
+      "ai-qa-backup-restore-replaced-",
+    );
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("local-only"),
+    );
+    const originalSkill = prepareProjectSkill({
+      source: projectSkillSource(
+        "Record results using the original procedure.",
+      ),
+      secretReferences: SECRET_REFERENCES,
+    }).content;
+    await writeSkill(projectRoot, originalSkill);
+    const setupRequest = request(
+      "Record results using the proposed procedure.",
+    );
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: setupRequest,
+    });
+    const uuid = "00000000-0000-4000-8000-000000000005";
+    const skillBackup = join(projectRoot, `${SKILL_PATH}.${uuid}.backup`);
+    const unownedBackup = "unowned replacement backup\n";
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+
+    await expect(
+      applyProjectSetup({
+        operation: "configure",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex === 0) {
+              await unlink(skillBackup);
+              await writeFile(skillBackup, unownedBackup);
+              return;
+            }
+            throw new Error("injected second publish failure");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.rollback_failed" });
+
+    await expect(readFile(skillBackup, "utf8")).resolves.toBe(unownedBackup);
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+    const skillAfterFailure = await readFile(
+      join(projectRoot, SKILL_PATH),
+      "utf8",
+    );
+    expect(skillAfterFailure).not.toBe(unownedBackup);
+    expect(skillAfterFailure).toContain(
+      "Record results using the proposed procedure.",
+    );
+    expect(skillAfterFailure).not.toBe(originalSkill);
+  });
 });

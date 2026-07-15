@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, open, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
@@ -42,9 +43,13 @@ interface TransactionEntry {
   backupPath?: string;
 }
 
-interface OwnedFileIdentity {
+interface OwnedFileExpectation {
   dev: bigint;
   ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  contentSha256: string;
+  content: string;
 }
 
 export async function applyProjectFileTransaction(input: {
@@ -98,8 +103,8 @@ export async function applyProjectFileTransaction(input: {
         : 0,
   );
 
-  const ownedStages = new Map<string, OwnedFileIdentity>();
-  const ownedBackups = new Map<string, OwnedFileIdentity>();
+  const ownedStages = new Map<string, OwnedFileExpectation>();
+  const ownedBackups = new Map<string, OwnedFileExpectation>();
   const published: TransactionEntry[] = [];
   let caughtError: unknown;
   try {
@@ -131,6 +136,11 @@ export async function applyProjectFileTransaction(input: {
         entry.relativePath.split("/"),
       );
       assertDestinationSnapshot(entry.relativePath, current, expected);
+      await assertOwnedFile(
+        entry.stagePath,
+        ownedStages.get(entry.stagePath)!,
+        "stage",
+      );
       await rename(entry.stagePath, entry.destination);
       ownedStages.delete(entry.stagePath);
       published.push(entry);
@@ -143,8 +153,19 @@ export async function applyProjectFileTransaction(input: {
         if (entry.original.state === "missing") {
           await unlinkIfExists(entry.destination);
         } else {
-          await rename(entry.backupPath!, entry.destination);
-          ownedBackups.delete(entry.backupPath!);
+          const backupPath = entry.backupPath!;
+          try {
+            await assertOwnedFile(
+              backupPath,
+              ownedBackups.get(backupPath)!,
+              "backup",
+            );
+          } catch (error: unknown) {
+            ownedBackups.delete(backupPath);
+            throw error;
+          }
+          await rename(backupPath, entry.destination);
+          ownedBackups.delete(backupPath);
         }
         await syncDirectory(dirname(entry.destination));
       }
@@ -204,22 +225,120 @@ function destinationSnapshot(
 async function writeOwnedFile(
   path: string,
   content: string,
-  ownedPaths: Map<string, OwnedFileIdentity>,
+  ownedPaths: Map<string, OwnedFileExpectation>,
 ): Promise<void> {
   const handle = await open(path, "wx", 0o600);
   try {
-    const stats = await handle.stat({ bigint: true });
-    ownedPaths.set(path, { dev: stats.dev, ino: stats.ino });
     await handle.writeFile(content, "utf8");
     await handle.sync();
+    const stats = await handle.stat({ bigint: true });
+    ownedPaths.set(path, {
+      dev: stats.dev,
+      ino: stats.ino,
+      size: stats.size,
+      mtimeNs: stats.mtimeNs,
+      contentSha256: sha256(Buffer.from(content, "utf8")),
+      content,
+    });
   } finally {
     await handle.close();
   }
 }
 
+async function assertOwnedFile(
+  path: string,
+  expected: OwnedFileExpectation,
+  purpose: "stage" | "backup",
+): Promise<void> {
+  const actual = await inspectOwnedFile(path, purpose);
+  const expectedBytes = Buffer.from(expected.content, "utf8");
+  if (
+    actual.dev !== expected.dev ||
+    actual.ino !== expected.ino ||
+    actual.size !== expected.size ||
+    actual.mtimeNs !== expected.mtimeNs ||
+    actual.contentSha256 !== expected.contentSha256 ||
+    !actual.content.equals(expectedBytes)
+  ) {
+    throw ownedFileIntegrityError(path, purpose);
+  }
+}
+
+interface InspectedOwnedFile {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  contentSha256: string;
+  content: Buffer;
+}
+
+async function inspectOwnedFile(
+  path: string,
+  purpose: "stage" | "backup",
+): Promise<InspectedOwnedFile> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const beforeRead = await handle.stat({ bigint: true });
+    if (!beforeRead.isFile()) {
+      throw ownedFileIntegrityError(path, purpose);
+    }
+    const content = await handle.readFile();
+    const afterRead = await handle.stat({ bigint: true });
+    if (
+      beforeRead.dev !== afterRead.dev ||
+      beforeRead.ino !== afterRead.ino ||
+      beforeRead.size !== afterRead.size ||
+      beforeRead.mtimeNs !== afterRead.mtimeNs
+    ) {
+      throw ownedFileIntegrityError(path, purpose);
+    }
+    const pathStats = await lstat(path, { bigint: true });
+    if (
+      pathStats.isSymbolicLink() ||
+      !pathStats.isFile() ||
+      pathStats.dev !== afterRead.dev ||
+      pathStats.ino !== afterRead.ino ||
+      (await realpath(path)) !== path
+    ) {
+      throw ownedFileIntegrityError(path, purpose);
+    }
+    return {
+      dev: afterRead.dev,
+      ino: afterRead.ino,
+      size: afterRead.size,
+      mtimeNs: afterRead.mtimeNs,
+      contentSha256: sha256(content),
+      content,
+    };
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw ownedFileIntegrityError(path, purpose, nodeErrorCode(error));
+  } finally {
+    await handle?.close();
+  }
+}
+
+function ownedFileIntegrityError(
+  path: string,
+  purpose: "stage" | "backup",
+  causeCode?: string,
+): AiQaError {
+  return new AiQaError(
+    "storage.integrity_error",
+    `Project transaction ${purpose} file changed unexpectedly`,
+    { path, purpose, ...(causeCode === undefined ? {} : { causeCode }) },
+  );
+}
+
+function sha256(content: Buffer): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
 async function unlinkIfOwned(
   path: string,
-  identity: OwnedFileIdentity,
+  identity: OwnedFileExpectation,
 ): Promise<void> {
   let stats;
   try {
@@ -265,4 +384,12 @@ function isNodeError(error: unknown, code: string): boolean {
     "code" in error &&
     (error as NodeJS.ErrnoException).code === code
   );
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return error instanceof Error &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
 }
