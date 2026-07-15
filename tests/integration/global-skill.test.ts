@@ -10,14 +10,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
-import { initializationRequestSchema } from "../../src/services/initialization/project-setup.js";
+import {
+  applyProjectSetup,
+  initializationRequestSchema,
+  previewProjectSetup,
+} from "../../src/services/initialization/project-setup.js";
 import {
   checkGlobalSkill,
   checkGlobalSkillForProject,
   previewGlobalSkillSync,
   syncGlobalSkill,
 } from "../../src/services/skill-management/global-skill.js";
-import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
+import {
+  inspectManagedSkill,
+  mergeManagedSkill,
+} from "../../src/services/skill-management/managed-skill.js";
 import {
   inspectProjectSkill,
   prepareProjectSkill,
@@ -701,6 +708,127 @@ describe("bundled global skill 1.1", () => {
     });
     expect(prepared.managedChecksum).toMatch(/^[a-f0-9]{64}$/);
     expect(prepared.content).not.toMatch(placeholderPattern);
+  });
+
+  it("requires mechanical checksum verification before presenting a candidate", async () => {
+    const skill = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill).toContain(
+      "Before presenting the request, actually execute the managed-checksum algorithm over its final bytes and verify the embedded value; never claim an unverified checksum.",
+    );
+
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    expect(reference).toContain(
+      "actually execute the checksum algorithm over its final candidate bytes",
+    );
+    expect(reference).toContain(
+      "verify that the embedded and recomputed checksums are equal",
+    );
+
+    const submittedChecksum =
+      "8ddd5396728ac03de4c170dd5307eecd2442cd514667164fc65c7bd62e7f05dd";
+    const request = projectSetupRequest({ mode: "project-skill" });
+    request.projectSkill.content = request.projectSkill.content.replace(
+      "aiQaManagedChecksum: generated",
+      `aiQaManagedChecksum: ${submittedChecksum}`,
+    );
+    expect(
+      inspectProjectSkill({
+        projectRoot: "/work/sample-web",
+        content: request.projectSkill.content,
+      }).status,
+    ).toBe("conflict");
+
+    const prepared = prepareProjectSkill({
+      source: request.projectSkill.content,
+      secretReferences: request.config.secretReferences,
+    });
+    expect(prepared.managedChecksum).not.toBe(submittedChecksum);
+    expect(prepared.content).toContain(
+      `aiQaManagedChecksum: ${prepared.managedChecksum}`,
+    );
+    expect(
+      inspectProjectSkill({
+        projectRoot: "/work/sample-web",
+        content: prepared.content,
+      }).status,
+    ).toBe("compatible");
+  });
+
+  it("derives later procedure revision only from applied canonical metadata", async () => {
+    const skill = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill).toContain(
+      "derive the procedure revision only from its installed `metadata.aiQaManagedChecksum`, never from submitted candidate bytes.",
+    );
+
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    expect(reference).toContain(
+      "read `metadata.aiQaManagedChecksum` from those installed bytes and use that value as the procedure revision",
+    );
+    expect(reference).toContain(
+      "not the candidate's submitted checksum or the preview's top-level setup checksum",
+    );
+
+    const submittedChecksum =
+      "8ddd5396728ac03de4c170dd5307eecd2442cd514667164fc65c7bd62e7f05dd";
+    const request = projectSetupRequest({ mode: "project-skill" });
+    request.projectSkill.content = request.projectSkill.content.replace(
+      "aiQaManagedChecksum: generated",
+      `aiQaManagedChecksum: ${submittedChecksum}`,
+    );
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-project-"));
+    const preview = await previewProjectSetup({
+      operation: "init",
+      projectRoot,
+      request,
+    });
+    await applyProjectSetup({
+      operation: "init",
+      projectRoot,
+      request,
+      confirmChecksum: preview.checksum,
+    });
+
+    const installed = await readFile(
+      join(projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+      "utf8",
+    );
+    expect(installed).toBe(preview.projectSkill.content);
+    expect(
+      inspectProjectSkill({ projectRoot, content: installed }).status,
+    ).toBe("compatible");
+    const installedInspection = inspectManagedSkill(installed);
+    const procedureRevision = installedInspection.metadata.aiQaManagedChecksum;
+    expect(procedureRevision).toBe(installedInspection.managedChecksum);
+    expect(procedureRevision).not.toBe(submittedChecksum);
+    expect(`recording:run-1:${String(procedureRevision)}`).toBe(
+      `recording:run-1:${installedInspection.managedChecksum}`,
+    );
   });
 });
 

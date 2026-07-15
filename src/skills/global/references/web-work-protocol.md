@@ -46,7 +46,7 @@ const checksum = createHash("sha256")
   .digest("hex");
 ```
 
-The preview path repeats this calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
+Before presenting an initialization request, actually execute the checksum algorithm over its final candidate bytes, replace the embedded value with the result, and verify that the embedded and recomputed checksums are equal. Do not claim an unverified value. The preview path repeats this calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
 
 This provider-neutral example is a complete CLI-valid wire artifact:
 
@@ -188,7 +188,7 @@ generate verified local report
 2. Run `ai-qa report recording-status <run-id>` only after generation. If it returns `report.not_generated`, generate the report before retrying the status query.
 3. If lifecycle, evidence, report, recording, or storage integrity validation fails, stop and surface that error. It is not `pending`, and receipt submission is forbidden until report verification succeeds.
 4. For `local-only`, show the local paths and end.
-5. For `project-skill`, load the trusted canonical `.agents/skills/ai-qa-project/SKILL.md`. The host executes its exact procedure with host-owned permissions, authentication, and approvals.
+5. For `project-skill`, after the successful apply, load the trusted canonical `.agents/skills/ai-qa-project/SKILL.md`, inspect it as compatible, then read `metadata.aiQaManagedChecksum` from those installed bytes and use that value as the procedure revision. The host executes the installed exact procedure with host-owned permissions, authentication, and approvals.
 6. Register only protocol metadata plus the neutral outcome through `ai-qa report receipt <run-id> --stdin-json`:
 
 ```json
@@ -200,6 +200,8 @@ generate verified local report
 ```
 
 Use `not_recorded` with an empty reference list when the host confirms no record was made. Use `unknown` with an empty reference list when a submitted external operation returns no certain result; do not retry that operation. The receipt contains no provider payload, and its outcome never revises the QA verdict.
+
+The installed canonical `metadata.aiQaManagedChecksum` is the sole source for `<procedure-revision>`, not the candidate's submitted checksum or the preview's top-level setup checksum. Reload it from the installed Project Skill before forming a later receipt idempotency key.
 
 ## Verdict taxonomy
 

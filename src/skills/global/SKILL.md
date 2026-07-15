@@ -19,7 +19,7 @@ metadata:
 3. Ask how the project currently manages QA results or defects without offering a provider list.
 4. When there is no existing process, default to `recordingPolicy.mode: local-only`. When there is an existing procedure, use `project-skill` and encode that procedure exactly in the Project Skill, including its match and rerun rules.
 5. Discuss targets, environment, evidence, report, storage, Git, and secret-reference policy. Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.
-6. Build `projectSkill.content` with the canonical Project Skill wire format in the reference. Include compatible metadata, a trigger-only description, managed and user markers, and a computed managed checksum; prose-only Skill content is not an initialization payload.
+6. Build `projectSkill.content` with the canonical Project Skill wire format in the reference. Include compatible metadata, a trigger-only description, managed and user markers, and a computed managed checksum; prose-only Skill content is not an initialization payload. Before presenting the request, actually execute the managed-checksum algorithm over its final bytes and verify the embedded value; never claim an unverified checksum.
 7. The host owns permissions and authentication for every external tool. The CLI and this Skill neither acquire credentials nor bypass host approval.
 8. Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.
 
@@ -42,7 +42,7 @@ Read `references/web-work-protocol.md` for the complete initialization payload a
 2. Treat `report.not_generated` as a prerequisite: generate the report before querying recording status again.
 3. Stop on lifecycle, evidence, report, recording, or storage integrity errors; never report them as `pending` and never submit a receipt before the verified-report boundary succeeds.
 4. For `local-only`, show the verified local report paths and end.
-5. For `project-skill`, load the trusted canonical Project Skill before recording.
+5. For `project-skill`, load the trusted canonical Project Skill before recording. After apply, derive the procedure revision only from its installed `metadata.aiQaManagedChecksum`, never from submitted candidate bytes.
 6. Let the host execute that Project Skill procedure with host-owned permissions and approvals. Register only the neutral receipt `status` and `references` returned by the host-owned procedure.
 7. If an external recording operation has an uncertain result, register `unknown` without retrying it.
 8. The recording outcome never changes the QA verdict.
