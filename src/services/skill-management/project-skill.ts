@@ -48,6 +48,7 @@ export interface PrepareProjectSkillInput {
 export interface InspectProjectSkillInput {
   projectRoot: string;
   content?: string;
+  secretReferences: Readonly<Record<string, string>>;
 }
 
 function invalidProjectSkill(message: string): never {
@@ -256,6 +257,7 @@ export function prepareProjectSkill(
     ...(input.existing === undefined ? {} : { existing: input.existing }),
     confirmManagedReplacement: true,
   });
+  validateSecrets(merged.content, input.secretReferences);
   return {
     ...merged,
     requiresManagedReplacement,
@@ -292,6 +294,11 @@ export function inspectProjectSkill(
   }
   if (inspection.recordedManagedChecksum !== inspection.managedChecksum) {
     return { status: "conflict", destination };
+  }
+  try {
+    validateSecrets(input.content, input.secretReferences);
+  } catch {
+    return { status: "incompatible", destination };
   }
   return { status: "compatible", destination };
 }

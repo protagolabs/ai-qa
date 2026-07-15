@@ -105,6 +105,50 @@ describe("project Skill validation", () => {
     );
   });
 
+  it("preserves a configured secret reference in the user region byte-for-byte", () => {
+    const installed = prepare(
+      projectSkillSource("Use the previous local recording procedure."),
+    ).content;
+    const userRegion =
+      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nLocal Windows note\t\r\n";
+    const existing = installed.replace(
+      "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+      `<!-- ai-qa:user:start -->${userRegion}<!-- ai-qa:user:end -->`,
+    );
+
+    const result = prepare(projectSkillSource(), existing);
+
+    expect(result.content).toContain(
+      `<!-- ai-qa:user:start -->${userRegion}<!-- ai-qa:user:end -->`,
+    );
+  });
+
+  it.each([
+    {
+      expectedCode: "skill.literal_secret",
+      userContent: "password: literal-value",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent: "Read the password only from $UNDECLARED_PASSWORD.",
+    },
+  ])(
+    "rejects $expectedCode introduced by the installed user region after merge",
+    ({ expectedCode, userContent }) => {
+      const installed = prepare().content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        `<!-- ai-qa:user:start -->\n${userContent}\n<!-- ai-qa:user:end -->`,
+      );
+
+      expect(() =>
+        prepare(
+          projectSkillSource("Record with the updated safe procedure."),
+          installed,
+        ),
+      ).toThrowError(expect.objectContaining({ code: expectedCode }));
+    },
+  );
+
   it("prepares a confirmed replacement and diff when installed managed content was edited", () => {
     const installed = prepare().content;
     const existing = installed.replace(
@@ -308,16 +352,19 @@ describe("project Skill public interfaces", () => {
     const projectRoot = "/work/project";
     const destination = "/work/project/.agents/skills/ai-qa-project/SKILL.md";
     expect(projectSkillDestination(projectRoot)).toBe(destination);
-    expect(inspectProjectSkill({ projectRoot })).toEqual({
+    expect(inspectProjectSkill({ projectRoot, secretReferences })).toEqual({
       status: "missing",
       destination,
     });
 
     const installed = prepare().content;
-    expect(inspectProjectSkill({ projectRoot, content: installed })).toEqual({
-      status: "compatible",
-      destination,
-    });
+    expect(
+      inspectProjectSkill({
+        projectRoot,
+        content: installed,
+        secretReferences,
+      }),
+    ).toEqual({ status: "compatible", destination });
     expect(
       inspectProjectSkill({
         projectRoot,
@@ -325,6 +372,7 @@ describe("project Skill public interfaces", () => {
           "# Project AI QA Procedures",
           "# Local edit",
         ),
+        secretReferences,
       }),
     ).toEqual({ status: "conflict", destination });
     expect(
@@ -334,6 +382,7 @@ describe("project Skill public interfaces", () => {
           "aiQaProjectSkillVersion: 1.0.0",
           "aiQaProjectSkillVersion: 2.0.0",
         ),
+        secretReferences,
       }),
     ).toEqual({ status: "incompatible", destination });
 
@@ -348,7 +397,34 @@ describe("project Skill public interfaces", () => {
       inspectProjectSkill({
         projectRoot,
         content: invalidDescription.content,
+        secretReferences,
       }),
     ).toEqual({ status: "incompatible", destination });
   });
+
+  it.each([
+    {
+      expected: "compatible",
+      userContent: "password: ${QA_TEST_PASSWORD}",
+    },
+    { expected: "incompatible", userContent: "password: $UNKNOWN_PASSWORD" },
+    { expected: "incompatible", userContent: "password: literal-value" },
+  ] as const)(
+    "reports $expected when the installed user region contains $userContent",
+    ({ expected, userContent }) => {
+      const projectRoot = "/work/project";
+      const content = prepare().content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        `<!-- ai-qa:user:start -->\n${userContent}\n<!-- ai-qa:user:end -->`,
+      );
+
+      expect(
+        inspectProjectSkill({
+          projectRoot,
+          content,
+          secretReferences,
+        }),
+      ).toMatchObject({ status: expected });
+    },
+  );
 });

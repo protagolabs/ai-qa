@@ -448,12 +448,14 @@ describe("project Skill CLI", () => {
       error: { code: "skill.not_installed" },
     });
 
+    const userRegion =
+      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nKeep this project note.\t\r\n";
     const installed = prepareProjectSkill({
       source: projectSkillSource("Record with the former procedure."),
       secretReferences: SECRET_REFERENCES,
     }).content.replace(
-      "<!-- ai-qa:user:start -->",
-      "<!-- ai-qa:user:start -->\nKeep this project note.\n",
+      "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+      `<!-- ai-qa:user:start -->${userRegion}<!-- ai-qa:user:end -->`,
     );
     await writeSkill(projectRoot, installed);
     const previewCli = createCapturedCli({
@@ -498,11 +500,76 @@ describe("project Skill CLI", () => {
     ).toBe(0);
     const synchronized = await readFile(join(projectRoot, SKILL_PATH), "utf8");
     expect(synchronized).toContain("Record with the updated procedure.");
-    expect(synchronized).toContain("Keep this project note.");
+    expect(synchronized).toContain(
+      `<!-- ai-qa:user:start -->${userRegion}<!-- ai-qa:user:end -->`,
+    );
     await expect(
       readFile(join(projectRoot, CONFIG_PATH), "utf8"),
     ).resolves.toBe(originalConfig);
   });
+
+  it.each([
+    {
+      expectedCode: "skill.literal_secret",
+      userContent: "password: literal-value",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent: "password: $UNDECLARED_PASSWORD",
+    },
+  ])(
+    "refuses to sync an installed user region containing $expectedCode",
+    async ({ expectedCode, userContent }) => {
+      const projectRoot = await temporaryProject("ai-qa-skill-sync-secret-");
+      const aiQaHome = await temporaryProject("ai-qa-home-");
+      await trustProject(projectRoot, aiQaHome);
+      const originalConfig = await writeConfig(
+        projectRoot,
+        projectConfigV2("project-skill"),
+      );
+      const originalSkill = prepareProjectSkill({
+        source: projectSkillSource("Record with the former procedure."),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        `<!-- ai-qa:user:start -->\n${userContent}\n<!-- ai-qa:user:end -->`,
+      );
+      await writeSkill(projectRoot, originalSkill);
+      const updateInput = JSON.stringify({
+        projectSkill: request("Record with the updated safe procedure.")
+          .projectSkill,
+      });
+      const captured = createCapturedCli({
+        cwd: tmpdir(),
+        env: { AI_QA_HOME: aiQaHome },
+        readStdin: () => Promise.resolve(updateInput),
+      });
+
+      expect(
+        await runCli(
+          [
+            "--project",
+            projectRoot,
+            "skill",
+            "sync",
+            "--stdin-json",
+            "--preview",
+          ],
+          captured.context,
+        ),
+      ).toBe(1);
+      expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
+        error: { code: expectedCode },
+      });
+      expect(captured.stdout).toEqual([]);
+      await expect(
+        readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+      ).resolves.toBe(originalConfig);
+      await expect(
+        readFile(join(projectRoot, SKILL_PATH), "utf8"),
+      ).resolves.toBe(originalSkill);
+    },
+  );
 
   it.each([
     { expected: "missing", installed: undefined, exitCode: 1 },
@@ -513,6 +580,39 @@ describe("project Skill CLI", () => {
         secretReferences: SECRET_REFERENCES,
       }).content,
       exitCode: 0,
+    },
+    {
+      expected: "compatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\npassword: ${QA_TEST_PASSWORD}\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 0,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\npassword: $UNDECLARED_PASSWORD\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 1,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\npassword: literal-value\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 1,
     },
     {
       expected: "conflict",
@@ -565,6 +665,130 @@ describe("project Skill CLI", () => {
           readFile(join(projectRoot, SKILL_PATH), "utf8"),
         ).resolves.toBe(before);
       }
+    },
+  );
+
+  it("checks installed references against the exact current project config", async () => {
+    const projectRoot = await temporaryProject("ai-qa-skill-check-reference-");
+    const aiQaHome = await temporaryProject("ai-qa-home-");
+    const configuredReference = "PROJECT_ADMIN_PASSWORD";
+    await trustProject(projectRoot, aiQaHome);
+    await writeConfig(projectRoot, {
+      ...projectConfigV2("project-skill"),
+      secretReferences: { admin: configuredReference },
+    });
+    const installed = prepareProjectSkill({
+      source: projectSkillSource()
+        .replaceAll("QA_TEST_PASSWORD", configuredReference)
+        .replace(
+          "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+          `<!-- ai-qa:user:start -->\npassword: \${${configuredReference}}\n<!-- ai-qa:user:end -->`,
+        ),
+      secretReferences: { admin: configuredReference },
+    }).content;
+    await writeSkill(projectRoot, installed);
+
+    const allowed = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+    });
+    expect(
+      await runCli(
+        ["--project", projectRoot, "skill", "check"],
+        allowed.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(allowed.stdout.join(""))).toMatchObject({
+      status: "compatible",
+    });
+
+    await writeConfig(projectRoot, projectConfigV2("project-skill"));
+    const noLongerAllowed = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+    });
+    expect(
+      await runCli(
+        ["--project", projectRoot, "skill", "check"],
+        noLongerAllowed.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(noLongerAllowed.stdout.join(""))).toMatchObject({
+      status: "incompatible",
+    });
+    await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
+      installed,
+    );
+  });
+
+  it.each([
+    { configBytes: undefined, label: "missing" },
+    { configBytes: "schemaVersion: [", label: "invalid YAML" },
+    {
+      configBytes: stringify(
+        { ...projectConfigV2(), secretReferences: { login: "literal-value" } },
+        { sortMapEntries: true },
+      ),
+      label: "invalid schema",
+    },
+  ])(
+    "uses the existing project-config error semantics when config is $label",
+    async ({ configBytes }) => {
+      const projectRoot = await temporaryProject("ai-qa-skill-check-config-");
+      const aiQaHome = await temporaryProject("ai-qa-home-");
+      await trustProject(projectRoot, aiQaHome);
+      if (configBytes !== undefined) {
+        await mkdir(join(projectRoot, ".ai-qa"), { recursive: true });
+        await writeFile(join(projectRoot, CONFIG_PATH), configBytes);
+      }
+      const installed = prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content;
+      await writeSkill(projectRoot, installed);
+      const sync = createCapturedCli({
+        cwd: tmpdir(),
+        env: { AI_QA_HOME: aiQaHome },
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({ projectSkill: request().projectSkill }),
+          ),
+      });
+      const check = createCapturedCli({
+        cwd: tmpdir(),
+        env: { AI_QA_HOME: aiQaHome },
+        readStdin: () => Promise.reject(new Error("stdin must not be read")),
+      });
+
+      expect(
+        await runCli(
+          [
+            "--project",
+            projectRoot,
+            "skill",
+            "sync",
+            "--stdin-json",
+            "--preview",
+          ],
+          sync.context,
+        ),
+      ).toBe(1);
+      expect(
+        await runCli(
+          ["--project", projectRoot, "skill", "check"],
+          check.context,
+        ),
+      ).toBe(1);
+      expect(check.stdout).toEqual([]);
+      const syncError = JSON.parse(sync.stderr.join("")) as {
+        error: { code: string };
+      };
+      expect(JSON.parse(check.stderr.join(""))).toMatchObject({
+        error: { code: syncError.error.code },
+      });
+      await expect(
+        readFile(join(projectRoot, SKILL_PATH), "utf8"),
+      ).resolves.toBe(installed);
     },
   );
 });

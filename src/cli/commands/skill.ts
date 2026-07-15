@@ -319,6 +319,7 @@ export function registerSkillCommands(
         aiQaHome: home,
         ...(project === undefined ? {} : { explicitProject: project }),
       });
+      const config = await readProjectConfig(resolved.projectRoot);
       const installed = await inspectOptionalProjectLocalRegularFile(
         resolved.projectRoot,
         [".agents", "skills", "ai-qa-project", "SKILL.md"],
@@ -328,6 +329,7 @@ export function registerSkillCommands(
         ...(installed.content === undefined
           ? {}
           : { content: installed.content }),
+        secretReferences: config.secretReferences,
       });
       writeJson(context, status);
       if (status.status !== "compatible") requestExitCode(1);
