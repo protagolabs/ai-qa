@@ -1,7 +1,19 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { runCli } from "../../src/cli/program.js";
+import { writeProjectConfig } from "../../src/core/config/repository.js";
 import { serializeJsonLines } from "../../src/core/fs/json-lines.js";
 import {
   classifyRecordingMaterialization,
@@ -13,6 +25,29 @@ import {
   type RecordingArtifact,
   type RecordingEvent,
 } from "../../src/core/recording/schema.js";
+import { RunRepository } from "../../src/core/runs/repository.js";
+import {
+  createExploratoryWorkOrder,
+  exploratoryRunInputSchema,
+  type WorkOrder,
+} from "../../src/core/runs/schema.js";
+import {
+  generateRunReport,
+  type ReportOperationInput,
+} from "../../src/services/report-generation/generate-run-report.js";
+import {
+  readRecordingStatus,
+  registerRecordingReceipt,
+} from "../../src/services/report-generation/recording-receipt.js";
+import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
+import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
+import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
+import { createCapturedCli } from "../helpers/cli-context.js";
+import {
+  initializeTestProject,
+  projectConfigV2,
+} from "../helpers/project-fixture.js";
 
 const FIRST_RECORDED_AT = "2026-07-15T01:00:00.000Z";
 const SECOND_RECORDED_AT = "2026-07-15T01:05:00.000Z";
@@ -648,5 +683,675 @@ describe("recording repository", () => {
       expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
       expect((await stat(journalPath)).ino).toBe(journalInode);
     }
+  });
+});
+
+const RUN_STARTED_AT = new Date("2026-07-15T00:00:00.000Z");
+const RUN_NOW = () => new Date("2026-07-15T00:05:00.000Z");
+const REPORT_NOW = () => new Date("2026-07-15T00:10:00.000Z");
+const RECEIPT_NOW = () => new Date(FIRST_RECORDED_AT);
+
+interface ReceiptFixture extends ReportOperationInput {
+  directory: string;
+  evidencePath?: string;
+}
+
+function withoutRecordingSnapshot(workOrder: WorkOrder): WorkOrder {
+  const legacyWorkOrder: WorkOrder = { ...workOrder };
+  delete legacyWorkOrder.recordingPolicy;
+  return legacyWorkOrder;
+}
+
+async function receiptFixture(
+  options: {
+    mode?: "local-only" | "project-skill";
+    legacy?: boolean;
+    terminal?: boolean;
+    generated?: boolean;
+    withEvidence?: boolean;
+  } = {},
+): Promise<ReceiptFixture> {
+  const mode = options.mode ?? "project-skill";
+  const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-receipt-project-"));
+  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-receipt-home-"));
+  await confirmProjectTrust({
+    projectRoot,
+    aiQaHome,
+    confirmed: true,
+    now: RUN_STARTED_AT,
+  });
+  await initializeTestProject({
+    projectRoot,
+    aiQaHome,
+    config: projectConfigV2(mode),
+  });
+  const repository = new RunRepository(projectRoot, RUN_NOW);
+  const currentWorkOrder = createExploratoryWorkOrder({
+    projectId: "sample-web",
+    runId: "run-1",
+    input: exploratoryRunInputSchema.parse({
+      goal: "Explore the receipt boundary",
+      acceptanceCriteria: [
+        {
+          id: "flow-reviewed",
+          description: "The flow is reviewed",
+          requiredEvidence: ["screenshot"],
+        },
+      ],
+      readiness: { platform: "web", status: "ready", checks: [] },
+    }),
+    evidencePolicy: {
+      screenshots: "required",
+      defaultSensitivity: "internal",
+    },
+    recordingPolicy: { mode },
+    startedAt: RUN_STARTED_AT,
+  });
+  const workOrder = options.legacy
+    ? withoutRecordingSnapshot(currentWorkOrder)
+    : currentWorkOrder;
+  await repository.create(workOrder);
+
+  let evidencePath: string | undefined;
+  if (options.withEvidence === true) {
+    const protocol = new RunProtocolService(
+      projectRoot,
+      aiQaHome,
+      "run-1",
+      RUN_NOW,
+    );
+    const capture = await protocol.planAction({
+      idempotencyKey: "capture-before-cancel",
+      kind: "evidence-capture",
+      intent: "Capture state before cancellation",
+      tool: "chrome-devtools-mcp",
+      target: { description: "Current page" },
+    });
+    await protocol.completeAction({
+      actionId: capture.id,
+      phase: "completed",
+      toolResult: { summary: "Screenshot captured" },
+    });
+    const sourcePath = join(projectRoot, "capture.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
+    const evidence = await registerEvidence({
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      payload: {
+        sourcePath,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["screenshot"],
+        captureActionId: capture.id,
+        idempotencyKey: "evidence-before-cancel",
+      },
+      criterionIds: [],
+      observationIds: [],
+      now: RUN_NOW,
+    });
+    evidencePath = join(projectRoot, evidence.projectRelativePath);
+  }
+
+  if (options.terminal !== false) {
+    await cancelRun({
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      reason: "Receipt boundary fixture completed",
+      now: RUN_NOW,
+    });
+  }
+  if (options.generated !== false && options.terminal !== false) {
+    await generateRunReport({
+      projectRoot,
+      aiQaHome,
+      runId: "run-1",
+      now: REPORT_NOW,
+    });
+  }
+  return {
+    projectRoot,
+    aiQaHome,
+    runId: "run-1",
+    now: RECEIPT_NOW,
+    directory: join(projectRoot, ".ai-qa/reports/runs/run-1"),
+    ...(evidencePath === undefined ? {} : { evidencePath }),
+  };
+}
+
+async function expectNoRecordingFiles(fixture: ReceiptFixture): Promise<void> {
+  for (const filename of ["recording.jsonl", "recording.json"]) {
+    await expect(
+      readFile(join(fixture.directory, filename)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+}
+
+function hashBytes(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+describe("verified report recording receipt service", () => {
+  it("keeps local-only status not applicable without touching recording storage", async () => {
+    const fixture = await receiptFixture({ mode: "local-only" });
+
+    await expect(readRecordingStatus(fixture)).resolves.toEqual({
+      runId: "run-1",
+      status: "not_applicable",
+      references: [],
+    });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: {
+          idempotencyKey: "local-receipt",
+          status: "not_recorded",
+          references: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "recording.not_applicable" });
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("maps an absent project-skill receipt repository to pending only after report verification", async () => {
+    const fixture = await receiptFixture();
+
+    await expect(readRecordingStatus(fixture)).resolves.toEqual({
+      runId: "run-1",
+      status: "pending",
+      references: [],
+    });
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("preserves terminal lifecycle validation before receipt registration", async () => {
+    const fixture = await receiptFixture({ terminal: false, generated: false });
+
+    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
+      code: "report.run_not_terminal",
+    });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: {
+          idempotencyKey: "too-early",
+          status: "unknown",
+          references: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "report.run_not_terminal" });
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("returns report.not_generated for terminal registration and status before generation", async () => {
+    const fixture = await receiptFixture({ generated: false });
+
+    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
+      code: "report.not_generated",
+    });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: {
+          idempotencyKey: "before-report",
+          status: "not_recorded",
+          references: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "report.not_generated" });
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("rejects report and evidence drift before creating recording files", async () => {
+    const reportFixture = await receiptFixture();
+    const reportPath = join(reportFixture.directory, "report.json");
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as {
+      verdict: { summary: string };
+    };
+    report.verdict.summary = "tampered receipt prerequisite";
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await expect(
+      registerRecordingReceipt({
+        ...reportFixture,
+        receipt: {
+          idempotencyKey: "after-report-drift",
+          status: "unknown",
+          references: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "report.integrity_error" });
+    await expect(readRecordingStatus(reportFixture)).rejects.toMatchObject({
+      code: "report.integrity_error",
+    });
+    await expectNoRecordingFiles(reportFixture);
+
+    const evidenceFixture = await receiptFixture({ withEvidence: true });
+    if (evidenceFixture.evidencePath === undefined) {
+      throw new Error("Expected evidence-backed receipt fixture");
+    }
+    await writeFile(evidenceFixture.evidencePath, Buffer.from([9, 9, 9]));
+    await expect(
+      registerRecordingReceipt({
+        ...evidenceFixture,
+        receipt: {
+          idempotencyKey: "after-evidence-drift",
+          status: "unknown",
+          references: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    await expect(readRecordingStatus(evidenceFixture)).rejects.toMatchObject({
+      code: "evidence.integrity_error",
+    });
+    await expectNoRecordingFiles(evidenceFixture);
+
+    const storageFixture = await receiptFixture();
+    const storedReport = join(storageFixture.directory, "report.json");
+    const movedReport = join(
+      await mkdtemp(join(tmpdir(), "ai-qa-receipt-outside-")),
+      "report.json",
+    );
+    await rename(storedReport, movedReport);
+    await symlink(movedReport, storedReport, "file");
+    await expect(readRecordingStatus(storageFixture)).rejects.toMatchObject({
+      code: "report.storage_integrity_error",
+    });
+    await expectNoRecordingFiles(storageFixture);
+  });
+
+  it("registers every receipt status with retry, conflict, history, latest status, and opaque references", async () => {
+    const fixture = await receiptFixture();
+    const opaqueReferences = [
+      "docs/qa-results.md#run-1",
+      "row:42",
+      "message:abc",
+    ];
+    const recordedReceipt = {
+      idempotencyKey: "receipt-recorded",
+      status: "recorded" as const,
+      references: opaqueReferences,
+    };
+    const first = await registerRecordingReceipt({
+      ...fixture,
+      receipt: recordedReceipt,
+    });
+
+    expect(first.replayed).toBe(false);
+    expect(first.status).toEqual({
+      runId: "run-1",
+      status: "recorded",
+      references: opaqueReferences,
+      eventId: first.event.eventId,
+      recordedAt: FIRST_RECORDED_AT,
+    });
+    await expect(
+      registerRecordingReceipt({ ...fixture, receipt: recordedReceipt }),
+    ).resolves.toEqual({ ...first, replayed: true });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: { ...recordedReceipt, status: "unknown" },
+      }),
+    ).rejects.toMatchObject({ code: "recording.idempotency_conflict" });
+
+    const notRecorded = await registerRecordingReceipt({
+      ...fixture,
+      receipt: {
+        idempotencyKey: "receipt-not-recorded",
+        status: "not_recorded",
+        references: [],
+      },
+    });
+    expect(notRecorded.status.status).toBe("not_recorded");
+    const unknown = await registerRecordingReceipt({
+      ...fixture,
+      now: () => new Date(SECOND_RECORDED_AT),
+      receipt: {
+        idempotencyKey: "receipt-unknown",
+        status: "unknown",
+        references: ["message:abc"],
+      },
+    });
+    const oldReceiptReplay = await registerRecordingReceipt({
+      ...fixture,
+      receipt: recordedReceipt,
+    });
+    expect(oldReceiptReplay).toMatchObject({
+      event: { eventId: first.event.eventId },
+      status: unknown.status,
+      replayed: true,
+    });
+    await expect(readRecordingStatus(fixture)).resolves.toEqual(unknown.status);
+    const artifact = JSON.parse(
+      await readFile(join(fixture.directory, "recording.json"), "utf8"),
+    ) as RecordingArtifact;
+    expect(artifact.history.map(({ status }) => status)).toEqual([
+      "recorded",
+      "not_recorded",
+      "unknown",
+    ]);
+    expect(artifact.current).toEqual({
+      eventId: unknown.event.eventId,
+      status: "unknown",
+      references: ["message:abc"],
+    });
+  });
+
+  it("does not require a present, valid, or compatible current Project Skill for neutral receipts", async () => {
+    const mutations: Array<{
+      name: string;
+      apply: (path: string) => Promise<void>;
+      status: "not_recorded" | "unknown";
+    }> = [
+      {
+        name: "missing",
+        apply: (path) => rm(path),
+        status: "not_recorded",
+      },
+      {
+        name: "invalid",
+        apply: (path) => writeFile(path, "not a Project Skill\n"),
+        status: "unknown",
+      },
+      {
+        name: "incompatible",
+        apply: (path) =>
+          writeFile(
+            path,
+            "---\nname: ai-qa-project\nmetadata:\n  aiQaProtocolRange: ^99.0.0\n---\n",
+          ),
+        status: "unknown",
+      },
+    ];
+
+    for (const mutation of mutations) {
+      const fixture = await receiptFixture();
+      const reportBefore = await readFile(
+        join(fixture.directory, "report.json"),
+      );
+      const eventsPath = join(
+        fixture.projectRoot,
+        ".ai-qa/runs/run-1/events.jsonl",
+      );
+      const eventsBefore = await readFile(eventsPath);
+      await mutation.apply(
+        join(fixture.projectRoot, ".agents/skills/ai-qa-project/SKILL.md"),
+      );
+
+      await expect(readRecordingStatus(fixture)).resolves.toMatchObject({
+        status: "pending",
+      });
+      const registered = await registerRecordingReceipt({
+        ...fixture,
+        receipt: {
+          idempotencyKey: `neutral-${mutation.name}`,
+          status: mutation.status,
+          references: [],
+        },
+      });
+      expect(registered.status.status).toBe(mutation.status);
+      expect(await readFile(join(fixture.directory, "report.json"))).toEqual(
+        reportBefore,
+      );
+      expect(await readFile(eventsPath)).toEqual(eventsBefore);
+    }
+  });
+
+  it("leaves report, run journal, and verdict bytes and hashes unchanged", async () => {
+    const fixture = await receiptFixture();
+    const reportJsonPath = join(fixture.directory, "report.json");
+    const paths = [
+      reportJsonPath,
+      join(fixture.directory, "report.md"),
+      join(fixture.projectRoot, ".ai-qa/runs/run-1/events.jsonl"),
+    ];
+    const before = new Map(
+      await Promise.all(
+        paths.map(async (path) => {
+          const bytes = await readFile(path);
+          return [path, { bytes, hash: hashBytes(bytes) }] as const;
+        }),
+      ),
+    );
+    const verdictBefore = JSON.stringify(
+      (
+        JSON.parse((await readFile(reportJsonPath)).toString()) as {
+          verdict: unknown;
+        }
+      ).verdict,
+    );
+    const verdictHashBefore = hashBytes(Buffer.from(verdictBefore));
+
+    await registerRecordingReceipt({
+      ...fixture,
+      receipt: {
+        idempotencyKey: "immutable-boundary",
+        status: "recorded",
+        references: ["docs/qa-results.md#run-1"],
+      },
+    });
+
+    for (const path of paths) {
+      const current = await readFile(path);
+      expect(current).toEqual(before.get(path)?.bytes);
+      expect(hashBytes(current)).toBe(before.get(path)?.hash);
+    }
+    const verdictAfter = JSON.stringify(
+      (
+        JSON.parse((await readFile(reportJsonPath)).toString()) as {
+          verdict: unknown;
+        }
+      ).verdict,
+    );
+    expect(verdictAfter).toBe(verdictBefore);
+    expect(hashBytes(Buffer.from(verdictAfter))).toBe(verdictHashBefore);
+  });
+
+  it("returns recording integrity errors without changing the QA verdict", async () => {
+    const fixture = await receiptFixture();
+    await registerRecordingReceipt({
+      ...fixture,
+      receipt: {
+        idempotencyKey: "integrity-source",
+        status: "recorded",
+        references: ["row:42"],
+      },
+    });
+    const eventsPath = join(
+      fixture.projectRoot,
+      ".ai-qa/runs/run-1/events.jsonl",
+    );
+    const eventsBefore = await readFile(eventsPath);
+    const reportPath = join(fixture.directory, "report.json");
+    const verdictBefore = (
+      JSON.parse(await readFile(reportPath, "utf8")) as { verdict: unknown }
+    ).verdict;
+    const artifactPath = join(fixture.directory, "recording.json");
+    const artifact = JSON.parse(
+      await readFile(artifactPath, "utf8"),
+    ) as RecordingArtifact;
+    const first = artifact.history[0];
+    if (first === undefined) throw new Error("Expected recording history");
+    await writeFile(
+      artifactPath,
+      `${JSON.stringify(
+        {
+          ...artifact,
+          history: [{ ...first, status: "unknown" }],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
+      code: "recording.integrity_error",
+    });
+    expect(await readFile(eventsPath)).toEqual(eventsBefore);
+    expect(
+      (JSON.parse(await readFile(reportPath, "utf8")) as { verdict: unknown })
+        .verdict,
+    ).toEqual(verdictBefore);
+  });
+
+  it("uses the project-skill snapshot after current config switches to local-only", async () => {
+    const fixture = await receiptFixture({ mode: "project-skill" });
+    await writeProjectConfig(
+      fixture.projectRoot,
+      projectConfigV2("local-only"),
+    );
+
+    await expect(readRecordingStatus(fixture)).resolves.toMatchObject({
+      status: "pending",
+    });
+    const registered = await registerRecordingReceipt({
+      ...fixture,
+      receipt: {
+        idempotencyKey: "historical-project-skill",
+        status: "recorded",
+        references: ["message:abc"],
+      },
+    });
+    await expect(readRecordingStatus(fixture)).resolves.toEqual(
+      registered.status,
+    );
+  });
+
+  it("uses local-only and legacy snapshots after current config switches to project-skill", async () => {
+    for (const legacy of [false, true]) {
+      const fixture = await receiptFixture({ mode: "local-only", legacy });
+      await writeProjectConfig(
+        fixture.projectRoot,
+        projectConfigV2("project-skill"),
+      );
+
+      await expect(readRecordingStatus(fixture)).resolves.toEqual({
+        runId: "run-1",
+        status: "not_applicable",
+        references: [],
+      });
+      await expect(
+        registerRecordingReceipt({
+          ...fixture,
+          receipt: {
+            idempotencyKey: legacy ? "legacy" : "historical-local",
+            status: "unknown",
+            references: [],
+          },
+        }),
+      ).rejects.toMatchObject({ code: "recording.not_applicable" });
+      await expectNoRecordingFiles(fixture);
+    }
+  });
+});
+
+describe("report recording receipt CLI", () => {
+  it("prints the exact recording-status and receipt response shapes using inherited context", async () => {
+    const fixture = await receiptFixture();
+    let stdinReads = 0;
+    const captured = createCapturedCli({
+      cwd: "/outside-project",
+      env: { AI_QA_HOME: fixture.aiQaHome },
+      homeDir: "/unused-home",
+      now: RECEIPT_NOW,
+      readStdin: () => {
+        stdinReads += 1;
+        return Promise.resolve(
+          JSON.stringify({
+            idempotencyKey: "cli-receipt",
+            status: "recorded",
+            references: ["docs/qa-results.md#run-1"],
+          }),
+        );
+      },
+    });
+
+    expect(
+      await runCli(
+        [
+          "--project",
+          fixture.projectRoot,
+          "report",
+          "recording-status",
+          "run-1",
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(captured.stdout.pop()!)).toEqual({
+      runId: "run-1",
+      status: "pending",
+      references: [],
+    });
+    expect(stdinReads).toBe(0);
+
+    expect(
+      await runCli(
+        [
+          "report",
+          "receipt",
+          "run-1",
+          "--stdin-json",
+          "--project",
+          fixture.projectRoot,
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    const receiptOutput = JSON.parse(captured.stdout.pop()!) as {
+      eventId: string;
+      status: string;
+      references: string[];
+      replayed: boolean;
+    };
+    expect(receiptOutput).toEqual({
+      eventId: receiptOutput.eventId,
+      status: "recorded",
+      references: ["docs/qa-results.md#run-1"],
+      replayed: false,
+    });
+    expect(receiptOutput.eventId).toMatch(/^recording-/u);
+    expect(stdinReads).toBe(1);
+
+    expect(
+      await runCli(
+        [
+          "report",
+          "recording-status",
+          "run-1",
+          "--project",
+          fixture.projectRoot,
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(captured.stdout.pop()!)).toEqual({
+      runId: "run-1",
+      status: "recorded",
+      references: ["docs/qa-results.md#run-1"],
+      eventId: receiptOutput.eventId,
+      recordedAt: FIRST_RECORDED_AT,
+    });
+    expect(stdinReads).toBe(1);
+    expect(captured.stderr).toEqual([]);
+  });
+
+  it("preserves report.not_generated from recording-status before report generation", async () => {
+    const fixture = await receiptFixture({ generated: false });
+    const captured = createCapturedCli({
+      cwd: fixture.projectRoot,
+      env: { AI_QA_HOME: fixture.aiQaHome },
+      now: RECEIPT_NOW,
+    });
+
+    expect(
+      await runCli(["report", "recording-status", "run-1"], captured.context),
+    ).toBe(1);
+    expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
+      error: { code: "report.not_generated" },
+    });
+    expect(captured.stdout).toEqual([]);
   });
 });
