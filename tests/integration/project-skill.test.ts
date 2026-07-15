@@ -449,7 +449,7 @@ describe("project Skill CLI", () => {
     });
 
     const userRegion =
-      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nKeep this project note.\t\r\n";
+      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nRequire ${QA_TEST_PASSWORD:?missing}.\r\nPowerShell reads $env:QA_TEST_PASSWORD.\r\nKeep this project note.\t\r\n";
     const installed = prepareProjectSkill({
       source: projectSkillSource("Record with the former procedure."),
       secretReferences: SECRET_REFERENCES,
@@ -516,6 +516,22 @@ describe("project Skill CLI", () => {
     {
       expectedCode: "skill.unknown_secret_reference",
       userContent: "password: $UNDECLARED_PASSWORD",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent: "Read ${UNDECLARED_PASSWORD:-fallback}.",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent: "PowerShell reads $env:UNDECLARED_PASSWORD.",
+    },
+    {
+      expectedCode: "skill.unsupported_secret_reference",
+      userContent: "Indirect expansion ${!QA_TEST_PASSWORD} is forbidden.",
+    },
+    {
+      expectedCode: "skill.unsupported_secret_reference",
+      userContent: "Substring expansion ${QA_TEST_PASSWORD:0:4} is forbidden.",
     },
   ])(
     "refuses to sync an installed user region containing $expectedCode",
@@ -600,6 +616,39 @@ describe("project Skill CLI", () => {
       }).content.replace(
         "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
         "<!-- ai-qa:user:start -->\npassword: $UNDECLARED_PASSWORD\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 1,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\nRead ${UNDECLARED_PASSWORD:?missing}.\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 1,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\nPowerShell reads $env:UNDECLARED_PASSWORD.\n<!-- ai-qa:user:end -->",
+      ),
+      exitCode: 1,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\nIndirect ${!QA_TEST_PASSWORD} is forbidden.\n<!-- ai-qa:user:end -->",
       ),
       exitCode: 1,
     },

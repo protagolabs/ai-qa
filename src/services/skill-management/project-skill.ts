@@ -163,18 +163,184 @@ function validateBodySize(inspection: ManagedSkillInspection): void {
   }
 }
 
+function unsupportedSecretReference(): never {
+  throw new AiQaError(
+    "skill.unsupported_secret_reference",
+    "Project Skill contains an environment-variable expansion that cannot be safely matched to config.secretReferences",
+  );
+}
+
+function parameterExpansionEnds(content: string): ReadonlyMap<number, number> {
+  const starts: number[] = [];
+  const ends = new Map<number, number>();
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "$" && content[index + 1] === "{") {
+      starts.push(index);
+      index += 1;
+      continue;
+    }
+    if (content[index] !== "}" || starts.length === 0) continue;
+    ends.set(starts.pop()!, index);
+  }
+  return ends;
+}
+
+function isUppercaseEnvironmentNameStart(value: string | undefined): boolean {
+  return value !== undefined && /^[A-Z]$/.test(value);
+}
+
+function isUppercaseEnvironmentNameCharacter(
+  value: string | undefined,
+): boolean {
+  return value !== undefined && /^[A-Z0-9_]$/.test(value);
+}
+
+function isIdentifierStart(value: string | undefined): boolean {
+  return value !== undefined && /^[A-Za-z_]$/.test(value);
+}
+
+function isIdentifierCharacter(value: string | undefined): boolean {
+  return value !== undefined && /^[A-Za-z0-9_]$/.test(value);
+}
+
+function identifierEnd(
+  content: string,
+  start: number,
+  limit: number,
+  isCharacter: (value: string | undefined) => boolean,
+): number {
+  let end = start;
+  while (end < limit && isCharacter(content[end])) end += 1;
+  return end;
+}
+
+function hasPowerShellEnvironmentPrefix(
+  content: string,
+  start: number,
+): boolean {
+  return content.slice(start, start + 4).toLowerCase() === "env:";
+}
+
+function bracedEnvironmentReferenceName(
+  content: string,
+  start: number,
+  end: number,
+): string | undefined {
+  if (hasPowerShellEnvironmentPrefix(content, start)) {
+    const nameStart = start + 4;
+    if (!isIdentifierStart(content[nameStart])) unsupportedSecretReference();
+    const nameEnd = identifierEnd(
+      content,
+      nameStart,
+      end,
+      isIdentifierCharacter,
+    );
+    if (nameEnd !== end) unsupportedSecretReference();
+    return content.slice(nameStart, nameEnd);
+  }
+
+  let nameStart = start;
+  if (content[nameStart] === "!" || content[nameStart] === "#") {
+    nameStart += 1;
+    if (isUppercaseEnvironmentNameStart(content[nameStart])) {
+      unsupportedSecretReference();
+    }
+    return undefined;
+  }
+  if (!isUppercaseEnvironmentNameStart(content[nameStart])) return undefined;
+  const nameEnd = identifierEnd(
+    content,
+    nameStart,
+    end,
+    isUppercaseEnvironmentNameCharacter,
+  );
+  if (nameEnd === end) return content.slice(nameStart, nameEnd);
+  if (isIdentifierCharacter(content[nameEnd])) return undefined;
+
+  const firstOperatorCharacter = content[nameEnd];
+  const secondOperatorCharacter = content[nameEnd + 1];
+  const hasPosixOperator =
+    firstOperatorCharacter !== undefined &&
+    ("-=?+".includes(firstOperatorCharacter) ||
+      (firstOperatorCharacter === ":" &&
+        secondOperatorCharacter !== undefined &&
+        "-=?+".includes(secondOperatorCharacter)));
+  if (!hasPosixOperator) unsupportedSecretReference();
+  return content.slice(nameStart, nameEnd);
+}
+
+function environmentReferenceNames(content: string): string[] {
+  const names: string[] = [];
+  const expansionEnds = parameterExpansionEnds(content);
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] !== "$") continue;
+
+    if (content[index + 1] === "{") {
+      const expressionStart = index + 2;
+      const expressionEnd = expansionEnds.get(index);
+      if (expressionEnd === undefined) {
+        const name = bracedEnvironmentReferenceName(
+          content,
+          expressionStart,
+          content.length,
+        );
+        if (name !== undefined) unsupportedSecretReference();
+        continue;
+      }
+      const name = bracedEnvironmentReferenceName(
+        content,
+        expressionStart,
+        expressionEnd,
+      );
+      if (name !== undefined) names.push(name);
+      continue;
+    }
+
+    if (content.slice(index, index + 5).toLowerCase() === "$env:") {
+      const nameStart = index + 5;
+      if (!isIdentifierStart(content[nameStart])) unsupportedSecretReference();
+      const nameEnd = identifierEnd(
+        content,
+        nameStart,
+        content.length,
+        isIdentifierCharacter,
+      );
+      names.push(content.slice(nameStart, nameEnd));
+      continue;
+    }
+
+    const nameStart = index + 1;
+    if (!isUppercaseEnvironmentNameStart(content[nameStart])) continue;
+    const nameEnd = identifierEnd(
+      content,
+      nameStart,
+      content.length,
+      isUppercaseEnvironmentNameCharacter,
+    );
+    if (isIdentifierCharacter(content[nameEnd])) continue;
+    names.push(content.slice(nameStart, nameEnd));
+  }
+  return names;
+}
+
+function exactEnvironmentReferenceName(value: string): string | undefined {
+  const posix = /^\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))$/.exec(value);
+  const posixName = posix?.[1] ?? posix?.[2];
+  if (posixName !== undefined) return posixName;
+
+  const powershell =
+    /^\$env:([A-Za-z_][A-Za-z0-9_]*)$/i.exec(value) ??
+    /^\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/i.exec(value);
+  return powershell?.[1];
+}
+
 function validateSecrets(
   content: string,
   secretReferences: Readonly<Record<string, string>>,
 ): void {
   const allowedEnvironmentNames = new Set(Object.values(secretReferences));
-  const environmentReference = /\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))/g;
-  for (const match of content.matchAll(environmentReference)) {
-    const environmentName = match[1] ?? match[2];
-    if (
-      environmentName !== undefined &&
-      !allowedEnvironmentNames.has(environmentName)
-    ) {
+  for (const environmentName of environmentReferenceNames(content)) {
+    if (!allowedEnvironmentNames.has(environmentName)) {
       throw new AiQaError(
         "skill.unknown_secret_reference",
         "Project Skill refers to an environment variable not declared by config.secretReferences",
@@ -199,10 +365,7 @@ function validateSecrets(
   for (const line of content.split(/\r\n|\r|\n/)) {
     const assignment = secretAssignment.exec(line);
     if (assignment?.[1] === undefined) continue;
-    const environmentReference =
-      /^\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))$/.exec(assignment[1]);
-    const environmentName =
-      environmentReference?.[1] ?? environmentReference?.[2];
+    const environmentName = exactEnvironmentReferenceName(assignment[1]);
     if (
       environmentName === undefined ||
       !allowedEnvironmentNames.has(environmentName)

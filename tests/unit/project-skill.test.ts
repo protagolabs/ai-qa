@@ -110,7 +110,7 @@ describe("project Skill validation", () => {
       projectSkillSource("Use the previous local recording procedure."),
     ).content;
     const userRegion =
-      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nLocal Windows note\t\r\n";
+      "\r\npassword: ${QA_TEST_PASSWORD}  \r\nRequire ${QA_TEST_PASSWORD:?missing}.\r\nPowerShell reads $env:QA_TEST_PASSWORD.\r\nLocal Windows note\t\r\n";
     const existing = installed.replace(
       "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
       `<!-- ai-qa:user:start -->${userRegion}<!-- ai-qa:user:end -->`,
@@ -131,6 +131,19 @@ describe("project Skill validation", () => {
     {
       expectedCode: "skill.unknown_secret_reference",
       userContent: "Read the password only from $UNDECLARED_PASSWORD.",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent:
+        "Read the password only from ${UNDECLARED_PASSWORD:?missing}.",
+    },
+    {
+      expectedCode: "skill.unknown_secret_reference",
+      userContent: "PowerShell reads $env:UNDECLARED_PASSWORD.",
+    },
+    {
+      expectedCode: "skill.unsupported_secret_reference",
+      userContent: "Do not use indirect ${!QA_TEST_PASSWORD} expansion.",
     },
   ])(
     "rejects $expectedCode introduced by the installed user region after merge",
@@ -197,10 +210,81 @@ describe("project Skill validation", () => {
     expect(() =>
       prepare(
         projectSkillSource(
-          "The disposable test-data budget is $25.00 USD per run.",
+          "The disposable test-data budget is $25.00 USD per run; sample code may use `const $value = 1`.",
         ),
       ),
     ).not.toThrow();
+  });
+
+  it.each([
+    ":-fallback",
+    "-fallback",
+    ":=fallback",
+    "=fallback",
+    ":?missing",
+    "?missing",
+    ":+alternate",
+    "+alternate",
+  ])("allow-lists POSIX parameter expansion operator %s", (operator) => {
+    expect(() =>
+      prepare(
+        projectSkillSource(
+          `Read the configured value from \${QA_TEST_PASSWORD${operator}}.`,
+        ),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource(`Do not read \${UNDECLARED_PASSWORD${operator}}.`),
+      ),
+    ).toThrowError(
+      expect.objectContaining({ code: "skill.unknown_secret_reference" }),
+    );
+  });
+
+  it.each(["$env:QA_TEST_PASSWORD", "${env:QA_TEST_PASSWORD}"])(
+    "allow-lists PowerShell environment reference %s",
+    (reference) => {
+      expect(() =>
+        prepare(projectSkillSource(`PowerShell reads ${reference}.`)),
+      ).not.toThrow();
+      expect(() =>
+        prepare(projectSkillSource(`password: ${reference}`)),
+      ).not.toThrow();
+      expect(() =>
+        prepare(
+          projectSkillSource(
+            `PowerShell must not read ${reference.replace("QA_TEST_PASSWORD", "UNDECLARED_PASSWORD")}.`,
+          ),
+        ),
+      ).toThrowError(
+        expect.objectContaining({ code: "skill.unknown_secret_reference" }),
+      );
+    },
+  );
+
+  it.each([
+    "${!QA_TEST_PASSWORD}",
+    "${!UNDECLARED_PASSWORD}",
+    "${QA_TEST_PASSWORD:0:4}",
+    "${#QA_TEST_PASSWORD}",
+  ])("rejects unsupported environment expansion %s", (reference) => {
+    expect(() =>
+      prepare(projectSkillSource(`Do not use ${reference}.`)),
+    ).toThrowError(
+      expect.objectContaining({ code: "skill.unsupported_secret_reference" }),
+    );
+  });
+
+  it.each([
+    "${QA_TEST_PASSWORD:-$UNDECLARED_PASSWORD}",
+    "${QA_TEST_PASSWORD:-${UNDECLARED_PASSWORD:?missing}}",
+  ])("validates nested environment reference %s", (reference) => {
+    expect(() =>
+      prepare(projectSkillSource(`Do not use ${reference}.`)),
+    ).toThrowError(
+      expect.objectContaining({ code: "skill.unknown_secret_reference" }),
+    );
   });
 
   it("accepts an arbitrary local Markdown-table recording procedure without a provider", () => {
@@ -407,7 +491,27 @@ describe("project Skill public interfaces", () => {
       expected: "compatible",
       userContent: "password: ${QA_TEST_PASSWORD}",
     },
+    {
+      expected: "compatible",
+      userContent: "Require ${QA_TEST_PASSWORD:?missing}",
+    },
+    {
+      expected: "compatible",
+      userContent: "PowerShell reads $env:QA_TEST_PASSWORD",
+    },
     { expected: "incompatible", userContent: "password: $UNKNOWN_PASSWORD" },
+    {
+      expected: "incompatible",
+      userContent: "Require ${UNKNOWN_PASSWORD:?missing}",
+    },
+    {
+      expected: "incompatible",
+      userContent: "PowerShell reads $env:UNKNOWN_PASSWORD",
+    },
+    {
+      expected: "incompatible",
+      userContent: "Indirect expansion ${!QA_TEST_PASSWORD}",
+    },
     { expected: "incompatible", userContent: "password: literal-value" },
   ] as const)(
     "reports $expected when the installed user region contains $userContent",
