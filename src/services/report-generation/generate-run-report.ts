@@ -1,6 +1,5 @@
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import {
   calculateCaseContentHash,
   calculateWebVariantHash,
@@ -8,12 +7,17 @@ import {
 import { CaseRepository } from "../../core/cases/repository.js";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
-import type { ProjectConfig } from "../../core/config/schema.js";
+import type { EffectiveProjectConfig } from "../../core/config/schema.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import { runReportSchema, type RunReport } from "../../core/reports/schema.js";
+import {
+  requireRunReportRegularFile,
+  resolveRunReportDirectory,
+  withRunReportLock,
+} from "../../core/reports/storage.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -25,6 +29,7 @@ import {
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
+  effectiveWorkOrderRecordingMode,
   runIdSchema,
   type RunEvent,
   type WorkOrder,
@@ -54,7 +59,7 @@ export interface ProjectLocalReportPaths {
   markdownPath?: string;
 }
 
-interface ReportOperationInput {
+export interface ReportOperationInput {
   projectRoot: string;
   aiQaHome: string;
   runId: string;
@@ -63,8 +68,14 @@ interface ReportOperationInput {
 
 interface VerifiedRunReport {
   projectRoot: string;
-  config: ProjectConfig;
+  config: EffectiveProjectConfig;
+  recordingMode: "local-only" | "project-skill";
   report: RunReport;
+}
+
+export interface VerifiedGeneratedRunReport extends VerifiedRunReport {
+  directory: string;
+  paths: ProjectLocalReportPaths;
 }
 
 const summaryTimelineTypes = new Set<RunEvent["type"]>([
@@ -82,12 +93,12 @@ export async function generateRunReport(
   const paths = reportPaths(input.runId, verified.config);
   const json = `${JSON.stringify(verified.report, null, 2)}\n`;
   const markdown = renderRunReportMarkdown(verified.report);
-  const directory = await verifiedReportDirectory(
-    verified.projectRoot,
-    input.runId,
-    true,
-  );
-  await withReportLock(directory, async () => {
+  const directory = await resolveRunReportDirectory({
+    projectRoot: verified.projectRoot,
+    runId: input.runId,
+    create: true,
+  });
+  await withRunReportLock(directory, async () => {
     const writes: Promise<void>[] = [];
     if (paths.jsonPath !== undefined) {
       writes.push(atomicWriteFile(resolve(directory, "report.json"), json));
@@ -103,18 +114,31 @@ export async function generateRunReport(
 export async function exportProjectLocalRunReport(
   input: ReportOperationInput,
 ): Promise<ProjectLocalReportPaths> {
+  return withVerifiedGeneratedRunReport(input, ({ paths }) =>
+    Promise.resolve(paths),
+  );
+}
+
+export async function withVerifiedGeneratedRunReport<T>(
+  input: ReportOperationInput,
+  operation: (verified: VerifiedGeneratedRunReport) => Promise<T>,
+): Promise<T> {
   const verified = await buildVerifiedRunReport(input);
   const paths = reportPaths(input.runId, verified.config);
-  const directory = await verifiedReportDirectory(
-    verified.projectRoot,
-    input.runId,
-    false,
-  );
-  await withReportLock(directory, async () => {
+  const directory = await resolveRunReportDirectory({
+    projectRoot: verified.projectRoot,
+    runId: input.runId,
+    create: false,
+  });
+  return withRunReportLock(directory, async () => {
     let persistedJson: RunReport | undefined;
     if (paths.jsonPath !== undefined) {
-      const path = resolve(directory, "report.json");
-      await requireRegularReportFile(path, input.runId, paths.jsonPath);
+      const path = await requireRunReportRegularFile({
+        directory,
+        filename: "report.json",
+        runId: input.runId,
+        missingCode: "report.not_generated",
+      });
       try {
         persistedJson = runReportSchema.parse(
           JSON.parse(await readFile(path, "utf8")),
@@ -131,8 +155,12 @@ export async function exportProjectLocalRunReport(
       }
     }
     if (paths.markdownPath !== undefined) {
-      const path = resolve(directory, "report.md");
-      await requireRegularReportFile(path, input.runId, paths.markdownPath);
+      const path = await requireRunReportRegularFile({
+        directory,
+        filename: "report.md",
+        runId: input.runId,
+        missingCode: "report.not_generated",
+      });
       const markdown = await readFile(path, "utf8");
       const expectedReport =
         persistedJson ??
@@ -141,23 +169,8 @@ export async function exportProjectLocalRunReport(
         throw reportIntegrityError(input.runId, paths.markdownPath);
       }
     }
+    return operation({ ...verified, directory, paths });
   });
-  return paths;
-}
-
-async function withReportLock<T>(
-  directory: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const release = await lockfile.lock(directory, {
-    realpath: false,
-    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-  });
-  try {
-    return await operation();
-  } finally {
-    await release();
-  }
 }
 
 async function buildVerifiedRunReport(
@@ -171,123 +184,133 @@ async function buildVerifiedRunReport(
   });
   const config = await readProjectConfig(trusted.projectRoot);
   const repository = new RunRepository(trusted.projectRoot, input.now);
-  const report = await repository.journal(runId).readLocked(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    if (workOrder.projectId !== config.project.id) {
-      throw new AiQaError(
-        "work_order.integrity_error",
-        "Work order project identity does not match project configuration",
-        { runId, projectId: workOrder.projectId },
-      );
-    }
-    const evidence = await new EvidenceRepository(
-      trusted.projectRoot,
-      runId,
-      input.now,
-    ).verifyAll();
-    validateEvidenceParity(events, evidence, runId);
-    validateProtocolEvents(events, workOrder, runId);
-    const effective = effectiveVerdictFrom(
-      validateVerdictHistory(events, workOrder),
-    );
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    const phase = lifecycle.current.payload.phase;
-    if (phase !== "completed" && phase !== "cancelled") {
-      throw new AiQaError(
-        "report.run_not_terminal",
-        "Only completed or cancelled runs can generate reports",
-        { runId, status: phase },
-      );
-    }
-    if (
-      effective === undefined ||
-      lifecycle.current.payload.verdictId !== effective.event.id
-    ) {
-      throw new AiQaError(
-        "run_protocol.integrity_error",
-        "Terminal run lifecycle does not match its effective verdict",
-        { runId, effectiveVerdictId: effective?.event.id },
-      );
-    }
-    if (events.at(-1)?.id !== lifecycle.current.event.id) {
-      throw new AiQaError(
-        "run_protocol.integrity_error",
-        "Terminal lifecycle event must be the final run journal event",
-        { runId, terminalEventId: lifecycle.current.event.id },
-      );
-    }
-    validateTerminalVerdict(phase, effective.payload, lifecycle.current.event);
-    if (workOrder.kind === "regression") {
-      await validatePinnedRegressionCase(
+  const verified = await repository
+    .journal(runId)
+    .readLocked(async (events) => {
+      const workOrder = await repository.readVerifiedWorkOrder(runId);
+      if (workOrder.projectId !== config.project.id) {
+        throw new AiQaError(
+          "work_order.integrity_error",
+          "Work order project identity does not match project configuration",
+          { runId, projectId: workOrder.projectId },
+        );
+      }
+      const evidence = await new EvidenceRepository(
         trusted.projectRoot,
-        workOrder,
+        runId,
         input.now,
+      ).verifyAll();
+      validateEvidenceParity(events, evidence, runId);
+      validateProtocolEvents(events, workOrder, runId);
+      const effective = effectiveVerdictFrom(
+        validateVerdictHistory(events, workOrder),
       );
-    }
-    if (phase === "completed") {
-      validateFinalization({
-        workOrder,
-        events,
-        evidence,
-        verdict: effective,
-        completionTime: new Date(lifecycle.current.event.timestamp),
-      });
-    }
+      const lifecycle = validateRunLifecycleHistory(events, runId);
+      const phase = lifecycle.current.payload.phase;
+      if (phase !== "completed" && phase !== "cancelled") {
+        throw new AiQaError(
+          "report.run_not_terminal",
+          "Only completed or cancelled runs can generate reports",
+          { runId, status: phase },
+        );
+      }
+      if (
+        effective === undefined ||
+        lifecycle.current.payload.verdictId !== effective.event.id
+      ) {
+        throw new AiQaError(
+          "run_protocol.integrity_error",
+          "Terminal run lifecycle does not match its effective verdict",
+          { runId, effectiveVerdictId: effective?.event.id },
+        );
+      }
+      if (events.at(-1)?.id !== lifecycle.current.event.id) {
+        throw new AiQaError(
+          "run_protocol.integrity_error",
+          "Terminal lifecycle event must be the final run journal event",
+          { runId, terminalEventId: lifecycle.current.event.id },
+        );
+      }
+      validateTerminalVerdict(
+        phase,
+        effective.payload,
+        lifecycle.current.event,
+      );
+      if (workOrder.kind === "regression") {
+        await validatePinnedRegressionCase(
+          trusted.projectRoot,
+          workOrder,
+          input.now,
+        );
+      }
+      if (phase === "completed") {
+        validateFinalization({
+          workOrder,
+          events,
+          evidence,
+          verdict: effective,
+          completionTime: new Date(lifecycle.current.event.timestamp),
+        });
+      }
 
-    const verificationTime = input.now().toISOString();
-    const timelineEvents =
-      config.reportPolicy.detail === "full"
-        ? events
-        : events.filter((event) => summaryTimelineTypes.has(event.type));
-    return runReportSchema.parse({
-      schemaVersion: 1,
-      generatedAt: verificationTime,
-      project: config.project,
-      reportPolicy: {
-        audience: config.reportPolicy.audience,
-        detail: config.reportPolicy.detail,
-      },
-      run: {
-        id: runId,
-        kind: workOrder.kind,
-        execution: workOrder.execution,
-        platform: workOrder.platform,
-        status: phase,
-      },
-      verdict: reportVerdict(effective.payload),
-      workOrder: {
-        goal: workOrder.goal,
-        acceptanceCriteria: workOrder.acceptanceCriteria,
-        evidencePolicy: workOrder.evidencePolicy,
-        ...(workOrder.pinnedCase === undefined
-          ? {}
-          : { pinnedCase: workOrder.pinnedCase }),
-      },
-      evidence: evidence.map((record) => ({
-        id: record.id,
-        contentHash: record.contentHash,
-        path: record.projectRelativePath,
-        evidenceKinds: record.evidenceKinds,
-      })),
-      timeline: timelineEvents.map((event) => ({
-        sequence: event.sequence,
-        eventId: event.id,
-        type: event.type,
-        summary: eventSummary(event),
-        relatedIds: event.relatedIds,
-      })),
-      integrity: {
-        status: "verified",
-        verifiedAt: verificationTime,
-      },
+      const verificationTime = input.now().toISOString();
+      const timelineEvents =
+        config.reportPolicy.detail === "full"
+          ? events
+          : events.filter((event) => summaryTimelineTypes.has(event.type));
+      const report = runReportSchema.parse({
+        schemaVersion: 1,
+        generatedAt: verificationTime,
+        project: config.project,
+        reportPolicy: {
+          audience: config.reportPolicy.audience,
+          detail: config.reportPolicy.detail,
+        },
+        run: {
+          id: runId,
+          kind: workOrder.kind,
+          execution: workOrder.execution,
+          platform: workOrder.platform,
+          status: phase,
+        },
+        verdict: reportVerdict(effective.payload),
+        workOrder: {
+          goal: workOrder.goal,
+          acceptanceCriteria: workOrder.acceptanceCriteria,
+          evidencePolicy: workOrder.evidencePolicy,
+          ...(workOrder.pinnedCase === undefined
+            ? {}
+            : { pinnedCase: workOrder.pinnedCase }),
+        },
+        evidence: evidence.map((record) => ({
+          id: record.id,
+          contentHash: record.contentHash,
+          path: record.projectRelativePath,
+          evidenceKinds: record.evidenceKinds,
+        })),
+        timeline: timelineEvents.map((event) => ({
+          sequence: event.sequence,
+          eventId: event.id,
+          type: event.type,
+          summary: eventSummary(event),
+          relatedIds: event.relatedIds,
+        })),
+        integrity: {
+          status: "verified",
+          verifiedAt: verificationTime,
+        },
+      });
+      return {
+        recordingMode: effectiveWorkOrderRecordingMode(workOrder),
+        report,
+      };
     });
-  });
-  return { projectRoot: trusted.projectRoot, config, report };
+  return { projectRoot: trusted.projectRoot, config, ...verified };
 }
 
 function reportPaths(
   runId: string,
-  config: ProjectConfig,
+  config: EffectiveProjectConfig,
 ): ProjectLocalReportPaths {
   runId = runIdSchema.parse(runId);
   const directory = `.ai-qa/reports/runs/${runId}`;
@@ -298,88 +321,6 @@ function reportPaths(
       ? { markdownPath: `${directory}/report.md` }
       : {}),
   };
-}
-
-async function verifiedReportDirectory(
-  projectRoot: string,
-  runId: string,
-  create: boolean,
-): Promise<string> {
-  runId = runIdSchema.parse(runId);
-  const canonicalProjectRoot = await realpath(projectRoot);
-  let directory = canonicalProjectRoot;
-  for (const segment of [".ai-qa", "reports", "runs", runId]) {
-    directory = resolve(directory, segment);
-    if (create) {
-      try {
-        await mkdir(directory, { mode: 0o700 });
-      } catch (error: unknown) {
-        if (!isNodeError(error, "EEXIST")) throw error;
-      }
-    }
-    try {
-      const stats = await lstat(directory);
-      if (
-        stats.isSymbolicLink() ||
-        !stats.isDirectory() ||
-        (await realpath(directory)) !== directory
-      ) {
-        throw new Error("report storage ancestor is not a real directory");
-      }
-    } catch (error: unknown) {
-      if (!create && isNodeError(error, "ENOENT")) {
-        throw new AiQaError(
-          "report.not_generated",
-          "Configured project-local report output has not been generated",
-          { runId },
-        );
-      }
-      if (error instanceof AiQaError && error.code === "report.not_generated") {
-        throw error;
-      }
-      throw new AiQaError(
-        "report.storage_integrity_error",
-        "Report storage must stay in real project-local directories",
-        { runId, path: directory },
-      );
-    }
-  }
-  return directory;
-}
-
-async function requireRegularReportFile(
-  path: string,
-  runId: string,
-  projectRelativePath: string,
-): Promise<void> {
-  try {
-    const stats = await lstat(path);
-    if (
-      stats.isSymbolicLink() ||
-      !stats.isFile() ||
-      (await realpath(path)) !== path
-    ) {
-      throw new AiQaError(
-        "report.storage_integrity_error",
-        "Report artifacts must be real project-local files",
-        { runId, path: projectRelativePath },
-      );
-    }
-  } catch (error: unknown) {
-    if (error instanceof AiQaError) throw error;
-    if (isNodeError(error, "ENOENT")) {
-      throw new AiQaError(
-        "report.not_generated",
-        "Configured project-local report output has not been generated",
-        { runId, path: projectRelativePath },
-      );
-    }
-    throw new AiQaError(
-      "report.storage_integrity_error",
-      "Report artifact integrity verification failed",
-      { runId, path: projectRelativePath },
-    );
-  }
 }
 
 function stableReportContent(report: RunReport): unknown {
@@ -571,12 +512,4 @@ function eventSummary(event: RunEvent): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

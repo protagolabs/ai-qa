@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   symlink,
   writeFile,
@@ -19,6 +20,7 @@ import {
 } from "../../src/core/cases/schema.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
+import { writeProjectConfig } from "../../src/core/config/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { runReportSchema } from "../../src/core/reports/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
@@ -29,6 +31,7 @@ import {
 import {
   exportProjectLocalRunReport,
   generateRunReport,
+  withVerifiedGeneratedRunReport,
 } from "../../src/services/report-generation/generate-run-report.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
@@ -1075,6 +1078,29 @@ describe("report CLI and project-local export", () => {
     ).rejects.toMatchObject({ code: "report.storage_integrity_error" });
   });
 
+  it("rejects export through a symlinked report artifact", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const outside = join(
+      await mkdtemp(join(tmpdir(), "ai-qa-export-artifact-outside-")),
+      "report.json",
+    );
+    const path = join(
+      fixture.projectRoot,
+      ".ai-qa/reports/runs/run-1/report.json",
+    );
+    await rename(path, outside);
+    await symlink(outside, path, "file");
+
+    await expect(
+      exportProjectLocalRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: generatedNow,
+      }),
+    ).rejects.toMatchObject({ code: "report.storage_integrity_error" });
+  });
+
   it("rejects a schema-valid modified report JSON artifact", async () => {
     const fixture = await completedRun();
     await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
@@ -1140,5 +1166,81 @@ describe("report CLI and project-local export", () => {
         now: () => new Date("2026-07-13T00:25:00.000Z"),
       }),
     ).resolves.toEqual({ markdownPath: generated.markdownPath });
+  });
+});
+
+describe("verified generated report boundary", () => {
+  it("invokes the callback only after configured report bytes match terminal state", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const jsonPath = join(
+      fixture.projectRoot,
+      ".ai-qa/reports/runs/run-1/report.json",
+    );
+    const report = JSON.parse(await readFile(jsonPath, "utf8")) as {
+      verdict: { summary: string };
+    };
+    report.verdict.summary = "Modified before verified callback";
+    await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
+    let called = false;
+
+    await expect(
+      withVerifiedGeneratedRunReport(
+        { ...fixture, runId: "run-1", now: generatedNow },
+        () => {
+          called = true;
+          return Promise.resolve();
+        },
+      ),
+    ).rejects.toMatchObject({ code: "report.integrity_error" });
+    expect(called).toBe(false);
+  });
+
+  it("holds the lock while exposing canonical storage, current config, and snapshotted recording mode without rewriting bytes", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      "run-1",
+    );
+    const jsonPath = join(directory, "report.json");
+    const markdownPath = join(directory, "report.md");
+    const beforeJson = await readFile(jsonPath, "utf8");
+    const beforeMarkdown = await readFile(markdownPath, "utf8");
+    await writeProjectConfig(fixture.projectRoot, {
+      ...config(),
+      recordingPolicy: { mode: "project-skill" },
+    });
+
+    const result = await withVerifiedGeneratedRunReport(
+      { ...fixture, runId: "run-1", now: generatedNow },
+      async (verified) => {
+        await expect(
+          lockfile.lock(verified.directory, {
+            realpath: false,
+            retries: 0,
+          }),
+        ).rejects.toMatchObject({ code: "ELOCKED" });
+        expect(verified.projectRoot).toBe(await realpath(fixture.projectRoot));
+        expect(verified.directory).toBe(await realpath(directory));
+        expect(verified.config.recordingPolicy.mode).toBe("project-skill");
+        expect(verified.recordingMode).toBe("local-only");
+        expect(verified.report.run.id).toBe("run-1");
+        expect(verified.paths).toEqual({
+          jsonPath: ".ai-qa/reports/runs/run-1/report.json",
+          markdownPath: ".ai-qa/reports/runs/run-1/report.md",
+        });
+        expect(await readFile(jsonPath, "utf8")).toBe(beforeJson);
+        expect(await readFile(markdownPath, "utf8")).toBe(beforeMarkdown);
+        return "verified";
+      },
+    );
+
+    expect(result).toBe("verified");
+    expect(await readFile(jsonPath, "utf8")).toBe(beforeJson);
+    expect(await readFile(markdownPath, "utf8")).toBe(beforeMarkdown);
   });
 });
