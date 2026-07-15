@@ -4,9 +4,9 @@ import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
   schemaVersion: 2,
@@ -33,7 +33,7 @@ const config: ProjectConfig = {
   storagePolicy: { adapter: "project-local" },
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
-  secretReferences: {},
+  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
 async function listFiles(root: string, current = root): Promise<string[]> {
@@ -61,7 +61,7 @@ describe("web doctor CLI", () => {
       confirmed: true,
       now: new Date("2026-07-13T00:00:00.000Z"),
     });
-    await initializeProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, aiQaHome, config });
 
     const installedSkill = createCapturedCli({
       env: { AI_QA_AGENTS_HOME: agentsHome },

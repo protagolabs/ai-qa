@@ -354,6 +354,24 @@ describe("syncGlobalSkill", () => {
 });
 
 describe("global skill CLI", () => {
+  it("rejects project-only sync options in global mode without writing", async () => {
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-agents-"));
+    const captured = createCapturedCli({
+      env: { AI_QA_AGENTS_HOME: agentsHome },
+    });
+
+    expect(
+      await runCli(
+        ["skill", "sync", "--global", "--preview"],
+        captured.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
+      error: { code: "skill.conflicting_scope_options" },
+    });
+    await expectMissing(join(agentsHome, "skills", "ai-qa", "SKILL.md"));
+  });
+
   it("reports a missing global skill as JSON with a nonzero exit", async () => {
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-agents-"));
     const captured = createCapturedCli({

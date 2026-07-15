@@ -11,9 +11,9 @@ import {
 } from "../../src/core/runs/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
   schemaVersion: 2,
@@ -35,7 +35,7 @@ const config: ProjectConfig = {
   storagePolicy: { adapter: "project-local" },
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
-  secretReferences: {},
+  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
 const readyPayload = exploratoryRunInputSchema.parse({
@@ -342,7 +342,7 @@ describe("exploratory run start", () => {
       confirmed: true,
       now: new Date("2026-07-13T00:00:00.000Z"),
     });
-    await initializeProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, aiQaHome, config });
 
     await expect(
       startExploratoryRun({
@@ -367,7 +367,7 @@ describe("exploratory run start", () => {
       confirmed: true,
       now: new Date("2026-07-13T00:00:00.000Z"),
     });
-    await initializeProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, aiQaHome, config });
     const captured = createCapturedCli({
       cwd: projectRoot,
       env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
@@ -421,7 +421,7 @@ describe("exploratory run start", () => {
       confirmed: true,
       now: new Date("2026-07-13T00:00:00.000Z"),
     });
-    await initializeProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, aiQaHome, config });
     const captured = createCapturedCli({
       cwd: projectRoot,
       env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },

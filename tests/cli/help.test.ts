@@ -18,6 +18,36 @@ describe("ai-qa CLI shell", () => {
     expect(captured.stdout.join("")).toContain("Usage: ai-qa");
   });
 
+  it.each([
+    {
+      args: ["init", "--help"],
+      options: ["--stdin-json", "--preview", "--confirm-checksum"],
+    },
+    {
+      args: ["configure", "--help"],
+      options: ["--stdin-json", "--preview", "--confirm-checksum"],
+    },
+    {
+      args: ["skill", "generate", "--help"],
+      options: ["--stdin-json", "--preview", "--confirm-checksum"],
+    },
+    { args: ["skill", "check", "--help"], options: ["--global"] },
+    {
+      args: ["skill", "sync", "--help"],
+      options: ["--global", "--stdin-json", "--preview", "--confirm-checksum"],
+    },
+  ])(
+    "documents the project setup command surface for $args",
+    async ({ args, options }) => {
+      const captured = createCapturedCli();
+
+      expect(await runCli(args, captured.context)).toBe(0);
+
+      const help = captured.stdout.join("");
+      for (const option of options) expect(help).toContain(option);
+    },
+  );
+
   it("preserves the caller context identity in program output closures", async () => {
     const captured = createCapturedCli();
     let usedOriginalContext = false;

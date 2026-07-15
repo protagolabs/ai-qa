@@ -22,10 +22,10 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
 
@@ -49,7 +49,7 @@ const config: ProjectConfig = {
   storagePolicy: { adapter: "project-local" },
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
-  secretReferences: {},
+  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
 const readyPayload = exploratoryRunInputSchema.parse({
@@ -104,7 +104,7 @@ async function initializeTrustedProject(): Promise<{
     confirmed: true,
     now: fixedNow(),
   });
-  await initializeProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, aiQaHome, config });
   return { projectRoot, aiQaHome };
 }
 

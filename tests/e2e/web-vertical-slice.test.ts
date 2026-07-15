@@ -28,7 +28,6 @@ import {
   draftCaseFromRun,
   validateCaseRevision,
 } from "../../src/services/case-promotion/draft-case.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
 import {
   exportProjectLocalRunReport,
@@ -42,6 +41,7 @@ import { startRegressionRun } from "../../src/services/run-protocol/start-regres
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:05:00.000Z");
@@ -97,7 +97,10 @@ function config(): ProjectConfig {
     storagePolicy: { adapter: "project-local" },
     gitPolicy: { config: "track", artifacts: "ignore" },
     ciPolicy: { nonPassExit: "failure" },
-    secretReferences: { loginPassword: "AI_QA_FIXTURE_PASSWORD" },
+    secretReferences: {
+      loginPassword: "AI_QA_FIXTURE_PASSWORD",
+      fixtureProjectSkill: "QA_TEST_PASSWORD",
+    },
   };
 }
 
@@ -799,7 +802,7 @@ describe("Increment 1 Web vertical slice services", () => {
       confirmed: true,
       now: startedAt,
     });
-    await initializeProject({ projectRoot, aiQaHome, config: config() });
+    await initializeTestProject({ projectRoot, aiQaHome, config: config() });
 
     const exploratory = await startExploratoryRun({
       projectRoot,

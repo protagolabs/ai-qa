@@ -13,7 +13,6 @@ import {
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
@@ -22,6 +21,7 @@ import { startRegressionRun } from "../../src/services/run-protocol/start-regres
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:01:00.000Z");
@@ -67,7 +67,7 @@ const config: ProjectConfig = {
   storagePolicy: { adapter: "project-local" },
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
-  secretReferences: {},
+  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
 interface RegressionFixture {
@@ -87,7 +87,7 @@ async function createActiveCase(
     confirmed: true,
     now: startedAt,
   });
-  await initializeProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, aiQaHome, config });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
     schemaVersion: 1,

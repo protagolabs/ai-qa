@@ -27,12 +27,12 @@ import {
   validateCaseRevision,
 } from "../../src/services/case-promotion/draft-case.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
-import { initializeProject } from "../../src/services/initialization/initialize-project.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const runNow = () => new Date("2026-07-13T00:10:00.000Z");
@@ -56,7 +56,7 @@ const config: ProjectConfig = {
   storagePolicy: { adapter: "project-local" },
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
-  secretReferences: {},
+  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
 async function createCompletedPassRun(
@@ -79,7 +79,7 @@ async function createCompletedPassRun(
     confirmed: true,
     now: startedAt,
   });
-  await initializeProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, aiQaHome, config });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
@@ -452,7 +452,7 @@ async function createStaleCompletedPassRun(): Promise<{
     confirmed: true,
     now: startedAt,
   });
-  await initializeProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, aiQaHome, config });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({

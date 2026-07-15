@@ -23,6 +23,7 @@ import {
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { projectSkillSource } from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-13T00:10:00.000Z");
 const criteria = [
@@ -59,7 +60,10 @@ function config(): ProjectConfig {
     storagePolicy: { adapter: "project-local" },
     gitPolicy: { config: "track", artifacts: "ignore" },
     ciPolicy: { nonPassExit: "failure" },
-    secretReferences: { loginPassword: "AI_QA_FIXTURE_PASSWORD" },
+    secretReferences: {
+      loginPassword: "AI_QA_FIXTURE_PASSWORD",
+      fixtureProjectSkill: "QA_TEST_PASSWORD",
+    },
   };
 }
 
@@ -800,9 +804,28 @@ describe("Increment 1 Web vertical slice CLI", () => {
       ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
       { confirmed: true },
     );
-    await cli.run(["init", "--project", projectRoot, "--stdin-json"], {
+    const initializationRequest = {
       config: config(),
-    });
+      projectSkill: {
+        reason: "CLI vertical-slice project procedures",
+        content: projectSkillSource(),
+      },
+    };
+    const initPreview = await cli.run<{ checksum: string }>(
+      ["--project", projectRoot, "init", "--stdin-json", "--preview"],
+      initializationRequest,
+    );
+    await cli.run(
+      [
+        "--project",
+        projectRoot,
+        "init",
+        "--stdin-json",
+        "--confirm-checksum",
+        initPreview.checksum,
+      ],
+      initializationRequest,
+    );
     const doctor = await cli.run<WorkOrder["readiness"]>(
       ["doctor", "--platform", "web", "--json", "--stdin-json"],
       {

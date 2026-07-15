@@ -6,45 +6,7 @@ import {
   projectSkillRequestSchema,
 } from "../../src/services/skill-management/project-skill.js";
 import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
-
-export function projectSkillSource(
-  recordingProcedure: string = "No additional project record is required; the verified local report completes the workflow.",
-): string {
-  return `---
-name: ai-qa-project
-description: Use when performing AI QA work in this target project, including startup, authentication, evidence, reports, or result recording.
-metadata:
-  aiQaProjectSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: generated
----
-<!-- ai-qa:managed:start -->
-# Project AI QA Procedures
-
-## Startup and environment
-
-Run the existing local development command documented by the project.
-
-## Authentication and test data
-
-Read credentials only from \${QA_TEST_PASSWORD}; never persist the value.
-
-## Navigation and platform constraints
-
-Start at the configured Web entry URL and prefer stable test IDs.
-
-## Evidence, privacy, and reports
-
-Follow config sensitivity, retention, and local report policy.
-
-## Project result recording
-
-${recordingProcedure}
-<!-- ai-qa:managed:end -->
-<!-- ai-qa:user:start -->
-<!-- ai-qa:user:end -->
-`;
-}
+import { projectSkillSource } from "../helpers/project-fixture.js";
 
 const secretReferences = { login: "QA_TEST_PASSWORD" };
 

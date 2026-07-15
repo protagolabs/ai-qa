@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   symlink,
   unlink,
   writeFile,
@@ -15,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import { AiQaError } from "../../src/core/errors.js";
+import { runCli } from "../../src/cli/program.js";
 import {
   applyProjectFileTransaction,
   type ProjectFileWrite,
@@ -25,10 +27,13 @@ import {
   type InitializationRequest,
 } from "../../src/services/initialization/project-setup.js";
 import { prepareProjectSkill } from "../../src/services/skill-management/project-skill.js";
+import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { readRepositoryIdentity } from "../../src/services/trust/repository-identity.js";
+import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   projectConfigV1,
   projectConfigV2,
+  projectSkillSource,
 } from "../helpers/project-fixture.js";
 
 vi.mock("node:crypto", async (importOriginal) => {
@@ -39,43 +44,6 @@ vi.mock("node:crypto", async (importOriginal) => {
 const CONFIG_PATH = ".ai-qa/config.yaml";
 const SKILL_PATH = ".agents/skills/ai-qa-project/SKILL.md";
 const SECRET_REFERENCES = { login: "QA_TEST_PASSWORD" };
-
-function projectSkillSource(recordingProcedure: string): string {
-  return `---
-name: ai-qa-project
-description: Use when performing AI QA work in this target project, including startup, authentication, evidence, reports, or result recording.
-metadata:
-  aiQaProjectSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: generated
----
-<!-- ai-qa:managed:start -->
-# Project AI QA Procedures
-
-## Startup and environment
-
-Run the existing local development command documented by the project.
-
-## Authentication and test data
-
-Read credentials only from \${QA_TEST_PASSWORD}; never persist the value.
-
-## Navigation and platform constraints
-
-Start at the configured Web entry URL and prefer stable test IDs.
-
-## Evidence, privacy, and reports
-
-Follow config sensitivity, retention, and local report policy.
-
-## Project result recording
-
-${recordingProcedure}
-<!-- ai-qa:managed:end -->
-<!-- ai-qa:user:start -->
-<!-- ai-qa:user:end -->
-`;
-}
 
 function request(
   procedure = "No additional project record is required; the verified local report completes the workflow.",
@@ -109,6 +77,15 @@ async function writeSkill(projectRoot: string, content: string) {
     recursive: true,
   });
   await writeFile(join(projectRoot, SKILL_PATH), content);
+}
+
+async function trustProject(projectRoot: string, aiQaHome: string) {
+  await confirmProjectTrust({
+    projectRoot,
+    aiQaHome,
+    confirmed: true,
+    now: new Date("2026-07-13T00:00:00.000Z"),
+  });
 }
 
 describe("project setup preview", () => {
@@ -286,6 +263,267 @@ describe("project setup preview", () => {
       readFile(join(projectRoot, CONFIG_PATH), "utf8"),
     ).resolves.toBe(legacyConfig);
   });
+});
+
+describe("project Skill CLI", () => {
+  it("generates only a missing Project Skill through preview and checksum confirmation", async () => {
+    const projectRoot = await temporaryProject("ai-qa-skill-generate-cli-");
+    const aiQaHome = await temporaryProject("ai-qa-home-");
+    await trustProject(projectRoot, aiQaHome);
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("project-skill"),
+    );
+    const input = JSON.stringify({
+      projectSkill: request().projectSkill,
+    });
+    const missingConfirmation = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.reject(new Error("stdin must not be read")),
+    });
+    expect(
+      await runCli(
+        ["--project", projectRoot, "skill", "generate", "--stdin-json"],
+        missingConfirmation.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(missingConfirmation.stderr.join(""))).toMatchObject({
+      error: { code: "setup.confirmation_required" },
+    });
+
+    const previewCli = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(input),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "generate",
+          "--stdin-json",
+          "--preview",
+        ],
+        previewCli.context,
+      ),
+    ).toBe(0);
+    const preview = JSON.parse(previewCli.stdout.join("")) as {
+      checksum: string;
+      writePaths: string[];
+    };
+    expect(preview.writePaths).toEqual([SKILL_PATH]);
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+    await expectMissing(join(projectRoot, SKILL_PATH));
+
+    const applyCli = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(input),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "generate",
+          "--stdin-json",
+          "--confirm-checksum",
+          preview.checksum,
+        ],
+        applyCli.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(applyCli.stdout.join(""))).toMatchObject({
+      operation: "skill-generate",
+      writePaths: [SKILL_PATH],
+      recordingMode: "project-skill",
+      createdDirectories: [],
+    });
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+
+    const repeated = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(input),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "generate",
+          "--stdin-json",
+          "--preview",
+        ],
+        repeated.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(repeated.stderr.join(""))).toMatchObject({
+      error: { code: "skill.already_installed" },
+    });
+  });
+
+  it("syncs only an installed Project Skill while preserving config and user content", async () => {
+    const projectRoot = await temporaryProject("ai-qa-skill-sync-cli-");
+    const aiQaHome = await temporaryProject("ai-qa-home-");
+    await trustProject(projectRoot, aiQaHome);
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("project-skill"),
+    );
+    const updateInput = JSON.stringify({
+      projectSkill: request("Record with the updated procedure.").projectSkill,
+    });
+    const missing = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(updateInput),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "sync",
+          "--stdin-json",
+          "--preview",
+        ],
+        missing.context,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(missing.stderr.join(""))).toMatchObject({
+      error: { code: "skill.not_installed" },
+    });
+
+    const installed = prepareProjectSkill({
+      source: projectSkillSource("Record with the former procedure."),
+      secretReferences: SECRET_REFERENCES,
+    }).content.replace(
+      "<!-- ai-qa:user:start -->",
+      "<!-- ai-qa:user:start -->\nKeep this project note.\n",
+    );
+    await writeSkill(projectRoot, installed);
+    const previewCli = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(updateInput),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "sync",
+          "--stdin-json",
+          "--preview",
+        ],
+        previewCli.context,
+      ),
+    ).toBe(0);
+    const preview = JSON.parse(previewCli.stdout.join("")) as {
+      checksum: string;
+    };
+    const applyCli = createCapturedCli({
+      cwd: tmpdir(),
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(updateInput),
+    });
+    expect(
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "skill",
+          "sync",
+          "--stdin-json",
+          "--confirm-checksum",
+          preview.checksum,
+        ],
+        applyCli.context,
+      ),
+    ).toBe(0);
+    const synchronized = await readFile(join(projectRoot, SKILL_PATH), "utf8");
+    expect(synchronized).toContain("Record with the updated procedure.");
+    expect(synchronized).toContain("Keep this project note.");
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+  });
+
+  it.each([
+    { expected: "missing", installed: undefined, exitCode: 1 },
+    {
+      expected: "compatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content,
+      exitCode: 0,
+    },
+    {
+      expected: "conflict",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace("Run the existing", "Run a modified"),
+      exitCode: 1,
+    },
+    {
+      expected: "incompatible",
+      installed: prepareProjectSkill({
+        source: projectSkillSource(),
+        secretReferences: SECRET_REFERENCES,
+      }).content.replace(
+        "aiQaProjectSkillVersion: 1.0.0",
+        "aiQaProjectSkillVersion: 2.0.0",
+      ),
+      exitCode: 1,
+    },
+  ])(
+    "checks $expected Project Skill state without writing",
+    async ({ expected, installed, exitCode }) => {
+      const projectRoot = await temporaryProject("ai-qa-skill-check-cli-");
+      const aiQaHome = await temporaryProject("ai-qa-home-");
+      await trustProject(projectRoot, aiQaHome);
+      await writeConfig(projectRoot);
+      if (installed !== undefined) await writeSkill(projectRoot, installed);
+      const before = installed;
+      const captured = createCapturedCli({
+        cwd: tmpdir(),
+        env: { AI_QA_HOME: aiQaHome },
+        readStdin: () => Promise.reject(new Error("stdin must not be read")),
+      });
+
+      expect(
+        await runCli(
+          ["--project", projectRoot, "skill", "check"],
+          captured.context,
+        ),
+      ).toBe(exitCode);
+      expect(JSON.parse(captured.stdout.join(""))).toMatchObject({
+        status: expected,
+        destination: join(await realpath(projectRoot), SKILL_PATH),
+      });
+      if (before === undefined) {
+        await expectMissing(join(projectRoot, SKILL_PATH));
+      } else {
+        await expect(
+          readFile(join(projectRoot, SKILL_PATH), "utf8"),
+        ).resolves.toBe(before);
+      }
+    },
+  );
 });
 
 describe("checksum-confirmed project setup", () => {
