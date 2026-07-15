@@ -17,19 +17,17 @@ const skillFrontmatterSchema = z
       .max(64),
     description: z.string().min(1).max(1024),
     metadata: z
-      .object({
-        aiQaSkillVersion: z.string(),
-        aiQaProtocolRange: z.string(),
-        aiQaManagedChecksum: z.string(),
-      })
-      .passthrough(),
+      .record(z.string(), z.unknown())
+      .refine(
+        (metadata) =>
+          Object.prototype.hasOwnProperty.call(metadata, "aiQaManagedChecksum"),
+        "SKILL.md metadata requires aiQaManagedChecksum",
+      ),
   })
   .passthrough();
 
-interface SkillParts {
+interface SkillParts extends ManagedSkillInspection {
   frontmatter: Record<string, unknown>;
-  managed: string;
-  user: string;
 }
 
 interface MarkerPositions {
@@ -49,6 +47,16 @@ export interface MergeManagedSkillResult {
   content: string;
   managedChecksum: string;
   changed: boolean;
+}
+
+export interface ManagedSkillInspection {
+  name: string;
+  description: string;
+  metadata: Readonly<Record<string, unknown>>;
+  managed: string;
+  user: string;
+  managedChecksum: string;
+  recordedManagedChecksum: unknown;
 }
 
 function markerPositions(content: string): MarkerPositions {
@@ -92,19 +100,51 @@ function parseSkill(content: string): SkillParts {
       "SKILL.md requires YAML frontmatter",
     );
   }
+  if (positions.managedStart < match[0].length) {
+    throw new AiQaError(
+      "skill.invalid_markers",
+      "SKILL.md managed and user markers must occur after frontmatter",
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = parse(match[1]);
+  } catch {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md requires valid YAML frontmatter",
+    );
+  }
+  const result = skillFrontmatterSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new AiQaError(
+      "skill.invalid_frontmatter",
+      "SKILL.md requires a valid name, description, and managed metadata",
+      { issues: result.error.issues },
+    );
+  }
+  const frontmatter = result.data as Record<string, unknown>;
+  const managed = content.slice(
+    positions.managedStart + MANAGED_START.length,
+    positions.managedEnd,
+  );
+  const user = content.slice(
+    positions.userStart + USER_START.length,
+    positions.userEnd,
+  );
+  const metadata = Object.freeze({
+    ...(frontmatter.metadata as Record<string, unknown>),
+  });
+  const managedChecksum = checksum(frontmatter, managed);
   return {
-    frontmatter: skillFrontmatterSchema.parse(parse(match[1])) as Record<
-      string,
-      unknown
-    >,
-    managed: content.slice(
-      positions.managedStart + MANAGED_START.length,
-      positions.managedEnd,
-    ),
-    user: content.slice(
-      positions.userStart + USER_START.length,
-      positions.userEnd,
-    ),
+    frontmatter,
+    name: result.data.name,
+    description: result.data.description,
+    metadata,
+    managed,
+    user,
+    managedChecksum,
+    recordedManagedChecksum: metadata.aiQaManagedChecksum,
   };
 }
 
@@ -129,14 +169,12 @@ export function mergeManagedSkill(
   input: MergeManagedSkillInput,
 ): MergeManagedSkillResult {
   const source = parseSkill(input.source);
-  const managedChecksum = checksum(source.frontmatter, source.managed);
+  const managedChecksum = source.managedChecksum;
   let existing: SkillParts | undefined;
   if (input.existing !== undefined) {
     existing = parseSkill(input.existing);
-    const metadata =
-      (existing.frontmatter.metadata as Record<string, unknown>) ?? {};
-    const recorded = metadata.aiQaManagedChecksum;
-    const actual = checksum(existing.frontmatter, existing.managed);
+    const recorded = existing.recordedManagedChecksum;
+    const actual = existing.managedChecksum;
     if (recorded !== actual && !input.confirmManagedReplacement) {
       throw new AiQaError(
         "skill.managed_conflict",
@@ -158,12 +196,29 @@ export function mergeManagedSkill(
     { sortMapEntries: true },
   ).trimEnd();
   const user = existing?.user ?? source.user;
-  const content = `---\n${frontmatter}\n---\n${MANAGED_START}${source.managed}${MANAGED_END}\n${USER_START}${user}${USER_END}\n`;
+  const proposedContent = `---\n${frontmatter}\n---\n${MANAGED_START}${source.managed}${MANAGED_END}\n${USER_START}${user}${USER_END}\n`;
+  const changed =
+    input.existing === undefined ||
+    proposedContent.replace(/\r\n/g, "\n") !==
+      input.existing.replace(/\r\n/g, "\n");
+  const content =
+    !changed && input.existing !== undefined ? input.existing : proposedContent;
   return {
     content,
     managedChecksum,
-    changed:
-      input.existing === undefined ||
-      content.replace(/\r\n/g, "\n") !== input.existing.replace(/\r\n/g, "\n"),
+    changed,
   };
+}
+
+export function inspectManagedSkill(content: string): ManagedSkillInspection {
+  const inspection = parseSkill(content);
+  return Object.freeze({
+    name: inspection.name,
+    description: inspection.description,
+    metadata: inspection.metadata,
+    managed: inspection.managed,
+    user: inspection.user,
+    managedChecksum: inspection.managedChecksum,
+    recordedManagedChecksum: inspection.recordedManagedChecksum,
+  });
 }

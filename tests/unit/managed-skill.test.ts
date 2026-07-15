@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
+import {
+  inspectManagedSkill,
+  mergeManagedSkill,
+} from "../../src/services/skill-management/managed-skill.js";
 
 const source = `---
 name: ai-qa
@@ -17,6 +20,26 @@ Canonical workflow
 `;
 
 describe("mergeManagedSkill", () => {
+  it("exposes an immutable provider-neutral inspection", () => {
+    const projectSource = source
+      .replace("name: ai-qa", "name: ai-qa-project")
+      .replace("aiQaSkillVersion", "aiQaProjectSkillVersion");
+
+    const inspection = inspectManagedSkill(projectSource);
+
+    expect(inspection).toMatchObject({
+      name: "ai-qa-project",
+      description: "Canonical AI QA workflow",
+      recordedManagedChecksum: "bundled",
+    });
+    expect(inspection.metadata).toMatchObject({
+      aiQaProjectSkillVersion: "1.0.0",
+    });
+    expect(inspection.managedChecksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(Object.isFrozen(inspection)).toBe(true);
+    expect(Object.isFrozen(inspection.metadata)).toBe(true);
+  });
+
   it("preserves the existing user region byte-for-byte", () => {
     const existing = source.replace(
       "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
