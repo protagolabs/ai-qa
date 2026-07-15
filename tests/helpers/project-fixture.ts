@@ -2,10 +2,12 @@ import type {
   ProjectConfigV1,
   ProjectConfigV2,
 } from "../../src/core/config/schema.js";
+import type { RecordingReceiptInput } from "../../src/core/recording/schema.js";
 import {
   applyProjectSetup,
   previewProjectSetup,
 } from "../../src/services/initialization/initialize-project.js";
+import type { InitializationRequest } from "../../src/services/initialization/project-setup.js";
 
 function projectFields() {
   return {
@@ -81,6 +83,31 @@ ${recordingProcedure}
 <!-- ai-qa:user:start -->
 <!-- ai-qa:user:end -->
 `;
+}
+
+export function projectSetupRequest(input: {
+  mode: "local-only" | "project-skill";
+  recordingProcedure?: string;
+}): InitializationRequest {
+  return {
+    config: projectConfigV2(input.mode),
+    projectSkill: {
+      reason: "Test fixture project procedures",
+      content: projectSkillSource(input.recordingProcedure),
+    },
+  };
+}
+
+export function projectRecordingReceipt(input: {
+  idempotencyKey: string;
+  status: RecordingReceiptInput["status"];
+  references?: string[];
+}): RecordingReceiptInput {
+  return {
+    idempotencyKey: input.idempotencyKey,
+    status: input.status,
+    references: input.references ?? [],
+  };
 }
 
 export async function initializeTestProject(input: {

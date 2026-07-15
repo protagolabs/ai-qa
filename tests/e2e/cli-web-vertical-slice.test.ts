@@ -1,7 +1,8 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { stringify } from "yaml";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
@@ -23,7 +24,10 @@ import {
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { projectSkillSource } from "../helpers/project-fixture.js";
+import {
+  projectConfigV1,
+  projectSkillSource,
+} from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-13T00:10:00.000Z");
 const criteria = [
@@ -1046,4 +1050,92 @@ describe("Increment 1 Web vertical slice CLI", () => {
       cli.calls.filter((args) => args[0] === "report" && args[1] === "export"),
     ).toHaveLength(3);
   }, 20_000);
+
+  it("keeps an existing v1 project local-only without rewriting it", async () => {
+    const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-cli-v1-e2e-"));
+    const projectRoot = join(machineHome, "target-project");
+    const aiQaHome = join(machineHome, "ai-qa-home");
+    const agentsHome = join(machineHome, "agents-home");
+    await mkdir(join(projectRoot, ".ai-qa"), { recursive: true });
+    const legacyConfig = stringify(projectConfigV1());
+    await writeFile(join(projectRoot, ".ai-qa", "config.yaml"), legacyConfig);
+    const cli = createHarness({
+      projectRoot,
+      machineHome,
+      aiQaHome,
+      agentsHome,
+    });
+    await cli.run(["skill", "install", "--global"]);
+    await cli.run(
+      ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
+      { confirmed: true },
+    );
+    const doctor = await cli.run<WorkOrder["readiness"]>(
+      ["doctor", "--platform", "web", "--json", "--stdin-json"],
+      {
+        entryPage: {
+          status: "ready",
+          observedAt: fixedNow().toISOString(),
+          evidence: "Legacy project target is available",
+        },
+        chromeDevtoolsMcp: {
+          status: "ready",
+          observedAt: fixedNow().toISOString(),
+          evidence: "Chrome DevTools MCP capability confirmed",
+        },
+      },
+    );
+    const run = await cli.run<WorkOrder>(
+      [
+        "run",
+        "start",
+        "--kind",
+        "exploratory",
+        "--platform",
+        "web",
+        "--execution",
+        "local",
+        "--stdin-json",
+      ],
+      {
+        goal: "Prove v1 projects remain locally executable",
+        acceptanceCriteria: criteria,
+        readiness: doctor,
+      },
+    );
+    expect(run.recordingPolicy).toEqual({ mode: "local-only" });
+    await cli.run([
+      "run",
+      "cancel",
+      run.runId,
+      "--reason",
+      "Compatibility proof is complete",
+    ]);
+    await cli.run(["report", "generate", run.runId]);
+    expect(await cli.run(["report", "recording-status", run.runId])).toEqual({
+      runId: run.runId,
+      status: "not_applicable",
+      references: [],
+    });
+    await expect(
+      readFile(join(projectRoot, ".ai-qa", "config.yaml"), "utf8"),
+    ).resolves.toBe(legacyConfig);
+    const reportDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      run.runId,
+    );
+    await expect(
+      access(join(reportDirectory, "recording.jsonl")),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      access(join(reportDirectory, "recording.json")),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
 });
