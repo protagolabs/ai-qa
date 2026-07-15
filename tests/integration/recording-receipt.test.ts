@@ -66,6 +66,13 @@ async function writeArtifact(
   directory: string,
   artifact: RecordingArtifact,
 ): Promise<void> {
+  await writeRawArtifact(directory, artifact);
+}
+
+async function writeRawArtifact(
+  directory: string,
+  artifact: unknown,
+): Promise<void> {
   await writeFile(
     join(directory, "recording.json"),
     `${JSON.stringify(artifact, null, 2)}\n`,
@@ -155,6 +162,21 @@ describe("recording repository materialization", () => {
     ).toBe("conflict");
     expect(
       classifyRecordingMaterialization({ events, artifact: conflicting }),
+    ).toBe("conflict");
+  });
+
+  it("classifies a different artifact run identity as conflict", () => {
+    const events = twoEvents();
+    const artifact = materializeRecordingArtifact({
+      runId: "run-1",
+      events,
+    });
+
+    expect(
+      classifyRecordingMaterialization({
+        events,
+        artifact: { ...artifact, runId: "run-2" },
+      }),
     ).toBe("conflict");
   });
 });
@@ -289,12 +311,19 @@ describe("recording repository", () => {
     );
 
     const recovered = await repository.readOrRecoverUnlocked();
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events,
+    });
 
     expect(recovered).toEqual({
       state: "present",
       events,
-      artifact: materializeRecordingArtifact({ runId: "run-1", events }),
+      artifact: expected,
     });
+    expect(
+      JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
+    ).toEqual(expected);
     expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
     expect((await stat(journalPath)).ino).toBe(journalInode);
   });
@@ -309,15 +338,139 @@ describe("recording repository", () => {
       "run-1",
       () => new Date("2099-01-01T00:00:00.000Z"),
     );
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
 
     await expect(repository.readOrRecoverUnlocked()).resolves.toEqual({
       state: "present",
       events: [event],
-      artifact: materializeRecordingArtifact({
-        runId: "run-1",
-        events: [event],
-      }),
+      artifact: expected,
     });
+    expect(
+      JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
+    ).toEqual(expected);
+  });
+
+  it("rewrites a schema-invalid artifact with extras when journal history authorizes recovery", async () => {
+    const directory = await createDirectory();
+    const event = recordingEvent();
+    await writeJournal(directory, [event]);
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
+    const [entry] = expected.history;
+    if (entry === undefined) throw new Error("Expected one history entry");
+    await writeRawArtifact(directory, {
+      ...expected,
+      unexpected: true,
+      current: { ...expected.current, unexpected: true },
+      history: [{ ...entry, unexpected: true }],
+    });
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date("2099-01-01T00:00:00.000Z"),
+    );
+
+    await expect(repository.readOrRecoverUnlocked()).resolves.toEqual({
+      state: "present",
+      events: [event],
+      artifact: expected,
+    });
+    expect(await readFile(join(directory, "recording.json"), "utf8")).toBe(
+      `${JSON.stringify(expected, null, 2)}\n`,
+    );
+  });
+
+  it("rejects a recognizable wrong run even when another artifact field is schema-invalid", async () => {
+    const directory = await createDirectory();
+    const event = recordingEvent();
+    await writeJournal(directory, [event]);
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
+    const contradictory = {
+      ...expected,
+      runId: "run-2",
+      materializedAt: "not-a-datetime",
+    };
+    const bytes = `${JSON.stringify(contradictory, null, 2)}\n`;
+    await writeRawArtifact(directory, contradictory);
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date(FIRST_RECORDED_AT),
+    );
+
+    await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+      code: "recording.integrity_error",
+    });
+    expect(await readFile(join(directory, "recording.json"), "utf8")).toBe(
+      bytes,
+    );
+  });
+
+  it("rejects recognizable ahead history even when the extra entry is malformed", async () => {
+    const directory = await createDirectory();
+    const event = recordingEvent();
+    await writeJournal(directory, [event]);
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
+    const ahead = {
+      ...expected,
+      history: [...expected.history, { malformed: true }],
+    };
+    const bytes = `${JSON.stringify(ahead, null, 2)}\n`;
+    await writeRawArtifact(directory, ahead);
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date(FIRST_RECORDED_AT),
+    );
+
+    await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+      code: "recording.integrity_error",
+    });
+    expect(await readFile(join(directory, "recording.json"), "utf8")).toBe(
+      bytes,
+    );
+  });
+
+  it("rejects a recognizable shared-event contradiction in a schema-invalid artifact", async () => {
+    const directory = await createDirectory();
+    const event = recordingEvent();
+    await writeJournal(directory, [event]);
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
+    const [entry] = expected.history;
+    if (entry === undefined) throw new Error("Expected one history entry");
+    const contradictory = {
+      ...expected,
+      history: [{ ...entry, idempotencyKey: "different-key" }],
+      materializedAt: "not-a-datetime",
+    };
+    const bytes = `${JSON.stringify(contradictory, null, 2)}\n`;
+    await writeRawArtifact(directory, contradictory);
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date(FIRST_RECORDED_AT),
+    );
+
+    await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+      code: "recording.integrity_error",
+    });
+    expect(await readFile(join(directory, "recording.json"), "utf8")).toBe(
+      bytes,
+    );
   });
 
   it("rejects an artifact without its canonical journal", async () => {

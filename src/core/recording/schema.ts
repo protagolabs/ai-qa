@@ -80,24 +80,30 @@ export const recordingEventSchema = z
 
 export type RecordingEvent = z.infer<typeof recordingEventSchema>;
 
-export const recordingArtifactSchema = z.object({
-  schemaVersion: z.literal(1),
-  runId: runIdSchema,
-  current: z.object({
-    eventId: recordingEventIdSchema,
-    status: z.enum(["recorded", "not_recorded", "unknown"]),
-    references: z.array(recordingReferenceSchema).max(20),
-  }),
-  history: z.array(
-    z.object({
-      eventId: recordingEventIdSchema,
-      recordedAt: z.string().datetime(),
-      idempotencyKey: recordingIdempotencyKeySchema,
-      status: z.enum(["recorded", "not_recorded", "unknown"]),
-      references: z.array(recordingReferenceSchema).max(20),
-    }),
-  ),
-  materializedAt: z.string().datetime(),
-});
+export const recordingArtifactSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    runId: runIdSchema,
+    current: z
+      .object({
+        eventId: recordingEventIdSchema,
+        status: z.enum(["recorded", "not_recorded", "unknown"]),
+        references: z.array(recordingReferenceSchema).max(20),
+      })
+      .strict(),
+    history: z.array(
+      z
+        .object({
+          eventId: recordingEventIdSchema,
+          recordedAt: z.string().datetime(),
+          idempotencyKey: recordingIdempotencyKeySchema,
+          status: z.enum(["recorded", "not_recorded", "unknown"]),
+          references: z.array(recordingReferenceSchema).max(20),
+        })
+        .strict(),
+    ),
+    materializedAt: z.string().datetime(),
+  })
+  .strict();
 
 export type RecordingArtifact = z.infer<typeof recordingArtifactSchema>;

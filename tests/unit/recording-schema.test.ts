@@ -180,6 +180,13 @@ describe("recording repository schemas", () => {
   });
 
   it("validates recording artifacts with ISO datetimes", () => {
+    const historyEntry = {
+      eventId: validEvent.eventId,
+      recordedAt: validEvent.recordedAt,
+      idempotencyKey: validEvent.idempotencyKey,
+      status: validEvent.status,
+      references: validEvent.references,
+    };
     const artifact = {
       schemaVersion: 1,
       runId: "run-1",
@@ -188,15 +195,7 @@ describe("recording repository schemas", () => {
         status: validEvent.status,
         references: validEvent.references,
       },
-      history: [
-        {
-          eventId: validEvent.eventId,
-          recordedAt: validEvent.recordedAt,
-          idempotencyKey: validEvent.idempotencyKey,
-          status: validEvent.status,
-          references: validEvent.references,
-        },
-      ],
+      history: [historyEntry],
       materializedAt: validEvent.recordedAt,
     };
     expect(recordingArtifactSchema.safeParse(artifact).success).toBe(true);
@@ -204,6 +203,44 @@ describe("recording repository schemas", () => {
       recordingArtifactSchema.safeParse({
         ...artifact,
         materializedAt: "not-a-datetime",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown artifact keys at the outer, current, and history levels", () => {
+    const historyEntry = {
+      eventId: validEvent.eventId,
+      recordedAt: validEvent.recordedAt,
+      idempotencyKey: validEvent.idempotencyKey,
+      status: validEvent.status,
+      references: validEvent.references,
+    };
+    const artifact = {
+      schemaVersion: 1,
+      runId: "run-1",
+      current: {
+        eventId: validEvent.eventId,
+        status: validEvent.status,
+        references: validEvent.references,
+      },
+      history: [historyEntry],
+      materializedAt: validEvent.recordedAt,
+    };
+
+    expect(
+      recordingArtifactSchema.safeParse({ ...artifact, unexpected: true })
+        .success,
+    ).toBe(false);
+    expect(
+      recordingArtifactSchema.safeParse({
+        ...artifact,
+        current: { ...artifact.current, unexpected: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      recordingArtifactSchema.safeParse({
+        ...artifact,
+        history: [{ ...historyEntry, unexpected: true }],
       }).success,
     ).toBe(false);
   });

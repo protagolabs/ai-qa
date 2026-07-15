@@ -28,6 +28,14 @@ interface RecordingHistoryEntry {
   references: string[];
 }
 
+const recordingHistoryFields = [
+  "eventId",
+  "recordedAt",
+  "idempotencyKey",
+  "status",
+  "references",
+] as const;
+
 function historyEntry(event: RecordingEvent): RecordingHistoryEntry {
   return {
     eventId: event.eventId,
@@ -44,6 +52,43 @@ function receiptPayload(event: RecordingEvent): RecordingReceiptInput {
     status: event.status,
     references: event.references,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function rawArtifactContradictsJournal(input: {
+  rawArtifact: unknown;
+  runId: string;
+  events: readonly RecordingEvent[];
+}): boolean {
+  if (!isRecord(input.rawArtifact)) return false;
+  if (
+    typeof input.rawArtifact.runId === "string" &&
+    input.rawArtifact.runId !== input.runId
+  ) {
+    return true;
+  }
+  const rawHistory = input.rawArtifact.history;
+  if (!Array.isArray(rawHistory)) return false;
+  if (rawHistory.length > input.events.length) return true;
+
+  for (const [index, rawEntry] of rawHistory.entries()) {
+    if (!isRecord(rawEntry)) continue;
+    const event = input.events[index];
+    if (event === undefined) return true;
+    const expected = historyEntry(event);
+    for (const field of recordingHistoryFields) {
+      if (
+        Object.hasOwn(rawEntry, field) &&
+        canonicalJson(rawEntry[field]) !== canonicalJson(expected[field])
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function materializeRecordingArtifact(input: {
@@ -85,6 +130,7 @@ export function classifyRecordingMaterialization(input: {
     runId: input.events[0]?.runId ?? input.artifact.runId,
     events: input.events,
   });
+  if (input.artifact.runId !== expected.runId) return "conflict";
   if (canonicalJson(input.artifact) === canonicalJson(expected)) {
     return "current";
   }
@@ -144,14 +190,28 @@ export class RecordingRepository {
       return { state: "present", events, artifact: expected };
     }
 
-    let artifact: RecordingArtifact;
+    let rawArtifact: unknown;
     try {
-      const value: unknown = JSON.parse(artifactContent);
-      artifact = recordingArtifactSchema.parse(value);
+      rawArtifact = JSON.parse(artifactContent);
     } catch {
       await this.writeArtifact(expected);
       return { state: "present", events, artifact: expected };
     }
+    if (
+      rawArtifactContradictsJournal({
+        rawArtifact,
+        runId: this.runId,
+        events,
+      })
+    ) {
+      throw this.integrityError();
+    }
+    const parsedArtifact = recordingArtifactSchema.safeParse(rawArtifact);
+    if (!parsedArtifact.success) {
+      await this.writeArtifact(expected);
+      return { state: "present", events, artifact: expected };
+    }
+    const artifact = parsedArtifact.data;
     if (artifact.runId !== this.runId) throw this.integrityError();
 
     const classification = classifyRecordingMaterialization({
