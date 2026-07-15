@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 
@@ -70,6 +70,84 @@ export function requireProjectLocalDirectory(
   segments: readonly string[],
 ): Promise<string> {
   return walkDirectories(projectRoot, segments, false);
+}
+
+export interface OptionalProjectLocalFile {
+  path: string;
+  state: "missing" | "regular";
+  content?: string;
+  stats?: {
+    dev: bigint;
+    ino: bigint;
+    size: bigint;
+    mtimeNs: bigint;
+  };
+}
+
+export async function inspectOptionalProjectLocalRegularFile(
+  projectRoot: string,
+  segments: readonly string[],
+): Promise<OptionalProjectLocalFile> {
+  validateSegments(segments);
+  const canonicalRoot = await realpath(projectRoot);
+  const path = resolve(canonicalRoot, ...segments);
+  let current = canonicalRoot;
+  for (const segment of segments.slice(0, -1)) {
+    current = resolve(current, segment);
+    let stats;
+    try {
+      stats = await lstat(current);
+    } catch (error: unknown) {
+      if (isNodeError(error, "ENOENT")) return { path, state: "missing" };
+      throw storageError(
+        "Project-local storage directory verification failed",
+        current,
+        nodeErrorCode(error),
+      );
+    }
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      (await realpath(current)) !== current
+    ) {
+      throw storageError(
+        "Project-local storage ancestor is not a real directory",
+        current,
+      );
+    }
+  }
+  let stats;
+  try {
+    stats = await lstat(path, { bigint: true });
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return { path, state: "missing" };
+    throw storageError(
+      "Project-local artifact verification failed",
+      path,
+      nodeErrorCode(error),
+    );
+  }
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isFile() ||
+    (await realpath(path)) !== path
+  ) {
+    throw storageError(
+      "Project-local artifact is not a real regular file",
+      path,
+    );
+  }
+  return {
+    path,
+    state: "regular",
+    content: await readFile(path, "utf8"),
+    stats: {
+      dev: stats.dev,
+      ino: stats.ino,
+      size: stats.size,
+      mtimeNs: stats.mtimeNs,
+    },
+  };
 }
 
 export async function requireProjectLocalRegularFile(
