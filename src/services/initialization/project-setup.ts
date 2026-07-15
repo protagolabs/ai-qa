@@ -23,7 +23,6 @@ import {
 import { readRepositoryIdentity } from "../trust/repository-identity.js";
 import {
   applyProjectFileTransaction,
-  type ProjectFileTransactionHooks,
   type ProjectFileWrite,
 } from "./project-file-transaction.js";
 
@@ -90,7 +89,12 @@ export interface PreviewProjectSetupInput {
 
 export interface ApplyProjectSetupInput extends PreviewProjectSetupInput {
   confirmChecksum: string;
-  hooks?: ProjectFileTransactionHooks;
+  hooks?: {
+    beforePublish?: (input: {
+      relativePath: string;
+      publishIndex: number;
+    }) => Promise<void>;
+  };
 }
 
 interface InspectedSetup {
@@ -98,6 +102,10 @@ interface InspectedSetup {
   request: InitializationRequest;
   effectiveRequest: InitializationRequest;
   projectRoot: string;
+  repository: {
+    canonicalPath: string;
+    fingerprint: string;
+  };
   configFile: OptionalProjectLocalFile;
   projectSkillFile: OptionalProjectLocalFile;
   destinations: DestinationSnapshot[];
@@ -170,8 +178,13 @@ export async function applyProjectSetup(
     await applyProjectFileTransaction({
       projectRoot: inspected.projectRoot,
       writes: setupWrites(preview),
-      readSet: preview.destinations,
-      ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
+      readSet: {
+        repository: inspected.repository,
+        files: preview.destinations,
+      },
+      ...(input.hooks?.beforePublish === undefined
+        ? {}
+        : { hooks: { beforePublish: input.hooks.beforePublish } }),
     });
     return preview;
   } finally {
@@ -219,6 +232,10 @@ async function inspectSetup(
     request,
     effectiveRequest,
     projectRoot: identity.canonicalPath,
+    repository: {
+      canonicalPath: identity.canonicalPath,
+      fingerprint: identity.fingerprint,
+    },
     configFile,
     projectSkillFile,
     destinations,
