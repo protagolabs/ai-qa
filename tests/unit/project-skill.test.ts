@@ -292,6 +292,25 @@ describe("project Skill validation", () => {
     ).toThrow();
   });
 
+  it.each([
+    "Use when performing project QA, including archive the results.",
+    "Use when performing project QA, including run pnpm test.",
+    "Use when performing project QA, including results and archive.",
+    "Use when performing project QA, including evidence or run.",
+  ])(
+    "rejects an instruction in the including context list: %s",
+    (description) => {
+      expect(() =>
+        prepare(
+          projectSkillSource().replace(
+            /^description: .+$/m,
+            `description: ${description}`,
+          ),
+        ),
+      ).toThrow();
+    },
+  );
+
   it("rejects generated bodies over 500 lines or 5,000 words", () => {
     expect(() =>
       prepare(

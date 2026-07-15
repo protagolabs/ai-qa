@@ -66,6 +66,63 @@ function validateCompatibility(inspection: ManagedSkillInspection): boolean {
   );
 }
 
+const INSTRUCTION_VERBS = new Set([
+  "archive",
+  "click",
+  "create",
+  "delete",
+  "enter",
+  "execute",
+  "install",
+  "log",
+  "navigate",
+  "open",
+  "read",
+  "run",
+  "save",
+  "set",
+  "start",
+  "submit",
+  "upload",
+  "write",
+]);
+
+function containsInstructionInfinitive(value: string): boolean {
+  for (const match of value.matchAll(/\bto\s+([a-z]+)\b/gi)) {
+    const verb = match[1];
+    if (verb !== undefined && INSTRUCTION_VERBS.has(verb.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isTriggerContextList(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  const items = value.split(",");
+  return items.every((rawItem, index) => {
+    const match =
+      /^(?:(and|or)\s+)?([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,2})$/i.exec(
+        rawItem.trim(),
+      );
+    const connector = match?.[1];
+    const context = match?.[2];
+    if (
+      context === undefined ||
+      (connector !== undefined && index !== items.length - 1)
+    ) {
+      return false;
+    }
+    const firstWord = /^[a-z]+/i.exec(context)?.[0];
+    return (
+      firstWord !== undefined &&
+      !INSTRUCTION_VERBS.has(firstWord.toLowerCase()) &&
+      !/\b(?:and|or)\b/i.test(context) &&
+      !/\b(?:please|must|should|then)\b/i.test(context)
+    );
+  });
+}
+
 function validateTriggerDescription(description: string): void {
   const prefix = "Use when ";
   if (!description.startsWith(prefix)) {
@@ -81,11 +138,13 @@ function validateTriggerDescription(description: string): void {
     !/^[a-z]+ing\b/i.test(primaryContext) ||
     sections.length > 2 ||
     primaryContext.includes(",") ||
+    !isTriggerContextList(sections[1]) ||
     /[;:\n!?]|\.\s/.test(triggerContext) ||
     /\b(?:and|or)\s+(?![a-z]+ing\b)[a-z]+/i.test(primaryContext);
-  const instructionSignal =
-    /\b(?:please|must|should|then)\b|\bto\s+(?:run|execute|open|click|enter|set|install|start|read|write|create|delete|navigate|log|upload|save|submit|archive)\b/i;
-  if (hasInvalidStructure || instructionSignal.test(triggerContext)) {
+  const hasInstructionSignal =
+    /\b(?:please|must|should|then)\b/i.test(triggerContext) ||
+    containsInstructionInfinitive(triggerContext);
+  if (hasInvalidStructure || hasInstructionSignal) {
     invalidProjectSkill(
       "Project Skill description must describe triggering contexts, not command steps",
     );
