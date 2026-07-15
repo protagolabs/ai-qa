@@ -22,6 +22,7 @@ import {
 } from "../../core/fs/project-storage.js";
 import { readRepositoryIdentity } from "../trust/repository-identity.js";
 
+/** @internal */
 export interface ProjectFileWrite {
   relativeSegments: readonly string[];
   content: string;
@@ -32,16 +33,9 @@ interface ProjectFileTransactionHooks {
     relativePath: string;
     publishIndex: number;
   }) => Promise<void>;
-  afterPublish?: (input: {
-    relativePath: string;
-    publishIndex: number;
-  }) => Promise<void>;
-  afterDestinationCheck?: (input: {
-    phase: "publish" | "rollback";
-    relativePath: string;
-  }) => Promise<void>;
 }
 
+/** @internal */
 export interface ProjectFileReadSnapshot {
   relativePath: string;
   state: "missing" | "regular";
@@ -54,11 +48,13 @@ export interface ProjectFileReadSnapshot {
   contentSha256?: string;
 }
 
+/** @internal */
 export interface ProjectRepositoryReadSnapshot {
   canonicalPath: string;
   fingerprint: string;
 }
 
+/** @internal */
 export interface ProjectFileTransactionReadSet {
   repository: ProjectRepositoryReadSnapshot;
   files: readonly ProjectFileReadSnapshot[];
@@ -68,6 +64,8 @@ interface TransactionEntry {
   relativePath: string;
   destination: string;
   original: OptionalProjectLocalFile;
+  originalSnapshot: ProjectFileReadSnapshot;
+  namespace?: TransactionNamespace;
   stagePath: string;
   stageExpectation?: OwnedFileExpectation;
   backupPath?: string;
@@ -88,6 +86,8 @@ interface OwnedFileExpectation {
 }
 
 interface TransactionNamespace {
+  parent: string;
+  relativeParent: string;
   root: string;
   relativeRoot: string;
   artifacts: Set<string>;
@@ -100,6 +100,7 @@ interface FailureDetail {
   cause: string;
 }
 
+/** @internal */
 export async function applyProjectFileTransaction(input: {
   projectRoot: string;
   writes: readonly ProjectFileWrite[];
@@ -147,10 +148,6 @@ export async function applyProjectFileTransaction(input: {
     initialReads.set(expected.relativePath, current);
   }
 
-  const namespace = await createTransactionNamespace(
-    input.projectRoot,
-    transactionId,
-  );
   const entries: TransactionEntry[] = [];
   for (const index of input.writes.keys()) {
     const relativePath = relativePaths[index]!;
@@ -159,6 +156,7 @@ export async function applyProjectFileTransaction(input: {
       relativePath,
       destination: original.path,
       original,
+      originalSnapshot: expectedReads.get(relativePath)!,
       stagePath: "",
       originalPath: "",
       originalVerified: false,
@@ -172,12 +170,6 @@ export async function applyProjectFileTransaction(input: {
         ? 1
         : 0,
   );
-  for (const [index, entry] of entries.entries()) {
-    const prefix = `write-${index.toString().padStart(4, "0")}`;
-    entry.stagePath = join(namespace.root, `${prefix}.stage`);
-    entry.originalPath = join(namespace.root, `${prefix}.original.recovery`);
-    entry.rollbackPath = join(namespace.root, `${prefix}.rollback.recovery`);
-  }
   const entriesByRelativePath = new Map(
     entries.map((entry) => [entry.relativePath, entry]),
   );
@@ -186,6 +178,7 @@ export async function applyProjectFileTransaction(input: {
   );
   const rollbackEntries: TransactionEntry[] = [];
   const rollbackFailures: FailureDetail[] = [];
+  const namespaces: TransactionNamespace[] = [];
   let primaryError: unknown;
 
   try {
@@ -195,23 +188,39 @@ export async function applyProjectFileTransaction(input: {
         write.relativeSegments.slice(0, -1),
       );
     }
+    for (const [index, entry] of entries.entries()) {
+      const namespace = await createTransactionNamespace(
+        entry,
+        index,
+        transactionId,
+      );
+      entry.namespace = namespace;
+      namespaces.push(namespace);
+      const prefix = `write-${index.toString().padStart(4, "0")}`;
+      entry.stagePath = join(namespace.root, `${prefix}.stage`);
+      entry.originalPath = join(namespace.root, `${prefix}.original.recovery`);
+      entry.rollbackPath = join(namespace.root, `${prefix}.rollback.recovery`);
+    }
+    for (const entry of entries) {
+      await assertNoReplaceHardLinkCapability(entry);
+    }
     for (const entry of entries) {
       entry.stageExpectation = await writePrivateFile(
         entry.stagePath,
         writesByRelativePath.get(entry.relativePath)!.content,
-        namespace,
+        entryNamespace(entry),
       );
     }
     for (const [index, entry] of entries.entries()) {
       if (entry.original.state !== "regular") continue;
       entry.backupPath = join(
-        namespace.root,
+        entryNamespace(entry).root,
         `write-${index.toString().padStart(4, "0")}.backup.recovery`,
       );
       entry.backupExpectation = await writePrivateFile(
         entry.backupPath,
         entry.original.content!,
-        namespace,
+        entryNamespace(entry),
       );
     }
 
@@ -225,31 +234,33 @@ export async function applyProjectFileTransaction(input: {
         input.readSet,
         entriesByRelativePath,
       );
-      await input.hooks?.afterDestinationCheck?.({
-        phase: "publish",
-        relativePath: entry.relativePath,
-      });
-
       if (entry.original.state === "regular") {
-        await rename(entry.destination, entry.originalPath);
-        namespace.artifacts.add(entry.originalPath);
+        try {
+          await rename(entry.destination, entry.originalPath);
+        } catch (error: unknown) {
+          if (isNodeError(error, "ENOENT")) {
+            throw destinationChecksumMismatch(entry.relativePath);
+          }
+          throw error;
+        }
+        entryNamespace(entry).artifacts.add(entry.originalPath);
         if (
           !(await privateFileMatchesSnapshot(
             entry.originalPath,
             entry.relativePath,
-            expectedReads.get(entry.relativePath)!,
+            entry.originalSnapshot,
           ))
         ) {
-          namespace.recovery.add(entry.originalPath);
+          entryNamespace(entry).recovery.add(entry.originalPath);
           const restoreFailure = await restoreNoReplace(
             entry.originalPath,
             entry.destination,
           );
-          if (restoreFailure !== undefined) {
+          if (!restoreFailure.ok) {
             rollbackFailures.push({
               phase: "publish-conflict-restore",
               relativePath: entry.relativePath,
-              cause: restoreFailure,
+              cause: restoreFailure.cause,
             });
           }
           throw new AiQaError(
@@ -278,10 +289,6 @@ export async function applyProjectFileTransaction(input: {
       entry.publishedExpectation = entry.stageExpectation!;
       if (!rollbackEntries.includes(entry)) rollbackEntries.push(entry);
       await syncDirectory(dirname(entry.destination));
-      await input.hooks?.afterPublish?.({
-        relativePath: entry.relativePath,
-        publishIndex,
-      });
       await assertTransactionReadSet(
         input.projectRoot,
         input.readSet,
@@ -290,19 +297,17 @@ export async function applyProjectFileTransaction(input: {
     }
   } catch (error: unknown) {
     primaryError = error;
-    rollbackFailures.push(
-      ...(await rollbackBestEffort(rollbackEntries, namespace, input.hooks)),
-    );
+    rollbackFailures.push(...(await rollbackBestEffort(rollbackEntries)));
   }
 
-  const cleanupFailures = await cleanupTransactionNamespace(namespace);
+  const cleanupFailures = await cleanupTransactionNamespaces(namespaces);
   if (primaryError !== undefined) {
-    if (rollbackFailures.length > 0 || namespace.recovery.size > 0) {
+    if (rollbackFailures.length > 0 || hasRecovery(namespaces)) {
       throw rollbackFailed(
         primaryError,
         rollbackFailures,
         cleanupFailures,
-        namespace,
+        namespaces,
       );
     }
     throw primaryErrorWithCleanupFailures(primaryError, cleanupFailures);
@@ -317,22 +322,150 @@ export async function applyProjectFileTransaction(input: {
 }
 
 async function createTransactionNamespace(
-  projectRoot: string,
+  entry: TransactionEntry,
+  index: number,
   transactionId: string,
 ): Promise<TransactionNamespace> {
-  const relativeRoot = `.ai-qa/.transactions/${transactionId}`;
-  const parent = await ensureProjectLocalDirectory(projectRoot, [
-    ".ai-qa",
-    ".transactions",
-  ]);
-  const root = join(parent, transactionId);
+  const namespaceName = `.ai-qa-transaction-${transactionId}-${index
+    .toString()
+    .padStart(4, "0")}`;
+  const parent = dirname(entry.destination);
+  const root = join(parent, namespaceName);
+  const relativeParent = entry.relativePath.split("/").slice(0, -1);
+  const relativeRoot = [...relativeParent, namespaceName].join("/");
   await mkdir(root, { mode: 0o700 });
   return {
+    parent,
+    relativeParent: relativeParent.join("/"),
     root,
     relativeRoot,
     artifacts: new Set(),
     recovery: new Set(),
   };
+}
+
+async function assertNoReplaceHardLinkCapability(
+  entry: TransactionEntry,
+): Promise<void> {
+  const namespace = entryNamespace(entry);
+  const sourcePath = join(namespace.root, ".hardlink-probe.source");
+  const targetPath = `${namespace.root}.hardlink-probe.link`;
+  const expectation = await writePrivateFile(sourcePath, "", namespace);
+  try {
+    await link(sourcePath, targetPath);
+  } catch (error: unknown) {
+    throw hardLinkCapabilityError(entry.relativePath, error);
+  }
+
+  let probeFailure: AiQaError | undefined;
+  try {
+    await assertOwnedFile(targetPath, expectation, "capability probe");
+    try {
+      await link(sourcePath, targetPath);
+      throw new AiQaError(
+        "storage.integrity_error",
+        "Project filesystem hard-link probe replaced an existing path",
+        { relativePath: entry.relativePath },
+      );
+    } catch (error: unknown) {
+      if (isNodeError(error, "EEXIST")) {
+        await assertOwnedFile(targetPath, expectation, "capability probe");
+      } else if (error instanceof AiQaError) {
+        throw error;
+      } else {
+        throw hardLinkCapabilityError(entry.relativePath, error);
+      }
+    }
+  } catch (error: unknown) {
+    probeFailure =
+      error instanceof AiQaError &&
+      error.code === "storage.transaction_unsupported"
+        ? error
+        : hardLinkProbeIntegrityError(entry.relativePath, error);
+  }
+
+  await retireHardLinkProbeTarget(entry, targetPath, expectation);
+  if (probeFailure !== undefined) throw probeFailure;
+}
+
+async function retireHardLinkProbeTarget(
+  entry: TransactionEntry,
+  targetPath: string,
+  expectation: OwnedFileExpectation,
+): Promise<void> {
+  const namespace = entryNamespace(entry);
+  const retainedPath = join(namespace.root, ".hardlink-probe.target");
+  try {
+    await rename(targetPath, retainedPath);
+  } catch (error: unknown) {
+    if (!isNodeError(error, "ENOENT")) namespace.recovery.add(targetPath);
+    throw hardLinkProbeIntegrityError(entry.relativePath, error);
+  }
+  namespace.artifacts.add(retainedPath);
+
+  try {
+    await assertOwnedFile(retainedPath, expectation, "capability probe");
+  } catch (error: unknown) {
+    namespace.recovery.add(retainedPath);
+    const restoreResult = await restoreNoReplace(retainedPath, targetPath);
+    if (restoreResult.ok) namespace.recovery.delete(retainedPath);
+    throw hardLinkProbeIntegrityError(entry.relativePath, error);
+  }
+}
+
+function hardLinkProbeIntegrityError(
+  relativePath: string,
+  error: unknown,
+): AiQaError {
+  const causeCode = nodeErrorCode(error);
+  return new AiQaError(
+    "storage.integrity_error",
+    "Project filesystem hard-link capability probe changed unexpectedly",
+    {
+      relativePath,
+      ...(causeCode === undefined ? {} : { causeCode }),
+    },
+  );
+}
+
+function hardLinkCapabilityError(
+  relativePath: string,
+  error: unknown,
+): AiQaError {
+  const causeCode = nodeErrorCode(error);
+  if (
+    causeCode === "EPERM" ||
+    causeCode === "EOPNOTSUPP" ||
+    causeCode === "ENOTSUP" ||
+    causeCode === "EXDEV"
+  ) {
+    return new AiQaError(
+      "storage.transaction_unsupported",
+      "Project filesystem does not support safe no-replace hard links",
+      { relativePath, causeCode },
+    );
+  }
+  return new AiQaError(
+    "storage.integrity_error",
+    "Project filesystem hard-link capability probe failed",
+    {
+      relativePath,
+      ...(causeCode === undefined ? {} : { causeCode }),
+    },
+  );
+}
+
+function entryNamespace(entry: TransactionEntry): TransactionNamespace {
+  if (entry.namespace !== undefined) return entry.namespace;
+  throw new Error("Project transaction entry has no private namespace");
+}
+
+function destinationChecksumMismatch(relativePath: string): AiQaError {
+  return new AiQaError(
+    "setup.checksum_mismatch",
+    "Project setup destination changed during publish",
+    { relativePath },
+  );
 }
 
 async function assertTransactionReadSet(
@@ -379,14 +512,13 @@ async function assertRepositoryRead(
 
 async function rollbackBestEffort(
   entries: readonly TransactionEntry[],
-  namespace: TransactionNamespace,
-  hooks?: ProjectFileTransactionHooks,
 ): Promise<FailureDetail[]> {
   const failures: FailureDetail[] = [];
   for (const entry of [...entries].reverse()) {
     try {
-      failures.push(...(await rollbackEntry(entry, namespace, hooks)));
+      failures.push(...(await rollbackEntry(entry)));
     } catch (error: unknown) {
+      markViableOriginalRecovery(entry);
       failures.push({
         phase: "rollback-unexpected",
         relativePath: entry.relativePath,
@@ -399,30 +531,24 @@ async function rollbackBestEffort(
 
 async function rollbackEntry(
   entry: TransactionEntry,
-  namespace: TransactionNamespace,
-  hooks?: ProjectFileTransactionHooks,
 ): Promise<FailureDetail[]> {
   const failures: FailureDetail[] = [];
+  const namespace = entryNamespace(entry);
   if (entry.publishedExpectation !== undefined) {
-    let ownershipVerified = false;
+    let movedDestination = false;
     try {
       await assertOwnedFile(
         entry.destination,
         entry.publishedExpectation,
         "published destination",
       );
-      ownershipVerified = true;
     } catch {
-      ownershipVerified = false;
-    }
-    if (ownershipVerified) {
-      await hooks?.afterDestinationCheck?.({
-        phase: "rollback",
-        relativePath: entry.relativePath,
-      });
+      // The post-move verification below decides whether the current path is
+      // transaction-owned or external without mutating either in place.
     }
     try {
       await rename(entry.destination, entry.rollbackPath);
+      movedDestination = true;
       namespace.artifacts.add(entry.rollbackPath);
       if (
         !(await privateFileMatchesExpectation(
@@ -444,6 +570,7 @@ async function rollbackEntry(
         cause: errorMessage(error),
       });
     }
+    if (movedDestination) await syncDirectory(namespace.root);
   }
 
   if (
@@ -452,51 +579,104 @@ async function rollbackEntry(
     entry.backupPath !== undefined &&
     entry.backupExpectation !== undefined
   ) {
-    if (
-      !(await privateFileMatchesExpectation(
-        entry.backupPath,
-        entry.backupExpectation,
-      ))
-    ) {
-      namespace.recovery.add(entry.backupPath);
-      namespace.recovery.add(entry.originalPath);
-      failures.push({
-        phase: "rollback-backup",
-        relativePath: entry.relativePath,
-        cause: "Transaction backup changed before restore",
-      });
-      return failures;
-    }
-    const restoreFailure = await restoreNoReplace(
-      entry.backupPath,
-      entry.destination,
-    );
-    if (restoreFailure !== undefined) {
-      namespace.recovery.add(entry.backupPath);
-      failures.push({
-        phase: "rollback-restore",
-        relativePath: entry.relativePath,
-        cause: restoreFailure,
-      });
-    } else {
-      try {
-        await syncDirectory(dirname(entry.destination));
-      } catch (error: unknown) {
-        failures.push({
-          phase: "rollback-sync",
-          relativePath: entry.relativePath,
-          cause: errorMessage(error),
-        });
-      }
-    }
+    failures.push(...(await restoreOriginalBestEffort(entry)));
   }
   return failures;
 }
 
+async function restoreOriginalBestEffort(
+  entry: TransactionEntry,
+): Promise<FailureDetail[]> {
+  const namespace = entryNamespace(entry);
+  const failures: FailureDetail[] = [];
+  const originalMatches = await privateFileMatchesSnapshot(
+    entry.originalPath,
+    entry.relativePath,
+    entry.originalSnapshot,
+  );
+  if (originalMatches) {
+    const originalRestore = await restoreNoReplace(
+      entry.originalPath,
+      entry.destination,
+    );
+    if (originalRestore.ok) {
+      failures.push(...(await syncRestoredDestination(entry)));
+      return failures;
+    }
+    namespace.recovery.add(entry.originalPath);
+    failures.push({
+      phase: "rollback-original-restore",
+      relativePath: entry.relativePath,
+      cause: originalRestore.cause,
+    });
+    if (originalRestore.causeCode === "EEXIST") {
+      namespace.recovery.add(entry.backupPath!);
+      return failures;
+    }
+  } else {
+    namespace.recovery.add(entry.originalPath);
+    failures.push({
+      phase: "rollback-original",
+      relativePath: entry.relativePath,
+      cause: "Moved original changed before restore",
+    });
+  }
+
+  if (
+    !(await privateFileMatchesExpectation(
+      entry.backupPath!,
+      entry.backupExpectation!,
+    ))
+  ) {
+    namespace.recovery.add(entry.backupPath!);
+    failures.push({
+      phase: "rollback-backup",
+      relativePath: entry.relativePath,
+      cause: "Transaction byte-copy backup changed before restore",
+    });
+    return failures;
+  }
+  const backupRestore = await restoreNoReplace(
+    entry.backupPath!,
+    entry.destination,
+  );
+  if (!backupRestore.ok) {
+    namespace.recovery.add(entry.backupPath!);
+    failures.push({
+      phase: "rollback-backup-restore",
+      relativePath: entry.relativePath,
+      cause: backupRestore.cause,
+    });
+    return failures;
+  }
+  failures.push(...(await syncRestoredDestination(entry)));
+  return failures;
+}
+
+async function syncRestoredDestination(
+  entry: TransactionEntry,
+): Promise<FailureDetail[]> {
+  try {
+    await syncDirectory(dirname(entry.destination));
+    return [];
+  } catch (error: unknown) {
+    return [
+      {
+        phase: "rollback-sync",
+        relativePath: entry.relativePath,
+        cause: errorMessage(error),
+      },
+    ];
+  }
+}
+
+type RestoreResult =
+  { ok: true } | { ok: false; cause: string; causeCode?: string };
+
 async function restoreNoReplace(
   recoveryPath: string,
   destination: string,
-): Promise<string | undefined> {
+): Promise<RestoreResult> {
   try {
     const stats = await lstat(recoveryPath);
     if (stats.isSymbolicLink()) {
@@ -504,11 +684,19 @@ async function restoreNoReplace(
     } else if (stats.isFile()) {
       await link(recoveryPath, destination);
     } else {
-      return "Recovery artifact is not a regular file or symbolic link";
+      return {
+        ok: false,
+        cause: "Recovery artifact is not a regular file or symbolic link",
+      };
     }
-    return undefined;
+    return { ok: true };
   } catch (error: unknown) {
-    return errorMessage(error);
+    const causeCode = nodeErrorCode(error);
+    return {
+      ok: false,
+      cause: errorMessage(error),
+      ...(causeCode === undefined ? {} : { causeCode }),
+    };
   }
 }
 
@@ -543,6 +731,37 @@ async function cleanupTransactionNamespace(
     }
   }
   return failures;
+}
+
+async function cleanupTransactionNamespaces(
+  namespaces: readonly TransactionNamespace[],
+): Promise<FailureDetail[]> {
+  const failures: FailureDetail[] = [];
+  for (const namespace of namespaces) {
+    try {
+      failures.push(...(await cleanupTransactionNamespace(namespace)));
+    } catch (error: unknown) {
+      failures.push({
+        phase: "cleanup-unexpected",
+        relativePath: namespace.relativeRoot,
+        cause: errorMessage(error),
+      });
+    }
+  }
+  return failures;
+}
+
+function hasRecovery(namespaces: readonly TransactionNamespace[]): boolean {
+  return namespaces.some(({ recovery }) => recovery.size > 0);
+}
+
+function markViableOriginalRecovery(entry: TransactionEntry): void {
+  const namespace = entryNamespace(entry);
+  for (const path of [entry.originalPath, entry.backupPath]) {
+    if (path !== undefined && namespace.artifacts.has(path)) {
+      namespace.recovery.add(path);
+    }
+  }
 }
 
 function primaryErrorWithCleanupFailures(
@@ -584,7 +803,7 @@ function rollbackFailed(
   primaryError: unknown,
   rollbackFailures: readonly FailureDetail[],
   cleanupFailures: readonly FailureDetail[],
-  namespace: TransactionNamespace,
+  namespaces: readonly TransactionNamespace[],
 ): AiQaError {
   return new AiQaError(
     "storage.rollback_failed",
@@ -595,8 +814,10 @@ function rollbackFailed(
       ...(cleanupFailures.length === 0
         ? {}
         : { cleanupCauses: cleanupFailures }),
-      recoveryPaths: [...namespace.recovery].map((path) =>
-        artifactRelativePath(namespace, path),
+      recoveryPaths: namespaces.flatMap((namespace) =>
+        [...namespace.recovery].map((path) =>
+          artifactRelativePath(namespace, path),
+        ),
       ),
     },
   );
@@ -606,7 +827,10 @@ function artifactRelativePath(
   namespace: TransactionNamespace,
   path: string,
 ): string {
-  return `${namespace.relativeRoot}/${path.slice(namespace.root.length + 1)}`;
+  const relativeToParent = path.slice(namespace.parent.length + 1);
+  return namespace.relativeParent.length === 0
+    ? relativeToParent
+    : `${namespace.relativeParent}/${relativeToParent}`;
 }
 
 function assertFileRead(
@@ -792,7 +1016,11 @@ function ownedFileIntegrityError(
 }
 
 type OwnedFilePurpose =
-  "stage" | "backup" | "published destination" | "moved destination";
+  | "stage"
+  | "backup"
+  | "capability probe"
+  | "published destination"
+  | "moved destination";
 
 function sha256(content: Buffer): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -808,7 +1036,14 @@ async function syncDirectory(path: string): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown transaction error";
+  try {
+    if (error instanceof Error && typeof error.message === "string") {
+      return error.message;
+    }
+  } catch {
+    // Error objects can expose hostile accessors; diagnostics must stay total.
+  }
+  return "Unknown transaction error";
 }
 
 function isNodeError(error: unknown, code: string): boolean {

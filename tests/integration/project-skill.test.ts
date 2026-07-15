@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   access,
+  link,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -12,7 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
@@ -62,6 +64,28 @@ const publicLinkFault = vi.hoisted(() => ({
   externalContent: undefined as string | undefined,
 }));
 
+const publicSyncFault = vi.hoisted(() => ({
+  directoryPath: undefined as string | undefined,
+  action: undefined as (() => Promise<void>) | undefined,
+  errorMessage: undefined as string | undefined,
+}));
+
+const publicDeletionFault = vi.hoisted(() => ({
+  destinationPath: undefined as string | undefined,
+}));
+
+const rollbackSyncFault = vi.hoisted(() => ({
+  directoryPath: undefined as string | undefined,
+}));
+
+const crossDeviceLinkFault = vi.hoisted(() => ({
+  projectRoot: undefined as string | undefined,
+}));
+
+const hardLinkCapabilityFault = vi.hoisted(() => ({
+  enabled: false,
+}));
+
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -71,9 +95,36 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         existingPath: import("node:fs").PathLike,
         newPath: import("node:fs").PathLike,
       ) => {
+        const existingPathText = String(existingPath);
+        const newPathText = String(newPath);
         if (
-          String(newPath) === publicLinkFault.destinationPath &&
-          String(existingPath).endsWith(".backup.recovery")
+          hardLinkCapabilityFault.enabled &&
+          newPathText.endsWith(".hardlink-probe.link") &&
+          !dirname(newPathText).includes(".ai-qa-transaction-")
+        ) {
+          throw Object.assign(new Error("hard links are not permitted"), {
+            code: "EPERM",
+          });
+        }
+        if (
+          crossDeviceLinkFault.projectRoot !== undefined &&
+          [CONFIG_PATH, SKILL_PATH].some(
+            (relativePath) =>
+              newPathText ===
+              join(crossDeviceLinkFault.projectRoot!, relativePath),
+          ) &&
+          !existingPathText.startsWith(
+            `${join(dirname(newPathText), ".ai-qa-transaction-")}`,
+          )
+        ) {
+          throw Object.assign(new Error("cross-device hard link"), {
+            code: "EXDEV",
+          });
+        }
+        if (
+          newPathText === publicLinkFault.destinationPath &&
+          (existingPathText.endsWith(".original.recovery") ||
+            existingPathText.endsWith(".backup.recovery"))
         ) {
           publicLinkFault.destinationPath = undefined;
           await actual.writeFile(newPath, publicLinkFault.externalContent!);
@@ -102,6 +153,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         oldPath: import("node:fs").PathLike,
         newPath: import("node:fs").PathLike,
       ) => {
+        if (String(oldPath) === publicDeletionFault.destinationPath) {
+          publicDeletionFault.destinationPath = undefined;
+          await actual.unlink(oldPath);
+        }
         const destinationPath = publicMutationFault.destinationPath;
         if (
           destinationPath !== undefined &&
@@ -132,17 +187,32 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         flags: string | number,
         mode?: import("node:fs").Mode,
       ) => {
+        const pathText = String(path);
+        if (flags === "r" && pathText === publicSyncFault.directoryPath) {
+          const action = publicSyncFault.action;
+          const errorMessage = publicSyncFault.errorMessage;
+          publicSyncFault.directoryPath = undefined;
+          publicSyncFault.action = undefined;
+          publicSyncFault.errorMessage = undefined;
+          await action?.();
+          if (errorMessage !== undefined) throw new Error(errorMessage);
+        }
+        if (flags === "r" && pathText === rollbackSyncFault.directoryPath) {
+          rollbackSyncFault.directoryPath = undefined;
+          throw new Error("injected rollback namespace sync failure");
+        }
         const handle =
           mode === undefined
             ? await actual.open(path, flags)
             : await actual.open(path, flags, mode);
-        const pathText = String(path);
         const purpose = pathText.endsWith(".stage")
           ? "stage"
           : pathText.includes(".backup")
             ? "backup"
             : undefined;
-        if (purpose !== ownedFileFault.purpose) return handle;
+        if (purpose === undefined || purpose !== ownedFileFault.purpose) {
+          return handle;
+        }
         if (ownedFileFault.operation === "write") {
           vi.spyOn(handle, "writeFile").mockImplementation(() =>
             Promise.reject(new Error(`injected ${purpose} write failure`)),
@@ -260,7 +330,7 @@ async function transactionReadSet(
 async function applyPreviewTransactionForTest(
   projectRoot: string,
   preview: ProjectSetupPreview,
-  hooks: Parameters<typeof applyProjectFileTransaction>[0]["hooks"],
+  hooks?: Parameters<typeof applyProjectFileTransaction>[0]["hooks"],
 ): Promise<void> {
   const writes: ProjectFileWrite[] = preview.writePaths.map((relativePath) =>
     relativePath === CONFIG_PATH
@@ -1087,6 +1157,166 @@ describe("checksum-confirmed project setup", () => {
     },
   );
 
+  it("maps deletion after the final destination check to a safe checksum mismatch", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-final-delete-");
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("local-only"),
+    );
+    await writeSkill(
+      projectRoot,
+      prepareProjectSkill({
+        source: projectSkillSource(
+          "Record results using the original procedure.",
+        ),
+        secretReferences: SECRET_REFERENCES,
+      }).content,
+    );
+    const setupRequest = request(
+      "Record results using the proposed procedure.",
+    );
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: setupRequest,
+    });
+    publicDeletionFault.destinationPath = join(
+      await realpath(projectRoot),
+      SKILL_PATH,
+    );
+    let failure: unknown;
+
+    try {
+      await applyProjectSetup({
+        operation: "configure",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+      });
+    } catch (error: unknown) {
+      failure = error;
+    } finally {
+      publicDeletionFault.destinationPath = undefined;
+    }
+
+    expect(failure).toMatchObject({
+      code: "setup.checksum_mismatch",
+      details: { relativePath: SKILL_PATH },
+    });
+    expect(JSON.stringify(failure)).not.toContain(await realpath(projectRoot));
+    expect(JSON.stringify(failure)).not.toContain("recovery");
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
+    await expectMissing(join(projectRoot, SKILL_PATH));
+  });
+
+  it("publishes each destination from a same-parent transaction namespace", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-same-device-");
+    const setupRequest = request();
+    const preview = await previewProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+    });
+    crossDeviceLinkFault.projectRoot = await realpath(projectRoot);
+
+    try {
+      await applyProjectSetup({
+        operation: "init",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+      });
+    } finally {
+      crossDeviceLinkFault.projectRoot = undefined;
+    }
+
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toContain("schemaVersion: 2");
+    await expect(
+      readFile(join(projectRoot, SKILL_PATH), "utf8"),
+    ).resolves.toContain("name: ai-qa-project");
+  });
+
+  it("fails safely before publication when hard links are unsupported", async () => {
+    const projectRoot = await temporaryProject(
+      "ai-qa-setup-hardlink-unsupported-",
+    );
+    const setupRequest = request();
+    const preview = await previewProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+    });
+    hardLinkCapabilityFault.enabled = true;
+    let failure: unknown;
+
+    try {
+      await applyProjectSetup({
+        operation: "init",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+      });
+    } catch (error: unknown) {
+      failure = error;
+    } finally {
+      hardLinkCapabilityFault.enabled = false;
+    }
+
+    expect(failure).toMatchObject({
+      code: "storage.transaction_unsupported",
+      details: { causeCode: "EPERM" },
+    });
+    expect(JSON.stringify(failure)).not.toContain(await realpath(projectRoot));
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+    await expectMissing(join(projectRoot, SKILL_PATH));
+  });
+
+  it("preserves a probe target replaced after capability verification", async () => {
+    const projectRoot = await temporaryProject(
+      "ai-qa-setup-hardlink-probe-replaced-",
+    );
+    const setupRequest = request();
+    const preview = await previewProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+    });
+    const transactionId = "00000000-0000-4000-8000-000000000030";
+    vi.mocked(randomUUID).mockReturnValueOnce(transactionId);
+    const probeTarget = join(
+      await realpath(projectRoot),
+      ".agents",
+      "skills",
+      "ai-qa-project",
+      `.ai-qa-transaction-${transactionId}-0000.hardlink-probe.link`,
+    );
+    const externalContent = "external probe replacement\n";
+
+    await expect(
+      applyProjectSetup({
+        operation: "init",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex !== 0) return;
+            await writeFile(probeTarget, externalContent);
+            throw new Error("injected after probe verification");
+          },
+        },
+      }),
+    ).rejects.toThrow("injected after probe verification");
+
+    await expect(readFile(probeTarget, "utf8")).resolves.toBe(externalContent);
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+    await expectMissing(join(projectRoot, SKILL_PATH));
+  });
+
   it("preserves a destination replaced after ownership check and before pathname mutation", async () => {
     const projectRoot = await temporaryProject(
       "ai-qa-setup-check-mutation-replaced-",
@@ -1140,7 +1370,7 @@ describe("checksum-confirmed project setup", () => {
     expect(recoveryPaths).toEqual(
       expect.arrayContaining([
         expect.stringMatching(
-          /^\.ai-qa\/\.transactions\/[a-f0-9-]+\/.+\.recovery$/,
+          /^(?:[^/]+\/)*\.ai-qa-transaction-[a-f0-9-]+-\d{4}\/.+\.recovery$/,
         ),
       ]),
     );
@@ -1181,19 +1411,22 @@ describe("checksum-confirmed project setup", () => {
       request: setupRequest,
     });
     const externalConfig = "external config during rollback\n";
+    publicSyncFault.directoryPath = join(await realpath(projectRoot), ".ai-qa");
+    publicSyncFault.action = async () => {
+      await unlink(join(projectRoot, CONFIG_PATH));
+      await writeFile(join(projectRoot, CONFIG_PATH), externalConfig);
+    };
+    publicSyncFault.errorMessage = "injected failure after both publishes";
 
     let failure: unknown;
     try {
-      await applyPreviewTransactionForTest(projectRoot, preview, {
-        afterPublish: async ({ publishIndex }) => {
-          if (publishIndex !== 1) return;
-          await unlink(join(projectRoot, CONFIG_PATH));
-          await writeFile(join(projectRoot, CONFIG_PATH), externalConfig);
-          throw new Error("injected failure after both publishes");
-        },
-      });
+      await applyPreviewTransactionForTest(projectRoot, preview);
     } catch (error: unknown) {
       failure = error;
+    } finally {
+      publicSyncFault.directoryPath = undefined;
+      publicSyncFault.action = undefined;
+      publicSyncFault.errorMessage = undefined;
     }
 
     expect(failure).toMatchObject({ code: "storage.rollback_failed" });
@@ -1210,61 +1443,6 @@ describe("checksum-confirmed project setup", () => {
     await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
       originalSkill,
     );
-  });
-
-  it("continues rolling back later entries after an unexpected rollback failure", async () => {
-    const projectRoot = await temporaryProject(
-      "ai-qa-setup-rollback-unexpected-",
-    );
-    const originalConfig = await writeConfig(
-      projectRoot,
-      projectConfigV2("local-only"),
-    );
-    const originalSkill = prepareProjectSkill({
-      source: projectSkillSource(
-        "Record results using the original procedure.",
-      ),
-      secretReferences: SECRET_REFERENCES,
-    }).content;
-    await writeSkill(projectRoot, originalSkill);
-    const setupRequest = request(
-      "Record results using the proposed procedure.",
-    );
-    const preview = await previewProjectSetup({
-      operation: "configure",
-      projectRoot,
-      request: setupRequest,
-    });
-    let failure: unknown;
-
-    try {
-      await applyPreviewTransactionForTest(projectRoot, preview, {
-        afterPublish: ({ publishIndex }) =>
-          publishIndex === 1
-            ? Promise.reject(new Error("injected publish failure"))
-            : Promise.resolve(),
-        afterDestinationCheck: ({ phase, relativePath }) =>
-          phase === "rollback" && relativePath === CONFIG_PATH
-            ? Promise.reject(new Error("injected rollback failure"))
-            : Promise.resolve(),
-      });
-    } catch (error: unknown) {
-      failure = error;
-    }
-
-    expect(failure).toMatchObject({ code: "storage.rollback_failed" });
-    if (!(failure instanceof AiQaError)) {
-      throw new Error("expected an AI QA rollback failure");
-    }
-    const rollbackCauses = JSON.stringify(failure.details.rollbackCauses);
-    expect(rollbackCauses).toContain('"phase":"rollback-unexpected"');
-    expect(rollbackCauses).toContain(`"relativePath":"${CONFIG_PATH}"`);
-    await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
-      originalSkill,
-    );
-    await expect(
-      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
-    ).resolves.not.toBe(originalConfig);
   });
 
   it("keeps original recovery bytes when no-replace restore finds a new destination", async () => {
@@ -1296,20 +1474,20 @@ describe("checksum-confirmed project setup", () => {
       CONFIG_PATH,
     );
     publicLinkFault.externalContent = externalConfig;
+    publicSyncFault.directoryPath = join(await realpath(projectRoot), ".ai-qa");
+    publicSyncFault.errorMessage = "injected post-publish failure";
     let failure: unknown;
 
     try {
-      await applyPreviewTransactionForTest(projectRoot, preview, {
-        afterPublish: ({ publishIndex }) =>
-          publishIndex === 1
-            ? Promise.reject(new Error("injected post-publish failure"))
-            : Promise.resolve(),
-      });
+      await applyPreviewTransactionForTest(projectRoot, preview);
     } catch (error: unknown) {
       failure = error;
     } finally {
       publicLinkFault.destinationPath = undefined;
       publicLinkFault.externalContent = undefined;
+      publicSyncFault.directoryPath = undefined;
+      publicSyncFault.action = undefined;
+      publicSyncFault.errorMessage = undefined;
     }
 
     expect(failure).toMatchObject({ code: "storage.rollback_failed" });
@@ -1353,22 +1531,36 @@ describe("checksum-confirmed project setup", () => {
           `https://example.invalid/${changeTiming}.git`,
         ]);
       };
+      const canonicalRoot = await realpath(projectRoot);
 
-      const application =
-        changeTiming === "before"
-          ? applyProjectSetup({
-              operation: "skill-generate",
-              projectRoot,
-              request: setupRequest,
-              confirmChecksum: preview.checksum,
-              hooks: { beforePublish: changeRepositoryIdentity },
-            })
-          : applyPreviewTransactionForTest(projectRoot, preview, {
-              afterPublish: changeRepositoryIdentity,
-            });
-      await expect(application).rejects.toMatchObject({
-        code: "setup.checksum_mismatch",
-      });
+      const application = (() => {
+        if (changeTiming === "before") {
+          return applyProjectSetup({
+            operation: "skill-generate",
+            projectRoot,
+            request: setupRequest,
+            confirmChecksum: preview.checksum,
+            hooks: { beforePublish: changeRepositoryIdentity },
+          });
+        }
+        publicSyncFault.directoryPath = join(
+          canonicalRoot,
+          ".agents",
+          "skills",
+          "ai-qa-project",
+        );
+        publicSyncFault.action = changeRepositoryIdentity;
+        return applyPreviewTransactionForTest(projectRoot, preview);
+      })();
+      try {
+        await expect(application).rejects.toMatchObject({
+          code: "setup.checksum_mismatch",
+        });
+      } finally {
+        publicSyncFault.directoryPath = undefined;
+        publicSyncFault.action = undefined;
+        publicSyncFault.errorMessage = undefined;
+      }
 
       await expectMissing(join(projectRoot, SKILL_PATH));
     },
@@ -1565,7 +1757,7 @@ describe("checksum-confirmed project setup", () => {
       expect(recoveryPaths).toEqual(
         expect.arrayContaining([
           expect.stringMatching(
-            /^\.ai-qa\/\.transactions\/[0-9a-f-]+\/write-\d{4}\.rollback\.recovery$/,
+            /^(?:[^/]+\/)*\.ai-qa-transaction-[0-9a-f-]+-\d{4}\/write-\d{4}\.rollback\.recovery$/,
           ),
         ]),
       );
@@ -1625,21 +1817,34 @@ describe("checksum-confirmed project setup", () => {
         await writeFile(join(projectRoot, CONFIG_PATH), externalConfig);
       };
 
-      const application =
-        changeTiming === "before"
-          ? applyProjectSetup({
-              operation,
-              projectRoot,
-              request: setupRequest,
-              confirmChecksum: preview.checksum,
-              hooks: { beforePublish: replaceConfig },
-            })
-          : applyPreviewTransactionForTest(projectRoot, preview, {
-              afterPublish: replaceConfig,
-            });
-      await expect(application).rejects.toMatchObject({
-        code: "setup.checksum_mismatch",
-      });
+      const application = (() => {
+        if (changeTiming === "before") {
+          return applyProjectSetup({
+            operation,
+            projectRoot,
+            request: setupRequest,
+            confirmChecksum: preview.checksum,
+            hooks: { beforePublish: replaceConfig },
+          });
+        }
+        publicSyncFault.directoryPath = join(
+          preview.projectRoot,
+          ".agents",
+          "skills",
+          "ai-qa-project",
+        );
+        publicSyncFault.action = replaceConfig;
+        return applyPreviewTransactionForTest(projectRoot, preview);
+      })();
+      try {
+        await expect(application).rejects.toMatchObject({
+          code: "setup.checksum_mismatch",
+        });
+      } finally {
+        publicSyncFault.directoryPath = undefined;
+        publicSyncFault.action = undefined;
+        publicSyncFault.errorMessage = undefined;
+      }
 
       await expect(
         readFile(join(projectRoot, CONFIG_PATH), "utf8"),
@@ -1834,6 +2039,108 @@ describe("checksum-confirmed project setup", () => {
 });
 
 describe("project file transaction ownership", () => {
+  it("retains every viable original source after an unexpected rollback error", async () => {
+    const projectRoot = await temporaryProject(
+      "ai-qa-rollback-unexpected-recovery-",
+    );
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("local-only"),
+    );
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: request(),
+    });
+    const configSnapshot = preview.destinations.find(
+      ({ relativePath }) => relativePath === CONFIG_PATH,
+    )!;
+    const transactionId = "00000000-0000-4000-8000-000000000020";
+    vi.mocked(randomUUID).mockReturnValueOnce(transactionId);
+    const namespaceRelative = `.ai-qa/.ai-qa-transaction-${transactionId}-0000`;
+    const originalRelative = `${namespaceRelative}/write-0000.original.recovery`;
+    const backupRelative = `${namespaceRelative}/write-0000.backup.recovery`;
+    const canonicalRoot = await realpath(projectRoot);
+    rollbackSyncFault.directoryPath = join(canonicalRoot, namespaceRelative);
+    publicSyncFault.directoryPath = join(canonicalRoot, ".ai-qa");
+    publicSyncFault.errorMessage = "injected post-publish sync failure";
+    let failure: unknown;
+
+    try {
+      await applyProjectFileTransaction({
+        projectRoot,
+        writes: [
+          {
+            relativeSegments: [".ai-qa", "config.yaml"],
+            content: "replacement config\n",
+          },
+        ],
+        readSet: await transactionReadSet(projectRoot, [configSnapshot]),
+      });
+    } catch (error: unknown) {
+      failure = error;
+    } finally {
+      publicSyncFault.directoryPath = undefined;
+      publicSyncFault.action = undefined;
+      publicSyncFault.errorMessage = undefined;
+      rollbackSyncFault.directoryPath = undefined;
+    }
+
+    expect(failure).toMatchObject({ code: "storage.rollback_failed" });
+    expect(recoveryPathsFromFailure(failure)).toEqual(
+      expect.arrayContaining([originalRelative, backupRelative]),
+    );
+    await expect(
+      readFile(join(projectRoot, originalRelative), "utf8"),
+    ).resolves.toBe(originalConfig);
+    await expect(
+      readFile(join(projectRoot, backupRelative), "utf8"),
+    ).resolves.toBe(originalConfig);
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+  });
+
+  it("restores the moved original inode before using the byte-copy fallback", async () => {
+    const projectRoot = await temporaryProject(
+      "ai-qa-rollback-original-inode-",
+    );
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("local-only"),
+    );
+    const configPath = join(projectRoot, CONFIG_PATH);
+    const aliasPath = join(projectRoot, "original-config-alias.yaml");
+    await link(configPath, aliasPath);
+    const aliasIdentity = await lstat(aliasPath, { bigint: true });
+    const setupRequest = request();
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: setupRequest,
+    });
+    publicSyncFault.directoryPath = join(await realpath(projectRoot), ".ai-qa");
+    publicSyncFault.errorMessage = "injected post-publish sync failure";
+
+    try {
+      await expect(
+        applyProjectSetup({
+          operation: "configure",
+          projectRoot,
+          request: setupRequest,
+          confirmChecksum: preview.checksum,
+        }),
+      ).rejects.toThrow("injected post-publish sync failure");
+    } finally {
+      publicSyncFault.directoryPath = undefined;
+      publicSyncFault.action = undefined;
+      publicSyncFault.errorMessage = undefined;
+    }
+
+    await expect(readFile(configPath, "utf8")).resolves.toBe(originalConfig);
+    const restoredIdentity = await lstat(configPath, { bigint: true });
+    expect(restoredIdentity.dev).toBe(aliasIdentity.dev);
+    expect(restoredIdentity.ino).toBe(aliasIdentity.ino);
+  });
+
   it("keeps a pre-existing empty transaction parent directory", async () => {
     const projectRoot = await temporaryProject(
       "ai-qa-existing-transaction-parent-",
@@ -1971,7 +2278,7 @@ describe("project file transaction ownership", () => {
     );
     expect(cleanupCauses).toContain('"phase":"cleanup-unlink"');
     expect(cleanupCauses).toContain(transactionId);
-    expect(cleanupFault.attemptedPaths).toHaveLength(2);
+    expect(cleanupFault.attemptedPaths).toHaveLength(6);
   });
 
   it("does not let cleanup failure override rollback_failed", async () => {
@@ -2076,8 +2383,7 @@ describe("project file transaction ownership", () => {
     const configStage = join(
       canonicalRoot,
       ".ai-qa",
-      ".transactions",
-      uuid,
+      `.ai-qa-transaction-${uuid}-0001`,
       "write-0001.stage",
     );
     vi.mocked(randomUUID).mockReturnValueOnce(uuid);
@@ -2161,8 +2467,7 @@ describe("project file transaction ownership", () => {
     const configStage = join(
       canonicalRoot,
       ".ai-qa",
-      ".transactions",
-      uuid,
+      `.ai-qa-transaction-${uuid}-0001`,
       "write-0001.stage",
     );
     vi.mocked(randomUUID).mockReturnValueOnce(uuid);
@@ -2211,8 +2516,7 @@ describe("project file transaction ownership", () => {
     const configStage = join(
       canonicalRoot,
       ".ai-qa",
-      ".transactions",
-      uuid,
+      `.ai-qa-transaction-${uuid}-0001`,
       "write-0001.stage",
     );
     vi.mocked(randomUUID).mockReturnValueOnce(uuid);
@@ -2254,7 +2558,7 @@ describe("project file transaction ownership", () => {
     await expectMissing(configStage);
   });
 
-  it("does not restore a replaced backup after the first publish", async () => {
+  it("does not use a replaced byte-copy backup while the moved original is viable", async () => {
     const projectRoot = await temporaryProject(
       "ai-qa-backup-restore-replaced-",
     );
@@ -2281,9 +2585,10 @@ describe("project file transaction ownership", () => {
     const canonicalRoot = await realpath(projectRoot);
     const skillBackup = join(
       canonicalRoot,
-      ".ai-qa",
-      ".transactions",
-      uuid,
+      ".agents",
+      "skills",
+      "ai-qa-project",
+      `.ai-qa-transaction-${uuid}-0000`,
       "write-0000.backup.recovery",
     );
     const unownedBackup = "unowned replacement backup\n";
@@ -2311,24 +2616,15 @@ describe("project file transaction ownership", () => {
       failure = error;
     }
 
-    expect(failure).toMatchObject({ code: "storage.rollback_failed" });
-    const recoveryPaths = recoveryPathsFromFailure(failure);
-    expect(recoveryPaths).toEqual(
-      expect.arrayContaining([
-        `.ai-qa/.transactions/${uuid}/write-0000.backup.recovery`,
-        `.ai-qa/.transactions/${uuid}/write-0000.original.recovery`,
-      ]),
-    );
-    await expect(readFile(skillBackup, "utf8")).resolves.toBe(unownedBackup);
+    expect(failure).toMatchObject({
+      message: "injected second publish failure",
+    });
+    expect(recoveryPathsFromFailure(failure)).toEqual([]);
+    await expectMissing(skillBackup);
     await expect(
       readFile(join(projectRoot, CONFIG_PATH), "utf8"),
     ).resolves.toBe(originalConfig);
-    await expectMissing(join(projectRoot, SKILL_PATH));
-    const originalRecovery = join(
-      projectRoot,
-      `.ai-qa/.transactions/${uuid}/write-0000.original.recovery`,
-    );
-    await expect(readFile(originalRecovery, "utf8")).resolves.toBe(
+    await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
       originalSkill,
     );
   });
