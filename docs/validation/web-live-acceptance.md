@@ -55,7 +55,8 @@ pnpm vitest run \
   tests/integration/global-skill.test.ts \
   tests/integration/report-generation.test.ts \
   tests/integration/recording-receipt.test.ts \
-  tests/e2e/project-recording-flow.test.ts
+  tests/e2e/project-recording-flow.test.ts \
+  tests/e2e/cli-web-vertical-slice.test.ts
 ```
 
 Acceptance checklist and test evidence:
@@ -139,9 +140,14 @@ AI_QA_FIXTURE_PASSWORD="$AI_QA_WEB_FIXTURE_PASSWORD" pnpm fixture:web
 1. `authenticated-home-visible`: `[data-testid="authenticated-home"]` is visible after login. Required evidence: `post-action-screenshot`.
 2. `current-account-visible`: `[data-testid="current-account"]` contains `qa@example.test`. Required evidence: `structured-text-assertion` and `post-action-screenshot`.
 
-## Confirmed fixture config
+## Historical fixture config (evidence only)
 
-Discuss this complete configuration with the user and obtain explicit confirmation before passing it to `ai-qa init`:
+The bare schema-v1 object below is preserved only as the exact historical input
+used for the live proof at commit `bf16b87978d7391cddc1066270c52f4ec7b6879d`.
+It is not valid input for the current `ai-qa init`: the current CLI requires a
+complete schema-v2 `{ "config": ..., "projectSkill": ... }`
+`InitializationRequest` and rejects this bare object with `input.invalid_json`.
+Do not submit or adapt this block as a current init request.
 
 ```json
 {
@@ -190,10 +196,10 @@ AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill check --global
 
 The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm installation alone must not edit the agents home.
 
-## Ordered execution
+## Current replay ordered execution
 
 1. Start the fixture and confirm `/health` returns `ok`. Keep its terminal open for the complete run.
-2. Use the isolated CLI with `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above. Explicitly confirm trust for `fixtures/web-app`, then initialize it with the confirmed config.
+2. Use the isolated CLI with `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above. Explicitly confirm trust for `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): create one complete schema-v2 `init-request.json` containing both the fixture config (including `recordingPolicy.mode: local-only`) and a complete fixture Project Skill, display the full preview, and apply the exact same file with its confirmed checksum. Never pass the historical bare schema-v1 block above to the current CLI.
 3. Activate the installed `ai-qa` skill. Use Chrome DevTools MCP to open the entry URL, confirm that the login fixture is rendered, and supply that observation to `doctor --platform web --json --stdin-json`.
 4. Start one exploratory run with the two stable criterion IDs above.
 5. For every Chrome DevTools MCP call—including navigation, DOM observation, form interaction, and screenshot capture—first record `action plan` with `tool: "chrome-devtools-mcp"`, invoke MCP, then record `action complete`. Retain the login interaction's returned `payload.stepId`; use it for the fresh authenticated observation action, the later evidence-capture action, and the satisfied assertions. The interaction terminal result must precede the fresh observation, and the fresh observation must precede screenshot capture.
