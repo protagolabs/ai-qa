@@ -170,7 +170,7 @@ export async function applyProjectSetup(
     await applyProjectFileTransaction({
       projectRoot: inspected.projectRoot,
       writes: setupWrites(preview),
-      expectedDestinations: preview.destinations,
+      readSet: preview.destinations,
       ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
     });
     return preview;

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -35,6 +36,63 @@ import {
   projectConfigV2,
   projectSkillSource,
 } from "../helpers/project-fixture.js";
+
+const ownedFileFault = vi.hoisted(() => ({
+  purpose: undefined as "stage" | "backup" | undefined,
+  operation: undefined as "write" | "sync" | "stat" | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: vi.fn(
+      async (
+        path: import("node:fs").PathLike,
+        flags: string | number,
+        mode?: import("node:fs").Mode,
+      ) => {
+        const handle =
+          mode === undefined
+            ? await actual.open(path, flags)
+            : await actual.open(path, flags, mode);
+        const pathText = String(path);
+        const purpose = pathText.endsWith(".stage")
+          ? "stage"
+          : pathText.endsWith(".backup")
+            ? "backup"
+            : undefined;
+        if (purpose !== ownedFileFault.purpose) return handle;
+        if (ownedFileFault.operation === "write") {
+          vi.spyOn(handle, "writeFile").mockImplementation(() =>
+            Promise.reject(new Error(`injected ${purpose} write failure`)),
+          );
+        } else if (ownedFileFault.operation === "sync") {
+          vi.spyOn(handle, "sync").mockRejectedValue(
+            new Error(`injected ${purpose} sync failure`),
+          );
+        } else {
+          let synced = false;
+          const actualSync = handle.sync.bind(handle);
+          const actualStat = handle.stat.bind(handle);
+          vi.spyOn(handle, "sync").mockImplementation(async () => {
+            await actualSync();
+            synced = true;
+          });
+          vi.spyOn(handle, "stat").mockImplementation((options) => {
+            if (synced) {
+              return Promise.reject(
+                new Error(`injected ${purpose} stat failure`),
+              );
+            }
+            return actualStat(options);
+          });
+        }
+        return handle;
+      },
+    ),
+  };
+});
 
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:crypto")>();
@@ -1016,6 +1074,147 @@ describe("checksum-confirmed project setup", () => {
     ).resolves.toBe(originalConfig);
   });
 
+  it.each([
+    ["missing", "regular-file"],
+    ["regular", "regular-file"],
+    ["missing", "symlink"],
+    ["regular", "symlink"],
+  ] as const)(
+    "preserves a %s published destination replaced by an external %s",
+    async (originalState, replacementKind) => {
+      const projectRoot = await temporaryProject(
+        `ai-qa-setup-published-${originalState}-${replacementKind}-replaced-`,
+      );
+      const outside = await temporaryProject("ai-qa-setup-external-skill-");
+      const outsideSkill = join(outside, "SKILL.md");
+      const originalConfig = await writeConfig(
+        projectRoot,
+        projectConfigV2("local-only"),
+      );
+      if (originalState === "regular") {
+        await writeSkill(
+          projectRoot,
+          prepareProjectSkill({
+            source: projectSkillSource(
+              "Record results using the original procedure.",
+            ),
+            secretReferences: SECRET_REFERENCES,
+          }).content,
+        );
+      }
+      const setupRequest = request(
+        "Record results using the proposed procedure.",
+      );
+      const preview = await previewProjectSetup({
+        operation: "configure",
+        projectRoot,
+        request: setupRequest,
+      });
+      const externalSkill = `external replacement for ${originalState}\n`;
+
+      await expect(
+        applyProjectSetup({
+          operation: "configure",
+          projectRoot,
+          request: setupRequest,
+          confirmChecksum: preview.checksum,
+          hooks: {
+            beforePublish: async ({ publishIndex }) => {
+              if (publishIndex === 0) return;
+              await unlink(join(projectRoot, SKILL_PATH));
+              if (replacementKind === "regular-file") {
+                await writeFile(join(projectRoot, SKILL_PATH), externalSkill);
+              } else {
+                await writeFile(outsideSkill, externalSkill);
+                await symlink(outsideSkill, join(projectRoot, SKILL_PATH));
+              }
+              throw new Error("injected second publish failure");
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "storage.rollback_failed" });
+
+      if (replacementKind === "regular-file") {
+        await expect(
+          readFile(join(projectRoot, SKILL_PATH), "utf8"),
+        ).resolves.toBe(externalSkill);
+      } else {
+        expect(
+          (await lstat(join(projectRoot, SKILL_PATH))).isSymbolicLink(),
+        ).toBe(true);
+        await expect(readFile(outsideSkill, "utf8")).resolves.toBe(
+          externalSkill,
+        );
+      }
+      await expect(
+        readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+      ).resolves.toBe(originalConfig);
+    },
+  );
+
+  it.each([
+    ["skill-generate", "before"],
+    ["skill-generate", "after"],
+    ["skill-sync", "before"],
+    ["skill-sync", "after"],
+  ] as const)(
+    "%s rejects a config dependency changed %s publish",
+    async (operation, changeTiming) => {
+      const projectRoot = await temporaryProject(
+        `ai-qa-${operation}-config-${changeTiming}-publish-`,
+      );
+      await writeConfig(projectRoot, projectConfigV2("project-skill"));
+      const originalSkill =
+        operation === "skill-sync"
+          ? prepareProjectSkill({
+              source: projectSkillSource(
+                "Record results using the original procedure.",
+              ),
+              secretReferences: SECRET_REFERENCES,
+            }).content
+          : undefined;
+      if (originalSkill !== undefined) {
+        await writeSkill(projectRoot, originalSkill);
+      }
+      const setupRequest = request(
+        "Record results using the proposed procedure.",
+      );
+      const preview = await previewProjectSetup({
+        operation,
+        projectRoot,
+        request: setupRequest,
+      });
+      const externalConfig = `external config ${changeTiming} publish\n`;
+      const replaceConfig = async () => {
+        await writeFile(join(projectRoot, CONFIG_PATH), externalConfig);
+      };
+
+      await expect(
+        applyProjectSetup({
+          operation,
+          projectRoot,
+          request: setupRequest,
+          confirmChecksum: preview.checksum,
+          hooks:
+            changeTiming === "before"
+              ? { beforePublish: replaceConfig }
+              : { afterPublish: replaceConfig },
+        }),
+      ).rejects.toMatchObject({ code: "setup.checksum_mismatch" });
+
+      await expect(
+        readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+      ).resolves.toBe(externalConfig);
+      if (originalSkill === undefined) {
+        await expectMissing(join(projectRoot, SKILL_PATH));
+      } else {
+        await expect(
+          readFile(join(projectRoot, SKILL_PATH), "utf8"),
+        ).resolves.toBe(originalSkill);
+      }
+    },
+  );
+
   it("rejects a destination changed immediately before publish and rolls back", async () => {
     const projectRoot = await temporaryProject("ai-qa-setup-publish-race-");
     const originalConfig = await writeConfig(
@@ -1167,6 +1366,66 @@ describe("checksum-confirmed project setup", () => {
 });
 
 describe("project file transaction ownership", () => {
+  it.each([
+    ["stage", "write"],
+    ["stage", "sync"],
+    ["stage", "stat"],
+    ["backup", "write"],
+    ["backup", "sync"],
+    ["backup", "stat"],
+  ] as const)(
+    "cleans an owned %s when %s fails after exclusive create",
+    async (purpose, operation) => {
+      const projectRoot = await temporaryProject(
+        `ai-qa-${purpose}-${operation}-failure-`,
+      );
+      const originalConfig =
+        purpose === "backup" ? await writeConfig(projectRoot) : undefined;
+      const setupRequest = request();
+      const preview = await previewProjectSetup({
+        operation: purpose === "backup" ? "configure" : "init",
+        projectRoot,
+        request: setupRequest,
+      });
+      const configSnapshot = preview.destinations.find(
+        ({ relativePath }) => relativePath === CONFIG_PATH,
+      )!;
+      ownedFileFault.purpose = purpose;
+      ownedFileFault.operation = operation;
+
+      try {
+        await expect(
+          applyProjectFileTransaction({
+            projectRoot,
+            writes: [
+              {
+                relativeSegments: [".ai-qa", "config.yaml"],
+                content: "replacement config\n",
+              },
+            ],
+            readSet: [configSnapshot],
+          }),
+        ).rejects.toThrow(`injected ${purpose} ${operation} failure`);
+      } finally {
+        ownedFileFault.purpose = undefined;
+        ownedFileFault.operation = undefined;
+      }
+
+      if (originalConfig === undefined) {
+        await expectMissing(join(projectRoot, CONFIG_PATH));
+      } else {
+        await expect(
+          readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+        ).resolves.toBe(originalConfig);
+      }
+      expect(
+        (await readdir(projectRoot, { recursive: true })).filter((path) =>
+          /\.(?:stage|backup)$/.test(path),
+        ),
+      ).toEqual([]);
+    },
+  );
+
   it("never removes an identically named unowned staging fixture", async () => {
     const projectRoot = await temporaryProject("ai-qa-setup-owned-");
     await mkdir(join(projectRoot, ".ai-qa"));
@@ -1185,7 +1444,7 @@ describe("project file transaction ownership", () => {
       applyProjectFileTransaction({
         projectRoot,
         writes,
-        expectedDestinations: [{ relativePath: CONFIG_PATH, state: "missing" }],
+        readSet: [{ relativePath: CONFIG_PATH, state: "missing" }],
       }),
     ).rejects.toMatchObject({ code: "EEXIST" });
 
@@ -1213,7 +1472,7 @@ describe("project file transaction ownership", () => {
       applyProjectFileTransaction({
         projectRoot,
         writes,
-        expectedDestinations: [
+        readSet: [
           { relativePath: CONFIG_PATH, state: "missing" },
           { relativePath: SKILL_PATH, state: "missing" },
         ],
@@ -1258,7 +1517,7 @@ describe("project file transaction ownership", () => {
             content: "replacement config\n",
           },
         ],
-        expectedDestinations: [configSnapshot],
+        readSet: [configSnapshot],
         hooks: {
           beforePublish: async () => {
             await unlink(backup);
@@ -1299,7 +1558,7 @@ describe("project file transaction ownership", () => {
             content: "expected skill stage\n",
           },
         ],
-        expectedDestinations: [
+        readSet: [
           { relativePath: CONFIG_PATH, state: "missing" },
           { relativePath: SKILL_PATH, state: "missing" },
         ],
@@ -1344,7 +1603,7 @@ describe("project file transaction ownership", () => {
             content: "expected skill stage\n",
           },
         ],
-        expectedDestinations: [
+        readSet: [
           { relativePath: CONFIG_PATH, state: "missing" },
           { relativePath: SKILL_PATH, state: "missing" },
         ],

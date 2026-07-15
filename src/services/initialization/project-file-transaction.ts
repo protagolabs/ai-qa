@@ -20,9 +20,13 @@ export interface ProjectFileTransactionHooks {
     relativePath: string;
     publishIndex: number;
   }) => Promise<void>;
+  afterPublish?: (input: {
+    relativePath: string;
+    publishIndex: number;
+  }) => Promise<void>;
 }
 
-export interface ProjectFileDestinationSnapshot {
+export interface ProjectFileReadSnapshot {
   relativePath: string;
   state: "missing" | "regular";
   identity?: {
@@ -55,7 +59,7 @@ interface OwnedFileExpectation {
 export async function applyProjectFileTransaction(input: {
   projectRoot: string;
   writes: readonly ProjectFileWrite[];
-  expectedDestinations: readonly ProjectFileDestinationSnapshot[];
+  readSet: readonly ProjectFileReadSnapshot[];
   hooks?: ProjectFileTransactionHooks;
 }): Promise<void> {
   const transactionId = randomUUID();
@@ -69,24 +73,37 @@ export async function applyProjectFileTransaction(input: {
     );
   }
 
+  const expectedReads = new Map(
+    input.readSet.map((snapshot) => [snapshot.relativePath, snapshot]),
+  );
+  if (expectedReads.size !== input.readSet.length) {
+    throw new AiQaError(
+      "storage.integrity_error",
+      "Project file transaction contains a duplicate read dependency",
+    );
+  }
+  const initialReads = new Map<string, OptionalProjectLocalFile>();
+  for (const expected of input.readSet) {
+    const current = await inspectOptionalProjectLocalRegularFile(
+      input.projectRoot,
+      expected.relativePath.split("/"),
+    );
+    assertDestinationSnapshot(expected.relativePath, current, expected);
+    initialReads.set(expected.relativePath, current);
+  }
+
   const entries: TransactionEntry[] = [];
   for (const [index, write] of input.writes.entries()) {
     const relativePath = relativePaths[index]!;
-    const expected = input.expectedDestinations.find(
-      (destination) => destination.relativePath === relativePath,
-    );
+    const expected = expectedReads.get(relativePath);
     if (expected === undefined) {
       throw new AiQaError(
         "setup.checksum_mismatch",
-        "Confirmed setup does not include a transaction destination",
+        "Confirmed setup read set does not include a transaction destination",
         { relativePath },
       );
     }
-    const original = await inspectOptionalProjectLocalRegularFile(
-      input.projectRoot,
-      write.relativeSegments,
-    );
-    assertDestinationSnapshot(relativePath, original, expected);
+    const original = initialReads.get(relativePath)!;
     entries.push({
       relativePath,
       destination: original.path,
@@ -102,9 +119,13 @@ export async function applyProjectFileTransaction(input: {
         ? 1
         : 0,
   );
+  const entriesByRelativePath = new Map(
+    entries.map((entry) => [entry.relativePath, entry]),
+  );
 
   const ownedStages = new Map<string, OwnedFileExpectation>();
   const ownedBackups = new Map<string, OwnedFileExpectation>();
+  const ownedDestinations = new Map<string, OwnedFileExpectation>();
   const published: TransactionEntry[] = [];
   let caughtError: unknown;
   try {
@@ -128,28 +149,43 @@ export async function applyProjectFileTransaction(input: {
         relativePath: entry.relativePath,
         publishIndex,
       });
-      const expected = input.expectedDestinations.find(
-        (destination) => destination.relativePath === entry.relativePath,
-      )!;
-      const current = await inspectOptionalProjectLocalRegularFile(
+      await assertReadSet(
         input.projectRoot,
-        entry.relativePath.split("/"),
+        input.readSet,
+        entriesByRelativePath,
+        ownedDestinations,
       );
-      assertDestinationSnapshot(entry.relativePath, current, expected);
       await assertOwnedFile(
         entry.stagePath,
         ownedStages.get(entry.stagePath)!,
         "stage",
       );
+      const publishedIdentity = ownedStages.get(entry.stagePath)!;
       await rename(entry.stagePath, entry.destination);
       ownedStages.delete(entry.stagePath);
+      ownedDestinations.set(entry.destination, publishedIdentity);
       published.push(entry);
       await syncDirectory(dirname(entry.destination));
+      await input.hooks?.afterPublish?.({
+        relativePath: entry.relativePath,
+        publishIndex,
+      });
+      await assertReadSet(
+        input.projectRoot,
+        input.readSet,
+        entriesByRelativePath,
+        ownedDestinations,
+      );
     }
   } catch (error: unknown) {
     caughtError = error;
     try {
       for (const entry of published.reverse()) {
+        await assertOwnedFile(
+          entry.destination,
+          ownedDestinations.get(entry.destination)!,
+          "published destination",
+        );
         if (entry.original.state === "missing") {
           await unlinkIfExists(entry.destination);
         } else {
@@ -167,6 +203,7 @@ export async function applyProjectFileTransaction(input: {
           await rename(backupPath, entry.destination);
           ownedBackups.delete(backupPath);
         }
+        ownedDestinations.delete(entry.destination);
         await syncDirectory(dirname(entry.destination));
       }
     } catch (rollbackError: unknown) {
@@ -187,16 +224,44 @@ export async function applyProjectFileTransaction(input: {
   }
 }
 
+async function assertReadSet(
+  projectRoot: string,
+  readSet: readonly ProjectFileReadSnapshot[],
+  entriesByRelativePath: ReadonlyMap<string, TransactionEntry>,
+  ownedDestinations: ReadonlyMap<string, OwnedFileExpectation>,
+): Promise<void> {
+  for (const expected of readSet) {
+    const write = entriesByRelativePath.get(expected.relativePath);
+    const publishedIdentity =
+      write === undefined
+        ? undefined
+        : ownedDestinations.get(write.destination);
+    if (write !== undefined && publishedIdentity !== undefined) {
+      await assertOwnedFile(
+        write.destination,
+        publishedIdentity,
+        "published destination",
+      );
+      continue;
+    }
+    const current = await inspectOptionalProjectLocalRegularFile(
+      projectRoot,
+      expected.relativePath.split("/"),
+    );
+    assertDestinationSnapshot(expected.relativePath, current, expected);
+  }
+}
+
 function assertDestinationSnapshot(
   relativePath: string,
   file: OptionalProjectLocalFile,
-  expected: ProjectFileDestinationSnapshot,
+  expected: ProjectFileReadSnapshot,
 ): void {
   const actual = destinationSnapshot(relativePath, file);
   if (canonicalJson(actual) !== canonicalJson(expected)) {
     throw new AiQaError(
       "setup.checksum_mismatch",
-      "Project setup destination changed after confirmation",
+      "Project setup read dependency changed after confirmation",
       { relativePath, expected, actual },
     );
   }
@@ -205,7 +270,7 @@ function assertDestinationSnapshot(
 function destinationSnapshot(
   relativePath: string,
   file: OptionalProjectLocalFile,
-): ProjectFileDestinationSnapshot {
+): ProjectFileReadSnapshot {
   if (file.state === "missing") return { relativePath, state: "missing" };
   return {
     relativePath,
@@ -229,6 +294,15 @@ async function writeOwnedFile(
 ): Promise<void> {
   const handle = await open(path, "wx", 0o600);
   try {
+    const createdStats = await handle.stat({ bigint: true });
+    ownedPaths.set(path, {
+      dev: createdStats.dev,
+      ino: createdStats.ino,
+      size: createdStats.size,
+      mtimeNs: createdStats.mtimeNs,
+      contentSha256: sha256(Buffer.alloc(0)),
+      content: "",
+    });
     await handle.writeFile(content, "utf8");
     await handle.sync();
     const stats = await handle.stat({ bigint: true });
@@ -248,7 +322,7 @@ async function writeOwnedFile(
 async function assertOwnedFile(
   path: string,
   expected: OwnedFileExpectation,
-  purpose: "stage" | "backup",
+  purpose: OwnedFilePurpose,
 ): Promise<void> {
   const actual = await inspectOwnedFile(path, purpose);
   const expectedBytes = Buffer.from(expected.content, "utf8");
@@ -275,7 +349,7 @@ interface InspectedOwnedFile {
 
 async function inspectOwnedFile(
   path: string,
-  purpose: "stage" | "backup",
+  purpose: OwnedFilePurpose,
 ): Promise<InspectedOwnedFile> {
   let handle;
   try {
@@ -322,7 +396,7 @@ async function inspectOwnedFile(
 
 function ownedFileIntegrityError(
   path: string,
-  purpose: "stage" | "backup",
+  purpose: OwnedFilePurpose,
   causeCode?: string,
 ): AiQaError {
   return new AiQaError(
@@ -331,6 +405,8 @@ function ownedFileIntegrityError(
     { path, purpose, ...(causeCode === undefined ? {} : { causeCode }) },
   );
 }
+
+type OwnedFilePurpose = "stage" | "backup" | "published destination";
 
 function sha256(content: Buffer): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
