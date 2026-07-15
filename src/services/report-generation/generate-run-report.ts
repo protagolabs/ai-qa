@@ -99,6 +99,19 @@ export async function generateRunReport(
     create: true,
   });
   await withRunReportLock(directory, async () => {
+    const configuredFilenames = [
+      ...(paths.jsonPath === undefined ? [] : (["report.json"] as const)),
+      ...(paths.markdownPath === undefined ? [] : (["report.md"] as const)),
+    ];
+    await Promise.all(
+      configuredFilenames.map((filename) =>
+        verifyOptionalExistingReportArtifact({
+          directory,
+          filename,
+          runId: input.runId,
+        }),
+      ),
+    );
     const writes: Promise<void>[] = [];
     if (paths.jsonPath !== undefined) {
       writes.push(atomicWriteFile(resolve(directory, "report.json"), json));
@@ -109,6 +122,24 @@ export async function generateRunReport(
     await Promise.all(writes);
   });
   return { report: verified.report, ...paths };
+}
+
+async function verifyOptionalExistingReportArtifact(input: {
+  directory: string;
+  filename: "report.json" | "report.md";
+  runId: string;
+}): Promise<void> {
+  try {
+    await requireRunReportRegularFile({
+      ...input,
+      missingCode: "report.not_generated",
+    });
+  } catch (error: unknown) {
+    if (error instanceof AiQaError && error.code === "report.not_generated") {
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function exportProjectLocalRunReport(

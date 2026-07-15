@@ -1,6 +1,7 @@
 import {
   access,
   appendFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -693,6 +694,77 @@ describe("generateRunReport", () => {
     await expect(
       readFile(join(outside, "runs/run-1/report.json"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects regeneration over a symlinked report.json artifact", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(fixture.projectRoot, ".ai-qa/reports/runs/run-1");
+    const jsonPath = join(directory, "report.json");
+    const markdownPath = join(directory, "report.md");
+    const outside = join(
+      await mkdtemp(join(tmpdir(), "ai-qa-generation-json-outside-")),
+      "report.json",
+    );
+    const beforeMarkdown = await readFile(markdownPath, "utf8");
+    await rename(jsonPath, outside);
+    await symlink(outside, jsonPath, "file");
+
+    await expect(
+      generateRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date("2026-07-13T00:30:00.000Z"),
+      }),
+    ).rejects.toMatchObject({ code: "report.storage_integrity_error" });
+    expect((await lstat(jsonPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(markdownPath, "utf8")).toBe(beforeMarkdown);
+  });
+
+  it("rejects regeneration over a symlinked report.md artifact", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(fixture.projectRoot, ".ai-qa/reports/runs/run-1");
+    const jsonPath = join(directory, "report.json");
+    const markdownPath = join(directory, "report.md");
+    const outside = join(
+      await mkdtemp(join(tmpdir(), "ai-qa-generation-markdown-outside-")),
+      "report.md",
+    );
+    const beforeJson = await readFile(jsonPath, "utf8");
+    await rename(markdownPath, outside);
+    await symlink(outside, markdownPath, "file");
+
+    await expect(
+      generateRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date("2026-07-13T00:30:00.000Z"),
+      }),
+    ).rejects.toMatchObject({ code: "report.storage_integrity_error" });
+    expect((await lstat(markdownPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(jsonPath, "utf8")).toBe(beforeJson);
+  });
+
+  it("rejects regeneration over a non-regular configured artifact", async () => {
+    const fixture = await completedRun();
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const directory = join(fixture.projectRoot, ".ai-qa/reports/runs/run-1");
+    const jsonPath = join(directory, "report.json");
+    const markdownPath = join(directory, "report.md");
+    const beforeMarkdown = await readFile(markdownPath, "utf8");
+    await rename(jsonPath, `${jsonPath}.original`);
+    await mkdir(jsonPath);
+
+    await expect(
+      generateRunReport({
+        ...fixture,
+        runId: "run-1",
+        now: () => new Date("2026-07-13T00:30:00.000Z"),
+      }),
+    ).rejects.toMatchObject({ code: "report.storage_integrity_error" });
+    expect((await lstat(jsonPath)).isDirectory()).toBe(true);
+    expect(await readFile(markdownPath, "utf8")).toBe(beforeMarkdown);
   });
 
   it("rejects duplicate evidence index records instead of collapsing their IDs", async () => {
