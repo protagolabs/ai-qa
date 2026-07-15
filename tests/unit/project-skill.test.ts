@@ -180,6 +180,21 @@ describe("project Skill validation", () => {
     expect(() =>
       prepare(projectSkillSource("password: ${UNKNOWN_PASSWORD}")),
     ).toThrow();
+    expect(() =>
+      prepare(projectSkillSource("password: $QA_TEST_PASSWORD")),
+    ).not.toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource("Read the password only from $UNDECLARED_PASSWORD."),
+      ),
+    ).toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource(
+          "The disposable test-data budget is $25.00 USD per run.",
+        ),
+      ),
+    ).not.toThrow();
   });
 
   it("accepts an arbitrary local Markdown-table recording procedure without a provider", () => {
@@ -199,7 +214,47 @@ describe("project Skill validation", () => {
       prepare(
         projectSkillSource().replace(
           /^description: .+$/m,
+          "description: Use when investigating target-project QA failures or recording verified results.",
+        ),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource().replace(
+          /^description: .+$/m,
+          "description: Use when responding to project QA failures.",
+        ),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource().replace(
+          /^description: .+$/m,
           "description: Run the project's QA commands.",
+        ),
+      ),
+    ).toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource().replace(
+          /^description: .+$/m,
+          "description: Use when doing project QA, archive the results.",
+        ),
+      ),
+    ).toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource().replace(
+          /^description: .+$/m,
+          "description: Use when performing project QA to run the suite.",
+        ),
+      ),
+    ).toThrow();
+    expect(() =>
+      prepare(
+        projectSkillSource().replace(
+          /^description: .+$/m,
+          "description: Use when performing project QA. Please upload the results.",
         ),
       ),
     ).toThrow();

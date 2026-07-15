@@ -67,14 +67,25 @@ function validateCompatibility(inspection: ManagedSkillInspection): boolean {
 }
 
 function validateTriggerDescription(description: string): void {
-  if (!description.startsWith("Use when ")) {
+  const prefix = "Use when ";
+  if (!description.startsWith(prefix)) {
     invalidProjectSkill(
       "Project Skill description must begin with 'Use when '",
     );
   }
-  const commandStep =
-    /(?:[.;:,]\s+|\b(?:and|then)\s+)(?:then\s+)?(?:run|execute|open|click|enter|set|install|start|read|write|create|delete|navigate|log)\b/i;
-  if (commandStep.test(description)) {
+  const triggerContext = description.slice(prefix.length).replace(/\.$/, "");
+  const sections = triggerContext.split(", including ");
+  const primaryContext = sections[0];
+  const hasInvalidStructure =
+    primaryContext === undefined ||
+    !/^[a-z]+ing\b/i.test(primaryContext) ||
+    sections.length > 2 ||
+    primaryContext.includes(",") ||
+    /[;:\n!?]|\.\s/.test(triggerContext) ||
+    /\b(?:and|or)\s+(?![a-z]+ing\b)[a-z]+/i.test(primaryContext);
+  const instructionSignal =
+    /\b(?:please|must|should|then)\b|\bto\s+(?:run|execute|open|click|enter|set|install|start|read|write|create|delete|navigate|log|upload|save|submit|archive)\b/i;
+  if (hasInvalidStructure || instructionSignal.test(triggerContext)) {
     invalidProjectSkill(
       "Project Skill description must describe triggering contexts, not command steps",
     );
@@ -97,8 +108,9 @@ function validateSecrets(
   secretReferences: Readonly<Record<string, string>>,
 ): void {
   const allowedEnvironmentNames = new Set(Object.values(secretReferences));
-  for (const match of content.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)) {
-    const environmentName = match[1];
+  const environmentReference = /\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))/g;
+  for (const match of content.matchAll(environmentReference)) {
+    const environmentName = match[1] ?? match[2];
     if (
       environmentName !== undefined &&
       !allowedEnvironmentNames.has(environmentName)
@@ -127,12 +139,13 @@ function validateSecrets(
   for (const line of content.split(/\r\n|\r|\n/)) {
     const assignment = secretAssignment.exec(line);
     if (assignment?.[1] === undefined) continue;
-    const environmentReference = /^\$\{([A-Z][A-Z0-9_]*)\}$/.exec(
-      assignment[1],
-    );
+    const environmentReference =
+      /^\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))$/.exec(assignment[1]);
+    const environmentName =
+      environmentReference?.[1] ?? environmentReference?.[2];
     if (
-      environmentReference?.[1] === undefined ||
-      !allowedEnvironmentNames.has(environmentReference[1])
+      environmentName === undefined ||
+      !allowedEnvironmentNames.has(environmentName)
     ) {
       throw new AiQaError(
         "skill.literal_secret",

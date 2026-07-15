@@ -63,6 +63,56 @@ async function expectMissing(path: string): Promise<void> {
 }
 
 describe("syncGlobalSkill", () => {
+  it.each([
+    {
+      operation: "preview",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaSkillVersion: 1.0.0\n",
+        "",
+      ),
+    },
+    {
+      operation: "preview",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaProtocolRange: ^1.0.0",
+        "  aiQaProtocolRange: 1",
+      ),
+    },
+    {
+      operation: "sync",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaSkillVersion: 1.0.0\n",
+        "",
+      ),
+    },
+    {
+      operation: "sync",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaProtocolRange: ^1.0.0",
+        "  aiQaProtocolRange: 1",
+      ),
+    },
+  ] as const)(
+    "rejects malformed global source metadata during $operation",
+    async ({ operation, malformedSource }) => {
+      const fixture = await createSkillFixture();
+      await writeFile(fixture.sourcePath, malformedSource);
+
+      const request =
+        operation === "preview"
+          ? previewGlobalSkillSync(fixture)
+          : syncGlobalSkill({
+              ...fixture,
+              confirmManagedReplacement: false,
+            });
+
+      await expect(request).rejects.toMatchObject({
+        code: "skill.invalid_frontmatter",
+      });
+      await expectMissing(fixture.destination);
+    },
+  );
+
   it("installs explicitly and refuses silent replacement", async () => {
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-agents-"));
     const sourceDirectory = join(agentsHome, "canonical");

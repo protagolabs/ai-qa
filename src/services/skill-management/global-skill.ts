@@ -3,11 +3,10 @@ import { mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { satisfies } from "semver";
-import { parse } from "yaml";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import { WORK_PROTOCOL_VERSION } from "../../schemas/versions.js";
-import { mergeManagedSkill } from "./managed-skill.js";
+import { inspectManagedSkill, mergeManagedSkill } from "./managed-skill.js";
 
 export interface SyncGlobalSkillInput {
   agentsHome: string;
@@ -103,31 +102,9 @@ function isManagedConflict(error: unknown): boolean {
 }
 
 function parseInstalledMetadata(content: string): InstalledMetadata {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
-  if (match?.[1] === undefined) {
-    throw new AiQaError(
-      "skill.invalid_frontmatter",
-      "SKILL.md requires YAML frontmatter",
-    );
-  }
-  const frontmatter: unknown = parse(match[1]);
-  if (typeof frontmatter !== "object" || frontmatter === null) {
-    throw new AiQaError(
-      "skill.invalid_frontmatter",
-      "SKILL.md frontmatter must be a mapping",
-    );
-  }
-  const metadata = (frontmatter as Record<string, unknown>).metadata;
-  if (typeof metadata !== "object" || metadata === null) {
-    throw new AiQaError(
-      "skill.invalid_frontmatter",
-      "SKILL.md requires compatibility metadata",
-    );
-  }
-  const aiQaSkillVersion = (metadata as Record<string, unknown>)
-    .aiQaSkillVersion;
-  const aiQaProtocolRange = (metadata as Record<string, unknown>)
-    .aiQaProtocolRange;
+  const metadata = inspectManagedSkill(content).metadata;
+  const aiQaSkillVersion = metadata.aiQaSkillVersion;
+  const aiQaProtocolRange = metadata.aiQaProtocolRange;
   if (
     typeof aiQaSkillVersion !== "string" ||
     typeof aiQaProtocolRange !== "string"
@@ -155,6 +132,7 @@ export async function previewGlobalSkillSync(input: {
     readOptional(destination),
     readReferenceAssets(input.sourcePath),
   ]);
+  parseInstalledMetadata(source);
 
   let requiresConfirmation = false;
   if (existing !== undefined) {
@@ -225,6 +203,7 @@ export async function syncGlobalSkill(
     readOptional(destination),
     readReferenceAssets(input.sourcePath),
   ]);
+  parseInstalledMetadata(source);
   const merged = mergeManagedSkill({
     source,
     ...(existing === undefined ? {} : { existing }),
