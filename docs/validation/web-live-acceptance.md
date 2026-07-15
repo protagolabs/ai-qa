@@ -79,6 +79,15 @@ Acceptance checklist and test evidence:
 - [ ] Preview freshness: `project-skill.test.ts` changes the submitted request
       and destination after preview and expects `setup.checksum_mismatch` with no
       partial publication; the transaction rollback cases preserve original bytes.
+- [ ] Concurrent-writer transaction boundary: `project-skill.test.ts` replaces,
+      deletes, and symlinks public destinations during publish and rollback. The
+      transaction preserves external replacements, restores verified originals
+      when possible, otherwise reports only project-relative `recoveryPaths`, and
+      leaves no owned private namespace after a successful cleanup. The supported
+      threat model is an ordinary writer that does not honor the setup lock; an
+      active same-identity actor tampering with the random `0700` namespace or
+      swapping ancestor directories remains out of scope. Parent-directory entries
+      are not `fsync`-durable across a host crash.
 - [ ] Receipt idempotency: `recording-receipt.test.ts` replays the same key and
       payload without another journal write, and rejects reuse of the key with a
       different payload as `recording.idempotency_conflict`.

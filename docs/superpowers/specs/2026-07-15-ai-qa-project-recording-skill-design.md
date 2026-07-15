@@ -162,7 +162,9 @@ type InitializationRequest = {
 
 Checksum 是 `sha256:` 前綴的 digest，涵蓋 canonical initialization request、目標路徑及預覽時的目的檔 identity/content hashes。使用者確認後，套用命令必須攜帶同一 checksum。Checksum 不一致表示預覽後輸入或目的檔已改變，CLI 必須拒絕寫入並要求新預覽。
 
-套用服務先驗證並 stage 所有檔案，再發布 config 與 Project Skill。任何失敗都不得留下部分 config、部分 Skill 或覆寫既有使用者內容；清理只能移除本次 transaction 建立的暫存或新檔案。
+套用服務先驗證並 stage 所有檔案，再發布 config 與 Project Skill。任何失敗都不得留下部分 config、部分 Skill 或覆寫既有使用者內容；清理只能移除本次 transaction 建立的暫存或新檔案。每個目的檔在同一 parent/filesystem 使用隨機、權限 `0700` 的私有 transaction namespace；rollback 必須先驗證 inode 與內容 ownership，不得刪除或覆寫 transaction 期間由一般外部 writer 放到公開目的路徑的檔案。若無法自動還原，錯誤只回傳 project-relative `recoveryPaths`，保留 recovery artifact 供人工處理，不洩漏絕對路徑。
+
+這個保證模型涵蓋不配合 transaction lock、直接寫入公開目的檔的一般同機 writer。主動以同一 OS identity 掃描或竄改隨機私有 namespace 的攻擊者不在範圍內；Node 目前也沒有 directory-fd/openat primitive，因此主動交換 ancestor directory 的 pathname race，以及缺少 parent-directory `fsync` 所造成的斷電後 directory-entry durability，列為已知殘餘風險。
 
 ### 7.3 Managed 與 user regions
 
