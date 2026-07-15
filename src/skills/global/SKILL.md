@@ -15,7 +15,7 @@ metadata:
 ## Initialize or reconfigure
 
 1. Resolve the exact target project. Never assume an ancestor project when the user names a nested project.
-2. Confirm repository trust with the user, record it through `ai-qa trust confirm --project <path> --stdin-json`, and only then read `.ai-qa/config.yaml`, the canonical Project Skill, or project instructions.
+2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Only then read `.ai-qa/config.yaml`, the canonical Project Skill, or project instructions.
 3. Ask how the project currently manages QA results or defects without offering a provider list.
 4. When there is no existing process, default to `recordingPolicy.mode: local-only`. When there is an existing procedure, use `project-skill` and encode that procedure exactly in the Project Skill, including its match and rerun rules.
 5. Discuss targets, environment, evidence, report, storage, Git, and secret-reference policy. Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.

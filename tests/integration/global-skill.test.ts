@@ -598,6 +598,66 @@ describe("bundled global skill 1.1", () => {
     expect(content).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
   });
 
+  it("ships the exact trust confirmation stdin accepted by the CLI", async () => {
+    const skill = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill).toContain(
+      'pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted.',
+    );
+
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    const match =
+      /<!-- canonical-trust-confirm:start -->\s*```text\r?\n([^\r\n]+)\r?\n```\s*<!-- canonical-trust-confirm:end -->/.exec(
+        reference,
+      );
+    expect(match?.[1], "canonical trust confirmation stdin").toBeDefined();
+    const stdin = match?.[1];
+    if (stdin === undefined) {
+      throw new Error("Canonical trust confirmation stdin is missing");
+    }
+    expect(stdin).toBe('{"confirmed":true}');
+
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-project-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-home-"));
+    for (const invalid of ['{"trusted":true}', "{}"] as const) {
+      const captured = createCapturedCli({
+        cwd: projectRoot,
+        env: { AI_QA_HOME: aiQaHome },
+        readStdin: () => Promise.resolve(invalid),
+      });
+      await expect(
+        runCli(
+          ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
+          captured.context,
+        ),
+      ).resolves.toBe(1);
+    }
+
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_HOME: aiQaHome },
+      readStdin: () => Promise.resolve(stdin),
+    });
+    await expect(
+      runCli(
+        ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
+        captured.context,
+      ),
+    ).resolves.toBe(0);
+  });
+
   it("provides a canonical Project Skill wire example accepted by initialization", async () => {
     const reference = await readFile(
       join(

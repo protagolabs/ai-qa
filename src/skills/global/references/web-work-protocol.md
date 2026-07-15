@@ -4,6 +4,22 @@
 
 Ask how the project already manages QA results or defects. If no process exists, choose `recordingPolicy.mode: local-only`. If one exists, choose `project-skill` and put the exact procedure in `projectSkill.content`; do not replace it with a different workflow.
 
+Before any project read, record the user's trust confirmation with this exact single-field stdin object:
+
+<!-- canonical-trust-confirm:start -->
+
+```text
+{"confirmed":true}
+```
+
+<!-- canonical-trust-confirm:end -->
+
+```text
+printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdin-json
+```
+
+The trust input schema is strict: `confirmed` must be literal `true`, and no other stdin fields are accepted.
+
 ### Project Skill wire contract
 
 `projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. Generate it in this order:

@@ -2808,3 +2808,14 @@ Automated RED/GREEN evidence:
 - GREEN: the bundled 1.1 reference now documents the complete metadata, description grammar, ordered managed/user markers, size and secret limits, and checksum algorithm. Its concrete provider-neutral example has no placeholders, has a self-consistent managed checksum, passes `initializationRequestSchema`, reports compatible through `inspectProjectSkill()`, and passes `prepareProjectSkill()`.
 
 No raw worker output above was edited, and this finding does not reclassify an old scored payload as CLI-valid. Fresh-agent impacted Family A/B evaluation remains an integration follow-up for the controller after this branch is merged.
+
+### Fresh Family A trust-input REFACTOR finding
+
+The controller preserved the fresh A1 and A2 prompt/output envelopes without copying or rewriting them into this document:
+
+- `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/.superpowers/sdd/final-wire-eval-a1.md`
+- `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/.superpowers/sdd/final-wire-eval-a2.md`
+
+Both workers produced validator-ready complete initialization requests and Project Skills, but their trust-confirmation commands are invalid. A1 submitted `{"trusted":true}` and A2 submitted `{}`. The production `trust confirm` stdin schema is strict and accepts exactly `{"confirmed":true}`; both observed payloads are rejected. These repetitions are failures, not passes.
+
+The current 1.1 Skill and reference now state that exact mechanical command contract, and an automated test extracts the reference payload, proves the two observed invalid shapes are rejected by the public CLI, and proves the canonical shape is accepted. Because this was found after only A1 and A2, the entire impacted Family A must be rerun from A1 through A5 against the integrated artifact before final scoring. The controller will preserve and append the final raw envelopes and scoring after that rerun.
