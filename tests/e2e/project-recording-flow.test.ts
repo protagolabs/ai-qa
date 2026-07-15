@@ -19,6 +19,11 @@ import {
 } from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-15T09:30:00.000Z");
+const receiptTimes = {
+  recorded: "2026-07-15T09:31:00.000Z",
+  notRecorded: "2026-07-15T09:32:00.000Z",
+  unknown: "2026-07-15T09:33:00.000Z",
+} as const;
 const recordingProcedure = `Append a reviewed row to \`docs/qa-results.md\` using columns Run, Verdict, Summary,
 Evidence, and Owner. Match by Run before appending; update the existing row on rerun.
 Return only the repository-relative heading reference.`;
@@ -31,6 +36,7 @@ interface TestProject {
   projectRoot: string;
   aiQaHome: string;
   cli: CliHarness;
+  setNow(value: string): void;
 }
 
 interface GeneratedReportPaths {
@@ -99,6 +105,7 @@ function createHarness(input: {
   machineHome: string;
   aiQaHome: string;
   agentsHome: string;
+  now: () => Date;
 }): CliHarness {
   return {
     async run<T>(args: string[], stdin?: unknown): Promise<T> {
@@ -109,7 +116,7 @@ function createHarness(input: {
           AI_QA_HOME: input.aiQaHome,
           AI_QA_AGENTS_HOME: input.agentsHome,
         },
-        now: fixedNow,
+        now: input.now,
         fetchImpl: vi.fn<typeof fetch>(),
         readStdin: () =>
           Promise.resolve(stdin === undefined ? "" : JSON.stringify(stdin)),
@@ -133,19 +140,28 @@ async function createTrustedProject(): Promise<TestProject> {
   const projectRoot = join(machineHome, "target-project");
   const aiQaHome = join(machineHome, "ai-qa-home");
   const agentsHome = join(machineHome, "agents-home");
+  let now = fixedNow();
   await mkdir(projectRoot, { recursive: true });
   const cli = createHarness({
     projectRoot,
     machineHome,
     aiQaHome,
     agentsHome,
+    now: () => now,
   });
   await cli.run(["skill", "install", "--global"]);
   await cli.run(
     ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
     { confirmed: true },
   );
-  return { projectRoot, aiQaHome, cli };
+  return {
+    projectRoot,
+    aiQaHome,
+    cli,
+    setNow(value) {
+      now = new Date(value);
+    },
+  };
 }
 
 async function initializeThroughCli(
@@ -403,6 +419,7 @@ describe("project recording workflow CLI", () => {
       report,
     });
 
+    fixture.setNow(receiptTimes.recorded);
     const recorded = await fixture.cli.run<{
       eventId: string;
       status: string;
@@ -432,8 +449,10 @@ describe("project recording workflow CLI", () => {
       status: "recorded",
       references: [reference],
       eventId: recorded.eventId,
+      recordedAt: receiptTimes.recorded,
     });
 
+    fixture.setNow(receiptTimes.notRecorded);
     await fixture.cli.run(
       ["report", "receipt", run.runId, "--stdin-json"],
       projectRecordingReceipt({
@@ -447,7 +466,11 @@ describe("project recording workflow CLI", () => {
         "recording-status",
         run.runId,
       ]),
-    ).toMatchObject({ status: "not_recorded", references: [] });
+    ).toMatchObject({
+      status: "not_recorded",
+      references: [],
+      recordedAt: receiptTimes.notRecorded,
+    });
     expect(
       await readStableRunArtifacts({
         projectRoot: fixture.projectRoot,
@@ -456,6 +479,7 @@ describe("project recording workflow CLI", () => {
       }),
     ).toEqual(before);
 
+    fixture.setNow(receiptTimes.unknown);
     await fixture.cli.run(
       ["report", "receipt", run.runId, "--stdin-json"],
       projectRecordingReceipt({
@@ -469,7 +493,11 @@ describe("project recording workflow CLI", () => {
         "recording-status",
         run.runId,
       ]),
-    ).toMatchObject({ status: "unknown", references: [] });
+    ).toMatchObject({
+      status: "unknown",
+      references: [],
+      recordedAt: receiptTimes.unknown,
+    });
     expect(
       await readStableRunArtifacts({
         projectRoot: fixture.projectRoot,
@@ -549,6 +577,13 @@ describe("project recording workflow CLI", () => {
       { status: "unknown", references: [] },
     ]);
     expect(materialized.history).toEqual(expectedHistory);
+    expect(journal.map((event) => event.recordedAt)).toEqual([
+      receiptTimes.recorded,
+      receiptTimes.notRecorded,
+      receiptTimes.unknown,
+    ]);
+    expect(materialized.materializedAt).toBe(journal.at(-1)!.recordedAt);
+    expect(materialized.materializedAt).not.toBe(journal[0]!.recordedAt);
     expect(materialized.current).toEqual({
       eventId: journal.at(-1)!.eventId,
       status: journal.at(-1)!.status,
