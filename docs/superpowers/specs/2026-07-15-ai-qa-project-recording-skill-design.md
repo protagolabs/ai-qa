@@ -6,6 +6,8 @@
 
 **範圍：** 目標專案 Skill 生成、provider-neutral 記錄政策與中立 receipt
 
+**Review 修訂：** 2026-07-15，補入 crash recovery、per-run mode snapshot、status 前置條件、report export 邊界與 full-state configure 決策。
+
 ## 1. 規格關係
 
 本規格延伸 `2026-07-13-ai-qa-design.md`，並在衝突時取代該規格以下內容：
@@ -188,6 +190,18 @@ finish run
 
 `local-only` 不建立 `recording.json`，也不產生 receipt obligation。
 
+Recording mode 在 run 建立時凍結到 immutable work order。後續 config 變更只影響新 run，不追溯改變既有 run 的 recording obligation。
+
+新 work order 保存：
+
+```json
+{
+  "recordingPolicy": { "mode": "local-only" }
+}
+```
+
+此欄位對舊 work order 為 optional；缺少時只在記憶體中衍生 `local-only`，不得改寫 immutable work order 或其 hash anchor。
+
 ### 8.2 Project-skill
 
 ```text
@@ -200,6 +214,8 @@ finish run
 ```
 
 外部記錄失敗不改變 run verdict 或本地報告有效性。
+
+`project-skill` 流程以 work order 中的 recording mode snapshot 為準，不重新讀取目前 config 來重分類歷史 run。
 
 ## 9. Recording receipt
 
@@ -247,6 +263,7 @@ References 是 provider-neutral opaque strings，可代表 URL、檔案路徑、
 - 最新 receipt 決定目前 recording status；舊事件永久保留。
 - 尚未登記 receipt 的 `project-skill` run 顯示衍生狀態 `pending`。
 - `local-only` run 顯示衍生狀態 `not_applicable`，但不保存 receipt event。
+- `pending` 只在 run 已 terminal、已產生本地報告且報告完整性驗證通過後成立。報告尚未產生時回報 `report.not_generated`；run 尚未 terminal 或報告／evidence 漂移時回報既有 lifecycle／integrity error，不降級成 `pending`。
 
 ## 10. Report 與 recording artifact
 
@@ -292,18 +309,31 @@ type RecordingArtifact = {
 };
 ```
 
+`recording.jsonl` 是 canonical recording history；`recording.json` 是 deterministic materialized view。每次 materialization 使用最後一筆 event 的 `recordedAt` 作為 `materializedAt`，因此同一份 journal 只會產生一種結果。
+
+若 process 在成功發布 `recording.jsonl` 後、發布 `recording.json` 前中止，下一次 `recording-status` 或相同 receipt retry 必須在 per-run report lock 內，從有效 journal 確定性重建缺失、無效或落後的 materialized view。相同 idempotency key/payload 在重建後仍回傳原事件。只有以下狀態屬於 `recording.integrity_error`：
+
+- canonical journal 缺失但 materialized view 存在；
+- materialized history 比 journal 超前；
+- 兩者共享 event 的內容或順序矛盾；
+- journal 本身無法通過 schema、run identity 或 JSONL 完整性驗證。
+
+因此 `recording-status` 對外是狀態查詢，但允許唯一一種本地寫入副作用：在 lock 內修復可由 canonical journal 唯一決定的 `recording.json`。它不得修改 journal、report、run、verdict 或任何外部系統。
+
+`report export --adapter project-local` 只驗證並回傳 configured `report.json`／`report.md` 路徑，不包含 `recording.json` 或 `recording.jsonl`。Recording 狀態與 history 只能透過 `report recording-status` 查詢。
+
 `report export --adapter project-local` 保持向後相容；外部專案記錄不透過 export adapter 執行。
 
 ## 11. 錯誤處理
 
-- Project Skill 缺失、格式錯誤或 protocol 不相容時，本地報告仍有效，recording status 維持 `pending`，直到宿主登記 `not_recorded` 或問題修復。
+- 在 verified report 已存在的前提下，Project Skill 缺失、格式錯誤或 protocol 不相容時，本地報告仍有效，recording status 維持 `pending`，直到宿主登記 `not_recorded` 或問題修復。
 - 所有 project-skill 與 receipt commands 必須先解析並驗證 machine-trusted project；未信任專案不得讀取 Project Skill。
 - `.agents/skills/ai-qa-project/` 的每個 ancestor 與 artifact 都必須經 `lstat`/`realpath` 驗證，拒絕 symlink、非 canonical path 與非 regular file。
 - Project Skill 不得保存 literal secrets，只能引用 config 中已確認的 secret-reference names。
 - 宿主確認程序失敗時登記 `not_recorded`。
 - 宿主無法確定結果時登記 `unknown`，`ai-qa` 不得自動重試外部操作。
 - Reference 無效時 CLI 拒絕 receipt，但不修改 QA run 或本地報告。
-- Receipt journal 或 `recording.json` parity 失敗時，recording status 回報 integrity error；不得推論或重建虛假的成功結果。
+- Receipt journal 與 `recording.json` 真正矛盾時，recording status 回報 integrity error。由有效 canonical journal 重建 deterministic materialized view 不屬於推論或補造成功結果。
 - Recording error 不得改變產品 QA verdict、criterion results 或 evidence completeness。
 
 ## 12. CLI surface
@@ -326,12 +356,16 @@ ai-qa report recording-status <run-id>
 
 `--preview` 與 `--confirm-checksum` 互斥。確認呼叫必須重新提交與預覽完全相同的 stdin request。`init` 在同一 transaction 中套用 config 與 Project Skill；`configure` 在同一 transaction 中套用 config 與對應的 Skill 更新。`skill generate` 與 `skill sync` 提供既有專案的獨立建立與維護流程。既有 `skill install|check|sync --global` 行為保持不變。
 
+`configure` 刻意不支援 config-only partial request：每次必須重送完整 config 與完整 Project Skill request，讓跨檔 invariant、preview checksum 與 managed/user merge 在同一 transaction 內驗證。
+
 Work protocol minor version 升級為 `1.1.0`，bundled global Skill version 同步升級為 `1.1.0`。`project-skill` recording flow 要求 global Skill metadata 宣告 `aiQaRecordingReceipt: true` 且 protocol range 包含 `1.1.0`。舊版 1.0.0 Skill 可繼續執行 v1/local-only flow，但不能啟動 project-skill recording phase。
 
 ## 13. Migration 與相容性
 
 - Config v1 不會在 CLI 升級時被靜默改寫。
 - 未 migration 的 v1 專案保持現有 Increment 1 行為，等同 local-only。
+- 新 work order 保存 `recordingPolicy.mode` snapshot；舊 work order 缺少該欄位時衍生為 `local-only`，且讀取不改寫原檔。
+- Work protocol 1.1 reader 保持接受 immutable 1.0.0 work order；只有新建 work order 使用 1.1.0。
 - Migration 先預覽 v2 config 與完整 Project Skill，再由使用者確認套用。
 - 使用者拒絕 migration 時，原 config、runs、evidence、cases 與 reports 保持可用。
 - 新初始化直接建立 config v2 與完整 Project Skill。
@@ -343,6 +377,7 @@ Work protocol minor version 升級為 `1.1.0`，bundled global Skill version 同
 
 - Config v2 與 recording policy schema。
 - Receipt payload、reference 限制與 idempotency。
+- Reference 空字串、1／2,048／2,049 code points 與控制字元邊界。
 - Latest status、`pending` 與 `not_applicable` 衍生規則。
 - Managed/user region merge 與 checksum。
 - `recording.json` schema 與 materialization。
@@ -355,6 +390,8 @@ Work protocol minor version 升級為 `1.1.0`，bundled global Skill version 同
 - Project Skill 不包含 provider 假設。
 - Local-only 不建立 receipt obligation。
 - Receipt retry、conflict、歷史與最新狀態。
+- Process 在 journal publish 與 materialized-view publish 之間中止後，可由 canonical journal 確定性恢復並安全 retry。
+- Config mode 雙向切換不改變既有 work order 的 `pending`／`not_applicable` 或 receipt eligibility。
 - Skill 缺失或不相容不影響 QA verdict 與本地報告。
 - Receipt 不改寫既有 `report.json`/`report.md` bytes。
 - `recording.jsonl` 與 `recording.json` exact parity。
@@ -379,3 +416,5 @@ Work protocol minor version 升級為 `1.1.0`，bundled global Skill version 同
 6. Recording failure 與 QA verdict 完全分離。
 7. 現有 v1 專案可繼續使用，migration 不會靜默改寫資料。
 8. 完整品質閘門與新增 unit/integration/E2E/Skill eval 全部通過。
+9. Recording materialized view 可從有效 canonical journal 恢復，不會因正常 crash window 永久失效。
+10. Config mode 變更只影響新 run，不重分類歷史 run。

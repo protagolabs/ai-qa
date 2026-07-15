@@ -42,6 +42,7 @@ src/
 |   |-- config/
 |   |   |-- schema.ts                        v1/v2 stored and effective config schemas
 |   |   `-- repository.ts                    Read-without-rewrite migration boundary
+|   |-- runs/schema.ts                       Immutable recording-mode snapshot
 |   |-- recording/
 |   |   |-- schema.ts                        Receipt event/artifact/status schemas
 |   |   `-- repository.ts                    Locked JSONL and materialized parity
@@ -66,23 +67,30 @@ tests/
 |-- unit/
 |   |-- config-migration.test.ts
 |   |-- project-skill.test.ts
-|   `-- recording-schema.test.ts
+|   |-- recording-schema.test.ts
+|   `-- work-order.test.ts                   Legacy/current snapshot compatibility
 |-- integration/
 |   |-- init.test.ts
 |   |-- project-skill.test.ts
 |   |-- report-generation.test.ts
 |   `-- recording-receipt.test.ts
 `-- e2e/project-recording-flow.test.ts
+docs/
+`-- validation/project-recording-skill-eval.md Isolated RED/GREEN Skill eval evidence
 ```
 
 ---
 
-### Task 1: Introduce Config v2 Without Silently Rewriting v1
+### Task 1: Introduce Config v2 and Freeze Per-Run Recording Policy
 
 **Files:**
 - Modify: `src/core/config/schema.ts`
 - Modify: `src/core/config/repository.ts`
+- Modify: `src/core/runs/schema.ts`
 - Modify: `src/schemas/versions.ts`
+- Modify: `src/services/run-protocol/start-exploratory-run.ts`
+- Modify: `src/services/run-protocol/start-regression-run.ts`
+- Modify: `src/services/run-protocol/create-preflight-result-run.ts`
 - Create: `tests/unit/config-migration.test.ts`
 - Create: `tests/helpers/project-fixture.ts`
 - Modify: `tests/e2e/cli-web-vertical-slice.test.ts`
@@ -95,10 +103,11 @@ tests/
 - Modify: `tests/integration/run-finalize.test.ts`
 - Modify: `tests/integration/run-hardening.test.ts`
 - Modify: `tests/integration/run-journal.test.ts`
+- Modify: `tests/unit/work-order.test.ts`
 
 **Interfaces:**
 - Consumes: On-disk config schema v1 or v2.
-- Produces: `ProjectConfigV1`, `ProjectConfigV2`, `StoredProjectConfig`, `EffectiveProjectConfig`, `normalizeProjectConfig()`, `readStoredProjectConfig()`, and a non-mutating `readProjectConfig()` that always returns effective v2 semantics.
+- Produces: `ProjectConfigV1`, `ProjectConfigV2`, `StoredProjectConfig`, `EffectiveProjectConfig`, `normalizeProjectConfig()`, `readStoredProjectConfig()`, a v2-only `projectConfigSchema` compatibility export, a non-mutating `readProjectConfig()` that always returns effective v2 semantics, and an immutable per-run recording-mode snapshot.
 
 - [ ] **Step 1: Write the failing migration and schema tests**
 
@@ -188,6 +197,8 @@ export const storedProjectConfigSchema = z.discriminatedUnion(
   [projectConfigV1Schema, projectConfigV2Schema],
 );
 
+export const projectConfigSchema = projectConfigV2Schema;
+
 export type ProjectConfigV1 = z.infer<typeof projectConfigV1Schema>;
 export type ProjectConfigV2 = z.infer<typeof projectConfigV2Schema>;
 export type StoredProjectConfig = z.infer<typeof storedProjectConfigSchema>;
@@ -270,9 +281,34 @@ export function normalizeProjectConfig(
 }
 ```
 
-`readStoredProjectConfig()` must parse the exact disk representation. `readProjectConfig()` must call it and normalize in memory. `createProjectConfig()` and `writeProjectConfig()` must serialize only `ProjectConfigV2`. Update `CONFIG_SCHEMA_VERSION` to `2`; leave `WORK_PROTOCOL_VERSION` at `1.0.0` until Task 8 so the existing bundled Skill remains compatible during intermediate commits.
+`readStoredProjectConfig()` must parse the exact disk representation. `readProjectConfig()` must call it and normalize in memory. `createProjectConfig()` and `writeProjectConfig()` must serialize only `ProjectConfigV2`. Keep the existing `projectConfigSchema` export as an explicit alias of `projectConfigV2Schema`; it must never alias the stored v1/v2 union. This makes all existing imports v2-only immediately and ensures public init cannot accept v1 after Task 1.
 
-- [ ] **Step 4: Move all active test fixtures to config v2**
+Update `CONFIG_SCHEMA_VERSION` to `2`. Leave `WORK_PROTOCOL_VERSION` at `1.0.0` only to keep run/work-order protocol tests and the installed 1.0.0 runtime flow coherent during intermediate commits. This is not a claim that the old Skill can drive the new v2 init/configure request surface; Task 4 replaces that public workflow.
+
+- [ ] **Step 4: Freeze recording mode in every new work order**
+
+Add an optional provider-neutral snapshot to the strict work-order schema without changing `WORK_ORDER_SCHEMA_VERSION`:
+
+```ts
+recordingPolicy: z
+  .object({ mode: z.enum(["local-only", "project-skill"]) })
+  .strict()
+  .optional(),
+```
+
+Every new exploratory, regression, and preflight work order must include `recordingPolicy: config.recordingPolicy`. Add:
+
+```ts
+export function effectiveWorkOrderRecordingMode(
+  workOrder: WorkOrder,
+): "local-only" | "project-skill" {
+  return workOrder.recordingPolicy?.mode ?? "local-only";
+}
+```
+
+The optional field preserves the canonical hash of old work orders: parsing an absent optional field must not insert a default. Unit tests must prove a legacy work order without the field remains byte/hash stable and derives `local-only`, while new work orders retain the config mode even after config changes.
+
+- [ ] **Step 5: Move all active test fixtures to config v2**
 
 Replace every config fixture found by:
 
@@ -282,21 +318,21 @@ rg -n "schemaVersion:\s*1|storagePolicy" tests --glob '*.ts'
 
 Only project config literals change to `schemaVersion: 2` plus `recordingPolicy: { mode: "local-only" }`. Case, event, evidence, report, trust, and work-order schema versions remain `1`. Use `projectConfigV2()` in new tests; retain `projectConfigV1()` only for explicit migration coverage.
 
-- [ ] **Step 5: Verify config behavior and the existing suite**
+- [ ] **Step 6: Verify config and snapshot behavior**
 
 Run:
 
 ```bash
-pnpm vitest run tests/unit/config-migration.test.ts tests/integration/init.test.ts tests/integration/doctor-cli.test.ts
+pnpm vitest run tests/unit/config-migration.test.ts tests/unit/work-order.test.ts tests/integration/init.test.ts tests/integration/doctor-cli.test.ts tests/integration/run-journal.test.ts
 pnpm typecheck
 ```
 
 Expected: PASS. The v1 test must also prove unchanged on-disk bytes.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/core/config src/schemas/versions.ts tests/helpers/project-fixture.ts tests/unit/config-migration.test.ts tests/e2e tests/integration
+git add src/core/config src/core/runs/schema.ts src/schemas/versions.ts src/services/run-protocol/start-exploratory-run.ts src/services/run-protocol/start-regression-run.ts src/services/run-protocol/create-preflight-result-run.ts tests/helpers/project-fixture.ts tests/unit/config-migration.test.ts tests/unit/work-order.test.ts tests/e2e tests/integration
 git commit -m "feat: add provider-neutral config v2"
 ```
 
@@ -399,6 +435,8 @@ export interface ManagedSkillInspection {
 
 export function inspectManagedSkill(content: string): ManagedSkillInspection;
 ```
+
+The common managed-skill frontmatter parser must require only valid `name`, `description`, a metadata mapping, and `aiQaManagedChecksum`; it must not require `aiQaSkillVersion`, because target-project Skills use `aiQaProjectSkillVersion`. Global and project validators separately enforce their own version/capability fields.
 
 Keep `mergeManagedSkill()` behavior compatible with the global Skill tests. The computed checksum excludes `aiQaManagedChecksum`, normalizes managed-region CRLF for hashing, and never normalizes installed user bytes.
 
@@ -744,6 +782,8 @@ For init, `writePaths` contains config then Project Skill and `createdDirectorie
 
 Retire direct production use of config-only `initializeProject()`. Keep one typed initialization service that requires the complete request so no production API can initialize config v2 without its target-project Skill.
 
+Configure is intentionally full-state, not PATCH-like: it must receive complete config plus complete Project Skill request on every preview/apply. This keeps cross-file invariants, checksum binding, and managed/user merge inside one transaction; do not add a config-only compatibility branch.
+
 Add this test-only convenience wrapper to `tests/helpers/project-fixture.ts` and replace every direct config-only setup in the listed E2E/integration files:
 
 ```ts
@@ -872,6 +912,7 @@ Add:
 export interface VerifiedGeneratedRunReport {
   projectRoot: string;
   config: EffectiveProjectConfig;
+  recordingMode: "local-only" | "project-skill";
   report: RunReport;
   directory: string;
   paths: ProjectLocalReportPaths;
@@ -883,7 +924,9 @@ export async function withVerifiedGeneratedRunReport<T>(
 ): Promise<T>;
 ```
 
-It must build and verify current terminal state, require an existing report directory, acquire the per-run report lock, compare configured report artifacts, then invoke the callback before releasing the lock. Refactor export to call it. Generation uses the extracted directory/lock but still creates configured report files.
+It must build and verify current terminal state, derive `recordingMode` only from `effectiveWorkOrderRecordingMode(workOrder)`, require an existing report directory, acquire the per-run report lock, compare configured report artifacts, then invoke the callback before releasing the lock. Current config remains available for report formats/audience but must not reclassify an existing run's recording obligation. Refactor export to call this boundary. Generation uses the extracted directory/lock but still creates configured report files.
+
+`report export --adapter project-local` remains report-only: it verifies and returns configured `report.json`/`report.md` paths and never includes `recording.jsonl` or `recording.json`. Recording state is queried only through `report recording-status`.
 
 - [ ] **Step 5: Verify no behavior regression and commit**
 
@@ -903,7 +946,7 @@ git commit -m "refactor: expose verified report storage boundary"
 
 ---
 
-### Task 6: Add Neutral Receipt Schemas and Exact Materialization Parity
+### Task 6: Add Neutral Receipt Schemas and Recoverable Materialization
 
 **Files:**
 - Create: `src/core/recording/schema.ts`
@@ -914,7 +957,7 @@ git commit -m "refactor: expose verified report storage boundary"
 
 **Interfaces:**
 - Consumes: Validated receipt payloads and an already-held canonical report directory lock.
-- Produces: Append-only `RecordingEvent` history, exact `RecordingArtifact` materialization, idempotent registration, and integrity-checked reads.
+- Produces: Append-only canonical `RecordingEvent` history, deterministic/recoverable `RecordingArtifact` materialization, idempotent registration, and integrity-checked reads.
 
 - [ ] **Step 1: Write failing schema tests**
 
@@ -922,6 +965,7 @@ Test all boundaries:
 
 - idempotency key regex `^[A-Za-z0-9._:-]{1,128}$`;
 - zero, one, and 128 character key edges;
+- an empty reference string rejected and a one-code-point reference accepted;
 - 20 references accepted and 21 rejected;
 - 2,048 Unicode code points accepted and 2,049 rejected, including astral characters counted as one code point;
 - C0, DEL, C1, CR, and LF rejected;
@@ -939,6 +983,19 @@ export const recordingIdempotencyKeySchema = z
 export const recordingEventIdSchema = z
   .string()
   .regex(/^recording-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u);
+export const recordingReferenceSchema = z.string().superRefine((value, context) => {
+  const codePointLength = [...value].length;
+  if (
+    codePointLength < 1 ||
+    codePointLength > 2048 ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Recording references require 1-2048 non-control Unicode code points",
+    });
+  }
+});
 
 const receiptFields = {
   idempotencyKey: recordingIdempotencyKeySchema,
@@ -957,7 +1014,7 @@ export const recordingEventSchema = z
     schemaVersion: z.literal(1),
     eventId: recordingEventIdSchema,
     runId: runIdSchema,
-    recordedAt: z.iso.datetime(),
+    recordedAt: z.string().datetime(),
   })
   .strict()
   .superRefine(validateStatusReferences);
@@ -973,13 +1030,13 @@ export const recordingArtifactSchema = z.object({
   history: z.array(
     z.object({
       eventId: recordingEventIdSchema,
-      recordedAt: z.iso.datetime(),
+      recordedAt: z.string().datetime(),
       idempotencyKey: recordingIdempotencyKeySchema,
       status: z.enum(["recorded", "not_recorded", "unknown"]),
       references: z.array(recordingReferenceSchema).max(20),
     }),
   ),
-  materializedAt: z.iso.datetime(),
+  materializedAt: z.string().datetime(),
 });
 ```
 
@@ -1003,16 +1060,15 @@ Implement:
 export function materializeRecordingArtifact(input: {
   runId: string;
   events: readonly RecordingEvent[];
-  materializedAt: string;
 }): RecordingArtifact;
 
-export function validateRecordingParity(input: {
+export function classifyRecordingMaterialization(input: {
   events: readonly RecordingEvent[];
   artifact: RecordingArtifact;
-}): void;
+}): "current" | "recoverable" | "conflict";
 ```
 
-Materialization rejects an empty event list. History preserves journal order exactly; current is the final event. The repository uses the new event's `recordedAt` as `materializedAt`; parity validation requires `materializedAt` to equal the final history entry's `recordedAt` in addition to exact history/current equality.
+Materialization rejects an empty event list. History preserves journal order exactly; current is the final event. The repository uses the final event's `recordedAt` as `materializedAt`. Classification is `current` only when the artifact is canonical-equal to a fresh materialization, `recoverable` when journal history is a strict extension or only derived fields differ, and `conflict` when artifact history is ahead of or not an exact prefix of canonical journal events.
 
 - [ ] **Step 4: Implement the lock-aware repository**
 
@@ -1026,7 +1082,7 @@ export class RecordingRepository {
     private readonly now: () => Date,
   ) {}
 
-  readUnlocked(): Promise<
+  readOrRecoverUnlocked(): Promise<
     | { state: "missing" }
     | { state: "present"; events: RecordingEvent[]; artifact: RecordingArtifact }
   >;
@@ -1041,9 +1097,18 @@ export class RecordingRepository {
 }
 ```
 
-On read, both files missing means `missing`; exactly one missing, invalid JSONL, schema failure, run-ID mismatch, or materialized/history mismatch throws `recording.integrity_error`. Never repair or infer success.
+Treat `recording.jsonl` as canonical and `recording.json` as a deterministic materialized view:
 
-On register, validate existing parity first. Same key and canonical-equal payload returns the original event/artifact with `replayed: true` and no file write. Same key with different status/references throws `recording.idempotency_conflict`. A new key appends one event, atomically writes newline-terminated `recording.jsonl`, then atomically writes `recording.json` while the caller retains the report lock.
+- both missing returns `missing`;
+- a valid journal with a missing, invalid, or strictly lagging materialized view rewrites `recording.json` from journal events and returns `present`;
+- a journal missing while a materialized view exists is `recording.integrity_error`;
+- an invalid journal, run-ID mismatch, materialized history ahead of the journal, or any shared-event content/order contradiction is `recording.integrity_error`.
+
+Recovery occurs only inside the caller-held per-run report lock. It does not infer external success: it reproduces only events already present in the valid canonical journal. Add repository tests that manually create the normal crash state—valid `recording.jsonl` with no `recording.json`—then prove `readOrRecoverUnlocked()` materializes the exact view. Add a second test where retrying the same receipt after that recovery returns the original event with `replayed: true`. Also cover a one-event-lagging view recovery and ahead/conflicting views as integrity failures.
+
+This makes `recording-status` logically read-only but permits one deterministic local repair side effect under lock. Tests must prove recovery changes only `recording.json`; it never changes `recording.jsonl`, report bytes, run journal bytes, verdict, or external state.
+
+On register, call `readOrRecoverUnlocked()` first. Same key and canonical-equal payload returns the original event/artifact with `replayed: true` and no journal write. Same key with different status/references throws `recording.idempotency_conflict`. A new key appends one event, atomically writes newline-terminated `recording.jsonl`, then atomically writes `recording.json` while the caller retains the report lock. If the process stops between those writes, the next read/retry follows the deterministic recovery path instead of permanently bricking the run.
 
 - [ ] **Step 5: Verify repository behavior and commit**
 
@@ -1054,7 +1119,7 @@ pnpm vitest run tests/unit/recording-schema.test.ts tests/integration/recording-
 pnpm typecheck
 ```
 
-Expected: PASS, including exact retry identity and parity corruption cases.
+Expected: PASS, including empty-reference rejection, exact retry identity, crash-window recovery, lagging-view recovery, and true parity-corruption cases.
 
 ```bash
 git add src/core/recording src/core/ids.ts tests/unit/recording-schema.test.ts tests/integration/recording-receipt.test.ts
@@ -1090,6 +1155,10 @@ Cover:
 9. receipt registration leaves exact `report.json`, `report.md`, and terminal run `events.jsonl` bytes and SHA-256 hashes unchanged;
 10. corrupted journal/artifact parity returns `recording.integrity_error` without changing the verdict;
 11. opaque references such as `docs/qa-results.md#run-1`, `row:42`, and `message:abc` are returned unchanged and never interpreted.
+12. a run started in `project-skill` remains pending/receipt-eligible after config changes to `local-only`, and its existing receipt stays visible;
+13. a run started in `local-only` remains `not_applicable` and receipt-ineligible after config changes to `project-skill`;
+14. a legacy work order without a recording snapshot remains `not_applicable`;
+15. `recording-status` before report generation returns `report.not_generated`, while non-terminal or drifted report state returns the existing lifecycle/integrity error rather than `pending`.
 
 The public status response is:
 
@@ -1149,7 +1218,9 @@ export async function readRecordingStatus(input: {
 }): Promise<RecordingStatusView>;
 ```
 
-Both functions call `withVerifiedGeneratedRunReport()`. Inside its locked callback, inspect effective `recordingPolicy.mode`. Return derived `not_applicable` without touching the recording repository for local-only. For project-skill, a missing repository state becomes `pending`; present state maps the final event to the view. Do not require a currently compatible Project Skill to accept the host's explicit `not_recorded` or `unknown` receipt.
+Both functions call `withVerifiedGeneratedRunReport()`. Inside its locked callback, inspect only `verified.recordingMode`, which is frozen in the immutable work order; never read current config to classify the run. Return derived `not_applicable` without touching the recording repository for a snapshotted/legacy local-only run. For project-skill, `readOrRecoverUnlocked()` maps missing repository state to `pending` and present state to the final event. Do not require a currently compatible Project Skill to accept the host's explicit `not_recorded` or `unknown` receipt.
+
+This full report verification gate is intentional. `pending` means “a verified local report exists and its snapshotted project recording has no receipt,” not merely “no receipt file exists.” Before report generation, return `report.not_generated`; for non-terminal, evidence-drift, report-drift, or storage-integrity cases, preserve the existing report/lifecycle error. The global Skill in Task 8 must generate or repair the verified local report before querying/recording status and must not translate those errors into pending.
 
 - [ ] **Step 4: Add CLI commands**
 
@@ -1184,6 +1255,7 @@ git commit -m "feat: register verified report receipts"
 
 **Files:**
 - Modify: `src/schemas/versions.ts`
+- Modify: `src/core/runs/schema.ts`
 - Modify: `src/skills/global/SKILL.md`
 - Modify: `src/skills/global/references/web-work-protocol.md`
 - Modify: `src/services/skill-management/global-skill.ts`
@@ -1192,6 +1264,7 @@ git commit -m "feat: register verified report receipts"
 - Modify: `tests/integration/global-skill.test.ts`
 - Modify: `tests/integration/doctor-cli.test.ts`
 - Modify: `tests/integration/run-journal.test.ts`
+- Modify: `tests/unit/work-order.test.ts`
 - Modify: `tests/e2e/web-vertical-slice.test.ts`
 - Create: `docs/validation/project-recording-skill-eval.md`
 
@@ -1222,6 +1295,7 @@ Add exact behavioral assertions that the managed text:
 - registers only status/references;
 - records `unknown` without retrying an uncertain external operation;
 - never changes QA verdict based on recording outcome.
+- treats `report.not_generated` and report/lifecycle integrity errors as prerequisites to resolve before status/receipt work, never as `pending`.
 
 Also assert there are no built-in GitHub, Jira, Notion, or Linear procedures in the bundled Skill.
 
@@ -1295,9 +1369,19 @@ export function checkGlobalSkillForProject(input: {
 
 It validates the installed managed checksum and requires the installed protocol range to contain `WORK_PROTOCOL_VERSION`. For `local-only`, a valid installed 1.0.0 Skill is runtime-compatible even though `skill check --global` reports that an update is available. For `project-skill`, metadata must additionally contain `aiQaRecordingReceipt: true`; an old Skill is stale and cannot enter the recording phase. Route doctor and run preflight through this config-aware runtime function. This preserves config v1/local-only execution without allowing an old Skill to perform project-skill recording.
 
+Do not make stored work orders use `z.literal(WORK_PROTOCOL_VERSION)`, because changing the creation version to 1.1.0 would make immutable 1.0.0 work orders unreadable. Add:
+
+```ts
+export const storedWorkProtocolVersionSchema = z.enum(["1.0.0", "1.1.0"]);
+```
+
+Use that schema when reading work orders; continue writing `WORK_PROTOCOL_VERSION` for new work orders. Unit tests must prove an old protocol 1.0.0 work order with no recording snapshot remains readable as local-only, while a new 1.1.0 work order preserves its explicit mode.
+
 - [ ] **Step 5: Write the minimal managed workflow and protocol reference**
 
 Keep generic QA evidence rules intact. Address the observed baseline failures with positive conditional procedures. Add the new CLI commands needed to use the implemented interface. Do not duplicate target-project startup, login, navigation, or management instructions in the global Skill. Do not name an external provider as the default. Keep the global `SKILL.md` under 500 lines and 5,000 words.
+
+The completion procedure must first generate and verify the local report. If status returns `report.not_generated`, generate it before retrying the status query. If it returns lifecycle, evidence, report, recording, or storage integrity errors, stop and surface that error; never call it pending and never submit a receipt until the verified-report boundary succeeds.
 
 At regression completion the reference must express this branch exactly:
 
@@ -1325,13 +1409,18 @@ pnpm build
 test -f dist/skills/global/SKILL.md
 rg -n "aiQaSkillVersion: 1.1.0|aiQaRecordingReceipt: true" dist/skills/global/SKILL.md
 wc -l -w src/skills/global/SKILL.md
-python3 /Users/cqi_clawbot/.codex/skills/.system/skill-creator/scripts/quick_validate.py src/skills/global
+validator="${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py"
+if [[ -f "$validator" ]]; then
+  python3 "$validator" src/skills/global
+else
+  printf 'Optional skill-creator validator not installed; repository Skill tests remain authoritative.\n'
+fi
 ```
 
-Expected: PASS; both metadata lines are present in the packaged asset, the size limits hold, and the skill-creator validator prints `Skill is valid!`.
+Expected: PASS; both metadata lines are present in the packaged asset and the size limits hold. When the optional skill-creator validator exists, it prints `Skill is valid!`; its absence does not make this repository-specific plan non-portable.
 
 ```bash
-git add src/schemas/versions.ts src/skills/global src/services/skill-management/global-skill.ts src/cli/commands/doctor.ts src/cli/commands/run.ts tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/integration/run-journal.test.ts tests/e2e/web-vertical-slice.test.ts docs/validation/project-recording-skill-eval.md
+git add src/schemas/versions.ts src/core/runs/schema.ts src/skills/global src/services/skill-management/global-skill.ts src/cli/commands/doctor.ts src/cli/commands/run.ts tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/integration/run-journal.test.ts tests/unit/work-order.test.ts tests/e2e/web-vertical-slice.test.ts docs/validation/project-recording-skill-eval.md
 git commit -m "feat: teach global skill project recording flow"
 ```
 
@@ -1441,7 +1530,7 @@ ai-qa --project /absolute/target init --stdin-json \
   --confirm-checksum "$checksum" < init-request.json
 ```
 
-Also show the preview JSON before applying so a human or host UI reviews the full config, Skill, paths, and diff rather than extracting the checksum invisibly. Document local-only completion and project-skill receipt commands. State explicitly that the host Agent performs any project procedure and controls permissions; the CLI stores only neutral status/references.
+Also show the preview JSON before applying so a human or host UI reviews the full config, Skill, paths, and diff rather than extracting the checksum invisibly. Document local-only completion and project-skill receipt commands. State explicitly that the host Agent performs any project procedure and controls permissions; the CLI stores only neutral status/references. Explain that recording mode is frozen per work order, `pending` requires an existing verified report, and `report export --adapter project-local` excludes recording artifacts.
 
 - [ ] **Step 2: Add a validation checklist**
 
@@ -1453,6 +1542,10 @@ Extend the acceptance doc with:
 - managed/user region preservation check;
 - preview stale checksum rejection;
 - receipt idempotency and conflict check;
+- crash-window and lagging-materialization recovery from canonical `recording.jsonl`;
+- bidirectional config mode switch with unchanged historical run status/eligibility;
+- pre-report `recording-status` error versus post-report `pending`;
+- report export excludes `recording.jsonl`/`recording.json`;
 - report/run byte hashes before and after receipts;
 - symlink rejection at Project Skill and recording paths;
 - packaged global Skill 1.1 metadata check.
@@ -1527,6 +1620,7 @@ Before declaring the feature complete, capture these facts in the final handoff:
 - Project Skill user-region preservation and symlink rejection results;
 - local-only `not_applicable` result with no recording files;
 - project-skill receipt history/latest status result;
+- canonical-journal crash recovery and mode-snapshot switch results;
 - report/run byte-hash immutability result;
 - bundled `dist/skills/global/SKILL.md` version/capability metadata;
 - clean or explicitly explained worktree status.
