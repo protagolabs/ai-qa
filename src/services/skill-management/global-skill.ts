@@ -343,6 +343,7 @@ export async function checkGlobalSkillForProject(input: {
       readReferenceAssets(input.sourcePath),
     ]);
     const sourceMetadata = parseInstalledMetadata(source);
+    const sourceInspection = inspectManagedSkill(source);
     const inspection = inspectManagedSkill(existing);
     const metadata = parseInstalledMetadata(existing, {
       allowMissingReceiptCapability: true,
@@ -359,6 +360,12 @@ export async function checkGlobalSkillForProject(input: {
       input.recordingMode === "local-only" &&
       metadata.aiQaSkillVersion === "1.0.0";
     if (!currentBundledVersion && !safeLegacyLocalOnly) {
+      return { status: "stale", destination };
+    }
+    if (
+      currentBundledVersion &&
+      sourceInspection.managedChecksum !== inspection.managedChecksum
+    ) {
       return { status: "stale", destination };
     }
     if (

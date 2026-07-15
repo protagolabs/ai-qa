@@ -1390,7 +1390,7 @@ Final campaign result: all three families converge 5/5 on every applicable obser
 
 ## Audit-preservation rerun raw prompt/output pairs
 
-The unchanged final 1.1 Skill and protocol reference were rerun for all five Family A and all five Family B prompts after review found that some earlier entries preserved coordinator summaries instead of the complete worker response. Each section below contains the worker's complete prompt and verbatim output. These reruns supersede the summarized capture for auditability; they did not cause another Skill change.
+The unchanged final 1.1 Skill and protocol reference were rerun for all five Family A and all five Family B prompts after review found that some earlier entries preserved coordinator summaries instead of the complete worker response. Only sections explicitly headed `AUDIT RAW` are scored; each of those sections contains the worker's complete prompt and verbatim output. Sections marked superseded retain malformed raw history for auditability but are unscored. These reruns did not cause another Skill change.
 
 ### AUDIT RAW A1
 

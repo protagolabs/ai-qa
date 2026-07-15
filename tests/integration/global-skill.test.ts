@@ -424,6 +424,49 @@ describe("syncGlobalSkill", () => {
     },
   );
 
+  it("rejects a checksum-self-consistent impostor claiming current 1.1", async () => {
+    const fixture = await createSkillFixture();
+    await syncGlobalSkill({
+      ...fixture,
+      confirmManagedReplacement: false,
+    });
+    const forged = canonicalSkill.replace("\nflow\n", "\nforged flow\n");
+    await writeFile(
+      fixture.destination,
+      mergeManagedSkill({
+        source: forged,
+        confirmManagedReplacement: false,
+      }).content,
+    );
+
+    for (const recordingMode of ["local-only", "project-skill"] as const) {
+      await expect(
+        checkGlobalSkillForProject({ ...fixture, recordingMode }),
+      ).resolves.toMatchObject({ status: "stale" });
+    }
+  });
+
+  it("keeps the current 1.1 user region outside managed checksum pinning", async () => {
+    const fixture = await createSkillFixture();
+    await syncGlobalSkill({
+      ...fixture,
+      confirmManagedReplacement: false,
+    });
+    await writeFile(
+      fixture.destination,
+      (await readFile(fixture.destination, "utf8")).replace(
+        "<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->",
+        "<!-- ai-qa:user:start -->\nlocal user note\n<!-- ai-qa:user:end -->",
+      ),
+    );
+
+    for (const recordingMode of ["local-only", "project-skill"] as const) {
+      await expect(
+        checkGlobalSkillForProject({ ...fixture, recordingMode }),
+      ).resolves.toMatchObject({ status: "compatible" });
+    }
+  });
+
   it.each([
     { condition: "missing", localStatus: "stale" },
     { condition: "tampered", localStatus: "conflict" },
