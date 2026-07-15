@@ -1,5 +1,51 @@
 # Web Work Protocol
 
+## Initialization contract
+
+Ask how the project already manages QA results or defects. If no process exists, choose `recordingPolicy.mode: local-only`. If one exists, choose `project-skill` and put the exact procedure in `projectSkill.content`; do not replace it with a different workflow.
+
+Build one complete request with these top-level fields:
+
+```json
+{
+  "config": {
+    "schemaVersion": 2,
+    "recordingPolicy": { "mode": "local-only" },
+    "project": { "id": "<stable-id>", "name": "<name>" },
+    "targets": { "web": { "entryUrl": "<confirmed-url>" } },
+    "environments": {},
+    "tools": { "web": { "controller": "chrome-devtools-mcp" } },
+    "evidencePolicy": {
+      "screenshots": "required",
+      "defaultSensitivity": "internal",
+      "retentionDays": 30
+    },
+    "reportPolicy": {
+      "formats": ["markdown", "json"],
+      "audience": "engineering",
+      "detail": "full"
+    },
+    "storagePolicy": { "adapter": "project-local" },
+    "gitPolicy": { "config": "track", "artifacts": "ignore" },
+    "ciPolicy": { "nonPassExit": "failure" },
+    "secretReferences": {}
+  },
+  "projectSkill": {
+    "reason": "<why these project procedures are canonical>",
+    "content": "<complete ai-qa-project Skill; include the exact result-recording procedure when mode is project-skill>"
+  }
+}
+```
+
+Use confirmed project-specific values rather than copying example defaults blindly. Preview and apply the same complete request:
+
+```text
+ai-qa init --project <path> --stdin-json --preview
+ai-qa init --project <path> --stdin-json --confirm-checksum <preview-checksum>
+```
+
+For an existing setup, use the equivalent `ai-qa configure` preview/apply pair. The approval decision contains the chosen recording mode, full config, complete Project Skill, preview/apply commands, and the statement that permissions, authentication, and tool approvals stay with the host. Present the diff and checksum for confirmation before applying. The confirmed canonical Project Skill is the reusable rule for later matching runs.
+
 ## Controller provenance
 
 - Every Web `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json` body uses `tool: "chrome-devtools-mcp"`.
@@ -36,7 +82,36 @@ Evidence captured before the asserted interaction, before its terminal result, o
 1. Start the active case on Web and retain the returned work order.
 2. Execute required steps in order. Use only step-linked bounded recovery.
 3. Finish only after every criterion cites assertion and evidence IDs.
-4. Generate Markdown and JSON reports and show their project-local paths.
+4. Complete the verified-report and recording procedure below.
+
+## Verified report and recording
+
+At regression completion:
+
+```text
+generate verified local report
+├── recordingPolicy.mode = local-only     -> show local paths and end
+└── recordingPolicy.mode = project-skill  -> load trusted Project Skill
+                                             -> host executes procedure
+                                             -> register neutral receipt
+```
+
+1. Run `ai-qa report generate <run-id>` and retain its local paths.
+2. Run `ai-qa report recording-status <run-id>` only after generation. If it returns `report.not_generated`, generate the report before retrying the status query.
+3. If lifecycle, evidence, report, recording, or storage integrity validation fails, stop and surface that error. It is not `pending`, and receipt submission is forbidden until report verification succeeds.
+4. For `local-only`, show the local paths and end.
+5. For `project-skill`, load the trusted canonical `.agents/skills/ai-qa-project/SKILL.md`. The host executes its exact procedure with host-owned permissions, authentication, and approvals.
+6. Register only protocol metadata plus the neutral outcome through `ai-qa report receipt <run-id> --stdin-json`:
+
+```json
+{
+  "idempotencyKey": "recording:<run-id>:<procedure-revision>",
+  "status": "recorded",
+  "references": ["<stable project reference>"]
+}
+```
+
+Use `not_recorded` with an empty reference list when the host confirms no record was made. Use `unknown` with an empty reference list when a submitted external operation returns no certain result; do not retry that operation. The receipt contains no provider payload, and its outcome never revises the QA verdict.
 
 ## Verdict taxonomy
 

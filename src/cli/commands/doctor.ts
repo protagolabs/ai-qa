@@ -5,7 +5,7 @@ import { z } from "zod";
 import { readProjectConfig } from "../../core/config/repository.js";
 import { runWebDoctor } from "../../services/doctor/web-doctor.js";
 import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
-import { checkGlobalSkill } from "../../services/skill-management/global-skill.js";
+import { checkGlobalSkillForProject } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -60,9 +60,10 @@ export function registerDoctorCommand(
     });
     const config = await readProjectConfig(resolved.projectRoot);
     const input = await readJsonInput(context, doctorInputSchema);
-    const globalSkill = await checkGlobalSkill({
+    const globalSkill = await checkGlobalSkillForProject({
       agentsHome: agentsHome(context),
       sourcePath: bundledSourcePath(),
+      recordingMode: config.recordingPolicy.mode,
     });
     const result = await runWebDoctor({
       entryUrl: config.targets.web.entryUrl,

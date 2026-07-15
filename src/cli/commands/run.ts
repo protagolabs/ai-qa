@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 import { caseIdSchema } from "../../core/cases/schema.js";
+import { readProjectConfig } from "../../core/config/repository.js";
 import { exploratoryRunInputSchema } from "../../core/runs/schema.js";
 import type { WebDoctorResult } from "../../services/doctor/web-doctor.js";
 import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
@@ -15,7 +16,7 @@ import {
 } from "../../services/run-protocol/run-lifecycle.js";
 import { startExploratoryRun } from "../../services/run-protocol/start-exploratory-run.js";
 import { startRegressionRun } from "../../services/run-protocol/start-regression-run.js";
-import { checkGlobalSkill } from "../../services/skill-management/global-skill.js";
+import { checkGlobalSkillForProject } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -104,6 +105,7 @@ export function registerRunCommands(
         aiQaHome: home,
         ...(project === undefined ? {} : { explicitProject: project }),
       });
+      const config = await readProjectConfig(resolved.projectRoot);
       const suppliedExploratory =
         parsedOptions.kind === "exploratory"
           ? await readJsonInput(context, exploratoryRunInputSchema)
@@ -116,9 +118,10 @@ export function registerRunCommands(
         parsedOptions.kind === "exploratory"
           ? webReadinessSchema.parse(suppliedExploratory!.readiness)
           : suppliedRegression!;
-      const globalSkill = await checkGlobalSkill({
+      const globalSkill = await checkGlobalSkillForProject({
         agentsHome: agentsHome(context),
         sourcePath: bundledSourcePath(),
+        recordingMode: config.recordingPolicy.mode,
       });
       const checks = [
         ...readiness.checks.filter(
@@ -151,6 +154,7 @@ export function registerRunCommands(
               execution: parsedOptions.execution,
               readiness: verifiedReadiness,
               now: context.now,
+              projectConfig: config,
             }),
           );
           return;
@@ -182,6 +186,7 @@ export function registerRunCommands(
             aiQaHome: home,
             payload,
             now: context.now,
+            projectConfig: config,
           }),
         );
         return;

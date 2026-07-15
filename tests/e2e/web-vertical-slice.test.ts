@@ -759,6 +759,17 @@ async function replayActiveCase(input: {
 }
 
 describe("Increment 1 Web vertical slice services", () => {
+  it("packages the 1.1 global skill receipt capability", async () => {
+    const skill = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+
+    expect(skill).toContain("aiQaSkillVersion: 1.1.0");
+    expect(skill).toContain("aiQaProtocolRange: ^1.1.0");
+    expect(skill).toContain("aiQaRecordingReceipt: true");
+  });
+
   it("serves a credential-safe deterministic live fixture", async () => {
     const child = spawn(
       process.execPath,

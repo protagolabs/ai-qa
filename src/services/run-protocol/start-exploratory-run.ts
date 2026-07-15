@@ -1,4 +1,8 @@
 import { readProjectConfig } from "../../core/config/repository.js";
+import {
+  projectConfigSchema,
+  type EffectiveProjectConfig,
+} from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { RunRepository } from "../../core/runs/repository.js";
@@ -15,13 +19,16 @@ export async function startExploratoryRun(input: {
   aiQaHome: string;
   payload: ExploratoryRunInput;
   now: () => Date;
+  projectConfig?: EffectiveProjectConfig;
 }): Promise<WorkOrder> {
   const trusted = await resolveTrustedProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
     aiQaHome: input.aiQaHome,
   });
-  const config = await readProjectConfig(trusted.projectRoot);
+  const config = projectConfigSchema.parse(
+    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+  );
   const payload = exploratoryRunInputSchema.parse(input.payload);
   if (payload.readiness.status !== "ready") {
     throw new AiQaError(

@@ -10,7 +10,9 @@ import {
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { writeProjectConfig } from "../../src/core/config/repository.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
+import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
@@ -49,6 +51,33 @@ const readyPayload = exploratoryRunInputSchema.parse({
   ],
   readiness: { platform: "web", status: "ready", checks: [] },
 });
+
+const legacyGlobalSkill = `---
+name: ai-qa
+description: QA
+metadata:
+  aiQaSkillVersion: 1.0.0
+  aiQaProtocolRange: ^1.0.0
+  aiQaManagedChecksum: bundled
+---
+<!-- ai-qa:managed:start -->
+legacy flow
+<!-- ai-qa:managed:end -->
+<!-- ai-qa:user:start -->
+<!-- ai-qa:user:end -->
+`;
+
+async function installLegacyGlobalSkill(agentsHome: string): Promise<void> {
+  const directory = join(agentsHome, "skills", "ai-qa");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "SKILL.md"),
+    mergeManagedSkill({
+      source: legacyGlobalSkill,
+      confirmManagedReplacement: false,
+    }).content,
+  );
+}
 
 describe("RunJournal", () => {
   it("maps a missing journal to run.not_found before a locked read", async () => {
@@ -357,7 +386,7 @@ describe("exploratory run start", () => {
     ).rejects.toMatchObject({ code: "doctor.not_ready" });
   });
 
-  it("starts through the trusted CLI and emits the immutable work order", async () => {
+  it("uses one config snapshot for compatibility and the immutable work order", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
@@ -371,12 +400,15 @@ describe("exploratory run start", () => {
     const captured = createCapturedCli({
       cwd: projectRoot,
       env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
-      readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
+      readStdin: async () => {
+        await writeProjectConfig(projectRoot, {
+          ...config,
+          recordingPolicy: { mode: "project-skill" },
+        });
+        return JSON.stringify(readyPayload);
+      },
     });
-    expect(
-      await runCli(["skill", "install", "--global"], captured.context),
-    ).toBe(0);
-    captured.stdout.length = 0;
+    await installLegacyGlobalSkill(agentsHome);
 
     const exitCode = await runCli(
       [
@@ -398,10 +430,12 @@ describe("exploratory run start", () => {
       runId: string;
       projectId: string;
       startedAt: string;
+      recordingPolicy: { mode: string };
     };
     expect(workOrder).toMatchObject({
       projectId: "sample-web",
       startedAt: "2026-07-13T00:00:00.000Z",
+      recordingPolicy: { mode: "local-only" },
     });
     expect(
       await readFile(
@@ -472,5 +506,68 @@ describe("exploratory run start", () => {
           check.status === "fail",
       ),
     ).toBe(true);
+  });
+
+  it("blocks project-skill preflight when the installed global skill lacks receipt capability", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: {
+        ...config,
+        recordingPolicy: { mode: "project-skill" },
+      },
+    });
+    await installLegacyGlobalSkill(agentsHome);
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
+    });
+
+    expect(
+      await runCli(
+        [
+          "run",
+          "start",
+          "--kind",
+          "exploratory",
+          "--platform",
+          "web",
+          "--execution",
+          "local",
+          "--stdin-json",
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    const result = JSON.parse(captured.stdout.join("")) as {
+      runId: string;
+      blockerSubtype: string;
+    };
+    const workOrder = await new RunRepository(
+      projectRoot,
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    ).readVerifiedWorkOrder(result.runId);
+
+    expect(result).toMatchObject({ blockerSubtype: "tool" });
+    expect(workOrder.readiness.status).toBe("not_ready");
+    expect(workOrder.readiness.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "agent.global_skill",
+          status: "fail",
+          message: "Global skill status: stale",
+        }),
+      ]),
+    );
   });
 });

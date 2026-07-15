@@ -15,6 +15,8 @@ export const eventIdSchema = z
 
 export const actionIdSchema = eventIdSchema;
 
+export const storedWorkProtocolVersionSchema = z.enum(["1.0.0", "1.1.0"]);
+
 export const stepIdSchema = z.string().regex(/^step-[a-z0-9][a-z0-9-]{0,126}$/);
 
 export const acceptanceCriterionSchema = z
@@ -97,7 +99,7 @@ export type RequiredStep = z.infer<typeof requiredStepSchema>;
 const workOrderBaseSchema = z
   .object({
     schemaVersion: z.literal(WORK_ORDER_SCHEMA_VERSION),
-    protocolVersion: z.literal(WORK_PROTOCOL_VERSION),
+    protocolVersion: storedWorkProtocolVersionSchema,
     runId: runIdSchema,
     kind: z.enum(["exploratory", "regression"]),
     execution: z.enum(["local", "ci"]),

@@ -12,17 +12,20 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import {
   checkGlobalSkill,
+  checkGlobalSkillForProject,
   previewGlobalSkillSync,
   syncGlobalSkill,
 } from "../../src/services/skill-management/global-skill.js";
+import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const canonicalSkill = `---
 name: ai-qa
 description: QA
 metadata:
-  aiQaSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.0.0
+  aiQaSkillVersion: 1.1.0
+  aiQaProtocolRange: ^1.1.0
+  aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
 ---
 <!-- ai-qa:managed:start -->
@@ -31,6 +34,11 @@ flow
 <!-- ai-qa:user:start -->
 <!-- ai-qa:user:end -->
 `;
+
+const legacyCanonicalSkill = canonicalSkill
+  .replace("  aiQaSkillVersion: 1.1.0", "  aiQaSkillVersion: 1.0.0")
+  .replace("  aiQaProtocolRange: ^1.1.0", "  aiQaProtocolRange: ^1.0.0")
+  .replace("  aiQaRecordingReceipt: true\n", "");
 
 async function createSkillFixture(
   references: Readonly<Record<string, string>> = {
@@ -67,29 +75,43 @@ describe("syncGlobalSkill", () => {
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.0.0\n",
+        "  aiQaSkillVersion: 1.1.0\n",
         "",
       ),
     },
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.0.0",
+        "  aiQaProtocolRange: ^1.1.0",
         "  aiQaProtocolRange: 1",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.0.0\n",
+        "  aiQaSkillVersion: 1.1.0\n",
         "",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.0.0",
+        "  aiQaProtocolRange: ^1.1.0",
         "  aiQaProtocolRange: 1",
+      ),
+    },
+    {
+      operation: "preview",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaRecordingReceipt: true\n",
+        "",
+      ),
+    },
+    {
+      operation: "sync",
+      malformedSource: canonicalSkill.replace(
+        "  aiQaRecordingReceipt: true",
+        "  aiQaRecordingReceipt: disabled",
       ),
     },
   ] as const)(
@@ -118,10 +140,7 @@ describe("syncGlobalSkill", () => {
     const sourceDirectory = join(agentsHome, "canonical");
     const sourcePath = join(sourceDirectory, "SKILL.md");
     await mkdir(join(sourceDirectory, "references"), { recursive: true });
-    await writeFile(
-      sourcePath,
-      `---\nname: ai-qa\ndescription: QA\nmetadata:\n  aiQaSkillVersion: 1.0.0\n  aiQaProtocolRange: ^1.0.0\n  aiQaManagedChecksum: bundled\n---\n<!-- ai-qa:managed:start -->\nflow\n<!-- ai-qa:managed:end -->\n<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->\n`,
-    );
+    await writeFile(sourcePath, canonicalSkill);
     await writeFile(
       join(sourceDirectory, "references", "web-work-protocol.md"),
       "# Protocol\n",
@@ -134,7 +153,7 @@ describe("syncGlobalSkill", () => {
     });
     const destination = join(agentsHome, "skills", "ai-qa", "SKILL.md");
     expect(await readFile(destination, "utf8")).toContain(
-      "aiQaSkillVersion: 1.0.0",
+      "aiQaSkillVersion: 1.1.0",
     );
     expect(
       await readFile(
@@ -351,6 +370,104 @@ describe("syncGlobalSkill", () => {
       crlfInstalled,
     );
   });
+
+  it("keeps a valid 1.0 skill runtime-compatible only for local-only recording", async () => {
+    const fixture = await createSkillFixture();
+    await mkdir(dirname(fixture.destination), { recursive: true });
+    await writeFile(
+      fixture.destination,
+      mergeManagedSkill({
+        source: legacyCanonicalSkill,
+        confirmManagedReplacement: false,
+      }).content,
+    );
+
+    await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
+      status: "stale",
+    });
+    await expect(
+      checkGlobalSkillForProject({
+        ...fixture,
+        recordingMode: "local-only",
+      }),
+    ).resolves.toMatchObject({ status: "compatible" });
+    await expect(
+      checkGlobalSkillForProject({
+        ...fixture,
+        recordingMode: "project-skill",
+      }),
+    ).resolves.toMatchObject({ status: "stale" });
+  });
+
+  it("requires the receipt capability for strict bundled skill checks", async () => {
+    const fixture = await createSkillFixture();
+    const disabledCapability = canonicalSkill.replace(
+      "  aiQaRecordingReceipt: true",
+      "  aiQaRecordingReceipt: false",
+    );
+    await mkdir(dirname(fixture.destination), { recursive: true });
+    await writeFile(
+      fixture.destination,
+      mergeManagedSkill({
+        source: disabledCapability,
+        confirmManagedReplacement: false,
+      }).content,
+    );
+
+    await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
+      status: "stale",
+    });
+  });
+});
+
+describe("bundled global skill 1.1", () => {
+  it("declares receipt capability and the neutral recording workflow", async () => {
+    const content = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+
+    expect(content).toContain("  aiQaSkillVersion: 1.1.0");
+    expect(content).toContain("  aiQaProtocolRange: ^1.1.0");
+    expect(content).toContain("  aiQaRecordingReceipt: true");
+    expect(content).toContain(
+      "Ask how the project currently manages QA results or defects without offering a provider list.",
+    );
+    expect(content).toContain(
+      "When there is no existing process, default to `recordingPolicy.mode: local-only`.",
+    );
+    expect(content).toContain(
+      "Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.",
+    );
+    expect(content).toContain(
+      "The host owns permissions and authentication for every external tool.",
+    );
+    expect(content).toContain(
+      "Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.",
+    );
+    expect(content).toContain(
+      "For `local-only`, show the verified local report paths and end.",
+    );
+    expect(content).toContain(
+      "For `project-skill`, load the trusted canonical Project Skill before recording.",
+    );
+    expect(content).toContain(
+      "Register only the neutral receipt `status` and `references` returned by the host-owned procedure.",
+    );
+    expect(content).toContain(
+      "If an external recording operation has an uncertain result, register `unknown` without retrying it.",
+    );
+    expect(content).toContain(
+      "The recording outcome never changes the QA verdict.",
+    );
+    expect(content).toContain(
+      "Treat `report.not_generated` as a prerequisite: generate the report before querying recording status again.",
+    );
+    expect(content).toContain(
+      "Stop on lifecycle, evidence, report, recording, or storage integrity errors; never report them as `pending` and never submit a receipt before the verified-report boundary succeeds.",
+    );
+    expect(content).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
+  });
 });
 
 describe("global skill CLI", () => {
@@ -398,7 +515,7 @@ describe("global skill CLI", () => {
     ).toBe(0);
     expect(
       await readFile(join(agentsHome, "skills", "ai-qa", "SKILL.md"), "utf8"),
-    ).toContain("aiQaSkillVersion: 1.0.0");
+    ).toContain("aiQaSkillVersion: 1.1.0");
     expect(await runCli(["skill", "check", "--global"], captured.context)).toBe(
       0,
     );

@@ -29,6 +29,7 @@ interface ReferenceAsset {
 interface InstalledMetadata {
   aiQaSkillVersion: string;
   aiQaProtocolRange: string;
+  aiQaRecordingReceipt: boolean;
 }
 
 function destinationFor(agentsHome: string): string {
@@ -101,20 +102,33 @@ function isManagedConflict(error: unknown): boolean {
   return error instanceof AiQaError && error.code === "skill.managed_conflict";
 }
 
-function parseInstalledMetadata(content: string): InstalledMetadata {
+function parseInstalledMetadata(
+  content: string,
+  options: { allowMissingReceiptCapability?: boolean } = {},
+): InstalledMetadata {
   const metadata = inspectManagedSkill(content).metadata;
   const aiQaSkillVersion = metadata.aiQaSkillVersion;
   const aiQaProtocolRange = metadata.aiQaProtocolRange;
+  const aiQaRecordingReceipt = metadata.aiQaRecordingReceipt;
   if (
     typeof aiQaSkillVersion !== "string" ||
-    typeof aiQaProtocolRange !== "string"
+    typeof aiQaProtocolRange !== "string" ||
+    (typeof aiQaRecordingReceipt !== "boolean" &&
+      !(
+        options.allowMissingReceiptCapability === true &&
+        aiQaRecordingReceipt === undefined
+      ))
   ) {
     throw new AiQaError(
       "skill.invalid_frontmatter",
-      "SKILL.md compatibility metadata must be strings",
+      "SKILL.md compatibility metadata must include string versions and a boolean recording receipt capability",
     );
   }
-  return { aiQaSkillVersion, aiQaProtocolRange };
+  return {
+    aiQaSkillVersion,
+    aiQaProtocolRange,
+    aiQaRecordingReceipt: aiQaRecordingReceipt ?? false,
+  };
 }
 
 export async function previewGlobalSkillSync(input: {
@@ -280,12 +294,15 @@ export async function checkGlobalSkill(input: {
   let installedMetadata: InstalledMetadata;
   try {
     sourceMetadata = parseInstalledMetadata(source);
-    installedMetadata = parseInstalledMetadata(existing);
+    installedMetadata = parseInstalledMetadata(existing, {
+      allowMissingReceiptCapability: true,
+    });
   } catch {
     return { status: "conflict", destination };
   }
   if (
     sourceMetadata.aiQaSkillVersion !== installedMetadata.aiQaSkillVersion ||
+    !installedMetadata.aiQaRecordingReceipt ||
     !satisfies(WORK_PROTOCOL_VERSION, installedMetadata.aiQaProtocolRange) ||
     proposed.changed
   ) {
@@ -302,6 +319,44 @@ export async function checkGlobalSkill(input: {
     if (sha256(installed) !== reference.hash) {
       return { status: "conflict", destination };
     }
+  }
+  return { status: "compatible", destination };
+}
+
+export async function checkGlobalSkillForProject(input: {
+  agentsHome: string;
+  sourcePath: string;
+  recordingMode: "local-only" | "project-skill";
+}): Promise<{
+  status: "compatible" | "missing" | "stale" | "conflict";
+  destination: string;
+}> {
+  const destination = destinationFor(input.agentsHome);
+  const existing = await readOptional(destination);
+  if (existing === undefined) {
+    return { status: "missing", destination };
+  }
+
+  try {
+    parseInstalledMetadata(await readFile(input.sourcePath, "utf8"));
+    const inspection = inspectManagedSkill(existing);
+    const metadata = parseInstalledMetadata(existing, {
+      allowMissingReceiptCapability: true,
+    });
+    if (inspection.recordedManagedChecksum !== inspection.managedChecksum) {
+      return { status: "conflict", destination };
+    }
+    if (!satisfies(WORK_PROTOCOL_VERSION, metadata.aiQaProtocolRange)) {
+      return { status: "stale", destination };
+    }
+    if (
+      input.recordingMode === "project-skill" &&
+      !metadata.aiQaRecordingReceipt
+    ) {
+      return { status: "stale", destination };
+    }
+  } catch {
+    return { status: "conflict", destination };
   }
   return { status: "compatible", destination };
 }

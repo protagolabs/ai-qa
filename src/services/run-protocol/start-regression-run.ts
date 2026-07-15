@@ -1,4 +1,8 @@
 import { readProjectConfig } from "../../core/config/repository.js";
+import {
+  projectConfigSchema,
+  type EffectiveProjectConfig,
+} from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { CaseRepository } from "../../core/cases/repository.js";
@@ -46,6 +50,7 @@ interface PrepareRegressionWorkOrderInput {
   readiness: WebDoctorResult;
   now: () => Date;
   preflightResult?: true;
+  projectConfig?: EffectiveProjectConfig;
 }
 
 export async function prepareRegressionWorkOrder(
@@ -56,7 +61,9 @@ export async function prepareRegressionWorkOrder(
     explicitProject: input.projectRoot,
     aiQaHome: input.aiQaHome,
   });
-  const config = await readProjectConfig(trusted.projectRoot);
+  const config = projectConfigSchema.parse(
+    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+  );
   const readiness = readinessSchema.parse(input.readiness);
   const revision = await new CaseRepository(
     trusted.projectRoot,

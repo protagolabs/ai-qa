@@ -1,9 +1,10 @@
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
@@ -36,6 +37,33 @@ const config: ProjectConfig = {
   secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
+const legacyGlobalSkill = `---
+name: ai-qa
+description: QA
+metadata:
+  aiQaSkillVersion: 1.0.0
+  aiQaProtocolRange: ^1.0.0
+  aiQaManagedChecksum: bundled
+---
+<!-- ai-qa:managed:start -->
+legacy flow
+<!-- ai-qa:managed:end -->
+<!-- ai-qa:user:start -->
+<!-- ai-qa:user:end -->
+`;
+
+async function installLegacyGlobalSkill(agentsHome: string): Promise<void> {
+  const directory = join(agentsHome, "skills", "ai-qa");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "SKILL.md"),
+    mergeManagedSkill({
+      source: legacyGlobalSkill,
+      confirmManagedReplacement: false,
+    }).content,
+  );
+}
+
 async function listFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
   const files: string[] = [];
@@ -63,12 +91,7 @@ describe("web doctor CLI", () => {
     });
     await initializeTestProject({ projectRoot, aiQaHome, config });
 
-    const installedSkill = createCapturedCli({
-      env: { AI_QA_AGENTS_HOME: agentsHome },
-    });
-    expect(
-      await runCli(["skill", "install", "--global"], installedSkill.context),
-    ).toBe(0);
+    await installLegacyGlobalSkill(agentsHome);
 
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -133,5 +156,64 @@ describe("web doctor CLI", () => {
       }
     `);
     expect(await listFiles(stateRoot)).toEqual(before);
+  });
+
+  it("rejects a legacy global skill for project-skill recording", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: {
+        ...config,
+        recordingPolicy: { mode: "project-skill" },
+      },
+    });
+    await installLegacyGlobalSkill(agentsHome);
+
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: {
+        AI_QA_HOME: aiQaHome,
+        AI_QA_AGENTS_HOME: agentsHome,
+      },
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 204 })),
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            chromeDevtoolsMcp: {
+              status: "ready",
+              observedAt: "2026-07-13T00:00:00.000Z",
+              evidence: "Chrome DevTools MCP listed the target page",
+            },
+          }),
+        ),
+    });
+
+    expect(
+      await runCli(
+        ["doctor", "--platform", "web", "--json", "--stdin-json"],
+        captured.context,
+      ),
+    ).toBe(0);
+    const output = JSON.parse(captured.stdout.join("")) as {
+      status: unknown;
+      checks: unknown[];
+    };
+    expect(output.status).toBe("not_ready");
+    expect(output.checks).toContainEqual({
+      code: "agent.global_skill",
+      status: "fail",
+      message: "Global skill status: stale",
+    });
   });
 });

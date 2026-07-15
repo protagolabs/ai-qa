@@ -8,6 +8,7 @@ import {
   effectiveWorkOrderRecordingMode,
   exploratoryRunInputSchema,
   runIdSchema,
+  storedWorkProtocolVersionSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
 import { projectConfigV2 } from "../helpers/project-fixture.js";
@@ -52,6 +53,9 @@ describe("exploratory work orders", () => {
     expect(sha256Canonical(parsed)).toBe(hash);
     expect(parsed).not.toHaveProperty("recordingPolicy");
     expect(effectiveWorkOrderRecordingMode(parsed)).toBe("local-only");
+    expect(storedWorkProtocolVersionSchema.parse(parsed.protocolVersion)).toBe(
+      "1.0.0",
+    );
   });
 
   it("snapshots the config recording mode in new work orders", () => {
@@ -81,6 +85,7 @@ describe("exploratory work orders", () => {
 
     config.recordingPolicy.mode = "local-only";
 
+    expect(workOrder.protocolVersion).toBe("1.1.0");
     expect(effectiveWorkOrderRecordingMode(workOrder)).toBe("project-skill");
     expect(Object.isFrozen(workOrder.recordingPolicy)).toBe(true);
   });
