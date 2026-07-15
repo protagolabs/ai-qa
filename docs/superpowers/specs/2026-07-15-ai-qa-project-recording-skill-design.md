@@ -320,7 +320,7 @@ type RecordingArtifact = {
 
 因此 `recording-status` 對外是狀態查詢，但允許唯一一種本地寫入副作用：在 lock 內修復可由 canonical journal 唯一決定的 `recording.json`。它不得修改 journal、report、run、verdict 或任何外部系統。
 
-`report export --adapter project-local` 只驗證並回傳 configured `report.json`／`report.md` 路徑，不包含 `recording.json` 或 `recording.jsonl`。Recording 狀態與 history 只能透過 `report recording-status` 查詢。
+`report export --adapter project-local` 只驗證並回傳 configured `report.json`／`report.md` 路徑，不包含 `recording.json` 或 `recording.jsonl`。最新 Recording 狀態透過 `report recording-status` 查詢；完整 append-only history 保留在本地 canonical `recording.jsonl` 與 deterministic `recording.json`，不屬於 report export 或 status response。
 
 `report export --adapter project-local` 保持向後相容；外部專案記錄不透過 export adapter 執行。
 

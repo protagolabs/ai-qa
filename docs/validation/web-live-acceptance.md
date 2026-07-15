@@ -38,6 +38,87 @@ This is the release-gate procedure for Increment 1. It is not satisfied by the a
 - Visual inspection confirmed that the screenshot shows `Authenticated home` and `Current account: qa@example.test` without the password.
 - The fixture password value is absent from project state and reports. Trust exists only at `/private/tmp/ai-qa-machine.0jP1NE/ai-qa/trust.json`; the only fixture `.ai-qa` directory is `fixtures/web-app/.ai-qa/`.
 
+## Project recording 1.1 acceptance addendum
+
+The live proof above records the Increment 1 browser run at its stated commit.
+The provider-neutral Project Skill and recording-receipt extension is released
+only when the following reproducible automated gate also passes from the
+repository root:
+
+```bash
+pnpm vitest run \
+  tests/unit/config-migration.test.ts \
+  tests/unit/project-skill.test.ts \
+  tests/unit/recording-schema.test.ts \
+  tests/integration/init.test.ts \
+  tests/integration/project-skill.test.ts \
+  tests/integration/global-skill.test.ts \
+  tests/integration/report-generation.test.ts \
+  tests/integration/recording-receipt.test.ts \
+  tests/e2e/project-recording-flow.test.ts
+```
+
+Acceptance checklist and test evidence:
+
+- [ ] Config v1 read-without-rewrite: `config-migration.test.ts` hashes the
+      original bytes before and after normalization; `cli-web-vertical-slice.test.ts`
+      also runs a legacy project without rewriting its config or creating recording
+      artifacts.
+- [ ] Local-only initialization and completion:
+      `project-recording-flow.test.ts` previews and checksum-confirms the complete
+      v2 config plus Project Skill, generates a verified report, returns
+      `not_applicable`, and confirms that neither recording file exists.
+- [ ] Arbitrary local Markdown procedure: the project-skill E2E installs and
+      follows a `docs/qa-results.md` procedure taken from the Project Skill, then
+      registers only neutral status and opaque references. No built-in provider is
+      needed.
+- [ ] Managed/user preservation: `project-skill.test.ts` proves the user region
+      is preserved byte-for-byte, including CRLF content, and that replacing an
+      edited managed region requires a confirmed diff.
+- [ ] Preview freshness: `project-skill.test.ts` changes the submitted request
+      and destination after preview and expects `setup.checksum_mismatch` with no
+      partial publication; the transaction rollback cases preserve original bytes.
+- [ ] Receipt idempotency: `recording-receipt.test.ts` replays the same key and
+      payload without another journal write, and rejects reuse of the key with a
+      different payload as `recording.idempotency_conflict`.
+- [ ] Crash recovery: the same integration file removes `recording.json` to
+      simulate a crash after canonical journal publication, then separately makes
+      the view lag by one event. Status/retry deterministically rebuilds the view
+      from unchanged `recording.jsonl` in both cases.
+- [ ] Frozen bidirectional mode switches: receipt integration changes current
+      config from `project-skill` to `local-only` and in the reverse direction. The
+      immutable work-order snapshot keeps historical status and receipt eligibility
+      unchanged; legacy work orders remain local-only without a rewrite.
+- [ ] Verified-report boundary: before report generation, recording status and
+      receipt return `report.not_generated`; after a terminal verified report, an
+      empty project-skill repository returns `pending`. Report/evidence drift stays
+      an integrity error instead of becoming pending.
+- [ ] Report-only export: after real recording artifacts exist,
+      `project-recording-flow.test.ts` exports exactly the configured
+      `report.json` and `report.md` project-relative paths and explicitly excludes
+      `recording.jsonl`/`recording.json`. Recording state is queried separately.
+- [ ] Immutable QA artifacts: receipt integration and the project-skill E2E hash
+      report JSON, report Markdown, and run journal bytes before and after all three
+      receipt statuses, and compare the verdict, criterion results, integrity block,
+      and terminal event unchanged.
+- [ ] Symlink rejection: `project-skill.test.ts` covers every Project Skill
+      ancestor and `SKILL.md`; `recording-receipt.test.ts` covers both recording
+      paths. Each existing symlink is rejected with an integrity error without
+      following or modifying its target.
+- [ ] Packaged global Skill metadata: after `pnpm build`, verify the copied
+      artifact directly:
+
+  ```bash
+  rg -n "aiQaSkillVersion: 1.1.0|aiQaProtocolRange: \^1.1.0|aiQaRecordingReceipt: true" \
+    dist/skills/global/SKILL.md
+  ```
+
+For a current manual replay, initialization must use a schema-v2
+`InitializationRequest` containing both `config.recordingPolicy` and the
+complete `projectSkill`; preview that exact JSON and apply it only with the
+displayed checksum. The schema-v1 fixture below is retained as the immutable
+input used by the dated historical live proof, not as current init input.
+
 ## Target
 
 - Project root: `fixtures/web-app`

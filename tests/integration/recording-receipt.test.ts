@@ -263,6 +263,38 @@ describe("recording repository", () => {
     expect(registered.artifact.materializedAt).toBe(FIRST_RECORDED_AT);
   });
 
+  it.each(["recording.jsonl", "recording.json"])(
+    "rejects a symlinked %s without following or replacing its target",
+    async (filename) => {
+      const directory = await createDirectory();
+      const outside = await mkdtemp(join(tmpdir(), "ai-qa-recording-outside-"));
+      const outsidePath = join(outside, filename);
+      const outsideBytes = `outside ${filename} bytes\n`;
+      if (filename === "recording.json") {
+        await writeJournal(directory, [recordingEvent()]);
+      }
+      await writeFile(outsidePath, outsideBytes);
+      await symlink(outsidePath, join(directory, filename));
+      const repository = new RecordingRepository(
+        directory,
+        "run-1",
+        () => new Date(FIRST_RECORDED_AT),
+      );
+
+      await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+        code: "recording.integrity_error",
+      });
+      await expect(
+        repository.registerUnlocked({
+          idempotencyKey: "symlink-boundary",
+          status: "unknown",
+          references: [],
+        }),
+      ).rejects.toMatchObject({ code: "recording.integrity_error" });
+      expect(await readFile(outsidePath, "utf8")).toBe(outsideBytes);
+    },
+  );
+
   it("recovers the crash window without changing journal or collateral bytes", async () => {
     const directory = await createDirectory();
     const projectRoot = join(directory, "..", "..", "..", "..");

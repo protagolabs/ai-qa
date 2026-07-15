@@ -589,6 +589,17 @@ describe("project recording workflow CLI", () => {
       status: journal.at(-1)!.status,
       references: journal.at(-1)!.references,
     });
+    expect(
+      await fixture.cli.run<GeneratedReportPaths>([
+        "report",
+        "export",
+        run.runId,
+        "--adapter",
+        "project-local",
+      ]),
+    ).toEqual(report);
+    expect(Object.values(report)).not.toContain("recording.jsonl");
+    expect(Object.values(report)).not.toContain("recording.json");
     expect(await readFile(qaResultsPath, "utf8")).toContain(
       `| ${run.runId} | not_verified |`,
     );

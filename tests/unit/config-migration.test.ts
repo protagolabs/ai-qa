@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +43,7 @@ describe("config v2 migration boundary", () => {
     await mkdir(join(projectRoot, ".ai-qa"));
     const path = join(projectRoot, ".ai-qa", "config.yaml");
     const bytes = stringify(projectConfigV1(), { sortMapEntries: true });
+    const beforeHash = createHash("sha256").update(bytes).digest("hex");
     await writeFile(path, bytes);
 
     await expect(readStoredProjectConfig(projectRoot)).resolves.toMatchObject({
@@ -51,7 +53,11 @@ describe("config v2 migration boundary", () => {
       schemaVersion: 2,
       recordingPolicy: { mode: "local-only" },
     });
-    expect(await readFile(path, "utf8")).toBe(bytes);
+    const afterBytes = await readFile(path, "utf8");
+    expect(afterBytes).toBe(bytes);
+    expect(createHash("sha256").update(afterBytes).digest("hex")).toBe(
+      beforeHash,
+    );
   });
 
   it("rejects unknown stored schema versions", () => {
