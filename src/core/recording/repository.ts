@@ -5,6 +5,7 @@ import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
+import { isJsonValue } from "../json-value.js";
 import { runIdSchema } from "../runs/schema.js";
 import {
   recordingArtifactSchema,
@@ -80,9 +81,11 @@ function rawArtifactContradictsJournal(input: {
     if (event === undefined) return true;
     const expected = historyEntry(event);
     for (const field of recordingHistoryFields) {
+      if (!Object.hasOwn(rawEntry, field)) continue;
+      const rawValue = rawEntry[field];
       if (
-        Object.hasOwn(rawEntry, field) &&
-        canonicalJson(rawEntry[field]) !== canonicalJson(expected[field])
+        !isJsonValue(rawValue) ||
+        canonicalJson(rawValue) !== canonicalJson(expected[field])
       ) {
         return true;
       }

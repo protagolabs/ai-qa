@@ -473,6 +473,37 @@ describe("recording repository", () => {
     );
   });
 
+  it("maps an overflowing number in a recognized history field to stable integrity failure", async () => {
+    const directory = await createDirectory();
+    const event = recordingEvent();
+    await writeJournal(directory, [event]);
+    const expected = materializeRecordingArtifact({
+      runId: "run-1",
+      events: [event],
+    });
+    const canonicalBytes = `${JSON.stringify(expected, null, 2)}\n`;
+    const unsafeBytes = canonicalBytes.replace(
+      '"idempotencyKey": "receipt-1"',
+      '"idempotencyKey": 1e400',
+    );
+    if (unsafeBytes === canonicalBytes) {
+      throw new Error("Expected to inject an overflowing JSON number");
+    }
+    await writeFile(join(directory, "recording.json"), unsafeBytes);
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date(FIRST_RECORDED_AT),
+    );
+
+    await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+      code: "recording.integrity_error",
+    });
+    expect(await readFile(join(directory, "recording.json"), "utf8")).toBe(
+      unsafeBytes,
+    );
+  });
+
   it("rejects an artifact without its canonical journal", async () => {
     const directory = await createDirectory();
     await writeArtifact(
