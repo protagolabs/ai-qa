@@ -710,6 +710,96 @@ describe("bundled global skill 1.1", () => {
     expect(prepared.content).not.toMatch(placeholderPattern);
   });
 
+  it("uses one fixed generated description and validates the complete request", async () => {
+    const skill = await readFile(
+      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill).toContain(
+      "Use the fixed description template `Use when performing <Project Name> Web AI QA.` by replacing only `<Project Name>`; add no suffix.",
+    );
+    expect(skill).toContain(
+      "Run the complete request through production `initializationRequestSchema` and `prepareProjectSkill()` before presenting it.",
+    );
+
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    const templateMatch =
+      /<!-- canonical-project-skill-description:start -->\s*```text\r?\n([^\r\n]+)\r?\n```\s*<!-- canonical-project-skill-description:end -->/.exec(
+        reference,
+      );
+    expect(
+      templateMatch?.[1],
+      "canonical generated Project Skill description",
+    ).toBeDefined();
+    const template = templateMatch?.[1];
+    if (template === undefined) {
+      throw new Error("Canonical Project Skill description is missing");
+    }
+    expect(template).toBe("Use when performing <Project Name> Web AI QA.");
+    expect(reference).toContain(
+      "`Use when performing Sample Web AI QA, including reports, or reruns.` is valid",
+    );
+    expect(reference).toContain(
+      "`Use when performing Sample Web AI QA, including reports or reruns.` is invalid",
+    );
+    expect(reference).toContain(
+      "Validate the complete initialization request with production `initializationRequestSchema`, then pass its `projectSkill.content` through production `prepareProjectSkill()` before presenting it.",
+    );
+
+    const description = template.replace("<Project Name>", "Fjord Billing");
+    const request = projectSetupRequest({ mode: "project-skill" });
+    request.projectSkill.content = request.projectSkill.content.replace(
+      /^description: .+$/m,
+      `description: ${description}`,
+    );
+    const parsed = initializationRequestSchema.parse(request);
+    const prepared = prepareProjectSkill({
+      source: parsed.projectSkill.content,
+      secretReferences: parsed.config.secretReferences,
+    });
+    expect(prepared.content).toContain(`description: ${description}`);
+    expect(
+      inspectProjectSkill({
+        projectRoot: "/workspace/fjord/billing-web",
+        content: prepared.content,
+      }).status,
+    ).toBe("compatible");
+
+    const existingValid = request.projectSkill.content.replace(
+      `description: ${description}`,
+      "description: Use when performing Sample Web AI QA, including reports, or reruns.",
+    );
+    expect(() =>
+      prepareProjectSkill({
+        source: existingValid,
+        secretReferences: parsed.config.secretReferences,
+      }),
+    ).not.toThrow();
+
+    const invalid = request.projectSkill.content.replace(
+      `description: ${description}`,
+      "description: Use when performing Sample Web AI QA, including reports or reruns.",
+    );
+    expect(() =>
+      prepareProjectSkill({
+        source: invalid,
+        secretReferences: parsed.config.secretReferences,
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: "skill.invalid_project_skill" }),
+    );
+  });
+
   it("requires mechanical checksum verification before presenting a candidate", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),

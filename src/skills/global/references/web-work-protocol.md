@@ -22,13 +22,24 @@ The trust input schema is strict: `confirmed` must be literal `true`, and no oth
 
 ### Project Skill wire contract
 
-`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. Generate it in this order:
+`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. For every generated Project Skill, copy this description template exactly:
+
+<!-- canonical-project-skill-description:start -->
+
+```text
+Use when performing <Project Name> Web AI QA.
+```
+
+<!-- canonical-project-skill-description:end -->
+
+Replace only `<Project Name>` and add no suffix. Existing descriptions still require an `-ing` primary trigger. For existing-description validation only, `Use when performing Sample Web AI QA, including reports, or reruns.` is valid; `Use when performing Sample Web AI QA, including reports or reruns.` is invalid. Put commands in the body, never in the description.
+
+Generate the remaining content in this order:
 
 1. Use the fixed `name: ai-qa-project`. Include metadata `aiQaProjectSkillVersion: 1.0.0`, an `aiQaProtocolRange` containing `1.1.0`, and `aiQaManagedChecksum`.
-2. Start `description` with `Use when `. Make its primary trigger start with an `-ing` word. An optional `, including ` suffix may contain only short noun trigger contexts separated by commas, with `and` or `or` only on the last item. Put commands in the body, never in the description.
-3. Put each marker below exactly once, after frontmatter, in managed-start, managed-end, user-start, user-end order. Put generated project procedures inside the managed region. Start with an empty user region; sync preserves an installed user region byte-for-byte.
-4. Keep the combined managed and user body at or below 500 lines and 5,000 words. Use only configured environment-variable names for secret references and never put a literal secret in the Skill.
-5. Compute the managed checksum after the other frontmatter and managed content are final. Parse frontmatter as a YAML mapping, remove only `metadata.aiQaManagedChecksum`, serialize the full mapping with sorted map entries, normalize managed-region CRLF to LF, and SHA-256 `normalizedFrontmatter + "\n" + normalizedManagedRegion`. In JavaScript, the checksum operation is:
+2. Put each marker below exactly once, after frontmatter, in managed-start, managed-end, user-start, user-end order. Put generated project procedures inside the managed region. Start with an empty user region; sync preserves an installed user region byte-for-byte.
+3. Keep the combined managed and user body at or below 500 lines and 5,000 words. Use only configured environment-variable names for secret references and never put a literal secret in the Skill.
+4. Compute the managed checksum after the other frontmatter and managed content are final. Parse frontmatter as a YAML mapping, remove only `metadata.aiQaManagedChecksum`, serialize the full mapping with sorted map entries, normalize managed-region CRLF to LF, and SHA-256 `normalizedFrontmatter + "\n" + normalizedManagedRegion`. In JavaScript, the checksum operation is:
 
 ```js
 import { createHash } from "node:crypto";
@@ -46,7 +57,7 @@ const checksum = createHash("sha256")
   .digest("hex");
 ```
 
-Before presenting an initialization request, actually execute the checksum algorithm over its final candidate bytes, replace the embedded value with the result, and verify that the embedded and recomputed checksums are equal. Do not claim an unverified value. The preview path repeats this calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
+Before presenting an initialization request, actually execute the checksum algorithm over its final candidate bytes, replace the embedded value with the result, and verify that the embedded and recomputed checksums are equal. Validate the complete initialization request with production `initializationRequestSchema`, then pass its `projectSkill.content` through production `prepareProjectSkill()` before presenting it. Do not claim an unverified or rejected value. The preview path repeats the checksum calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
 
 This provider-neutral example is a complete CLI-valid wire artifact:
 
@@ -55,11 +66,11 @@ This provider-neutral example is a complete CLI-valid wire artifact:
 ```markdown
 ---
 name: ai-qa-project
-description: Use when performing Sample Web AI QA, including evidence, reports, or result recording.
+description: Use when performing Sample Web AI QA.
 metadata:
   aiQaProjectSkillVersion: 1.0.0
   aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: 74da8973832c3263eca6b23b0661470997e10f815c68455622c831742a1c7f8f
+  aiQaManagedChecksum: 7bbd06e5fde0bcd5a2943befd2a9131b82a98981c3c0ecbb38aece9cc65b6366
 ---
 
 <!-- ai-qa:managed:start -->
