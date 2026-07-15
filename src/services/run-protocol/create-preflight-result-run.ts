@@ -1,5 +1,9 @@
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
+import {
+  projectConfigSchema,
+  type EffectiveProjectConfig,
+} from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { RunRepository } from "../../core/runs/repository.js";
@@ -36,6 +40,7 @@ type PreflightResultRunInput = {
   aiQaHome: string;
   readiness: NotReadyWebDoctorResult;
   now: () => Date;
+  projectConfig?: EffectiveProjectConfig;
 } & (
   | {
       kind: "exploratory";
@@ -63,10 +68,12 @@ export async function createPreflightResultRun(
       "Preflight requires a not-ready doctor result",
     );
   }
+  const config = projectConfigSchema.parse(
+    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+  );
 
   let workOrder: WorkOrder;
   if (input.kind === "exploratory") {
-    const config = await readProjectConfig(trusted.projectRoot);
     const payload = exploratoryRunInputSchema.parse(input.exploratoryPayload);
     if (
       payload.readiness.status !== "not_ready" ||
@@ -99,6 +106,7 @@ export async function createPreflightResultRun(
         readiness: input.readiness,
         now: input.now,
         preflightResult: true,
+        projectConfig: config,
       })
     ).workOrder;
   }

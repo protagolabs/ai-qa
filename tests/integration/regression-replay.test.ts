@@ -10,6 +10,7 @@ import {
   calculateWebVariantHash,
   type CaseRevision,
 } from "../../src/core/cases/schema.js";
+import { writeProjectConfig } from "../../src/core/config/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
@@ -21,6 +22,7 @@ import { startRegressionRun } from "../../src/services/run-protocol/start-regres
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
@@ -1209,6 +1211,111 @@ describe("pinned regression replay", () => {
         caseContentHash: calculateCaseContentHash(fixture.revision),
         platformVariantHash: calculateWebVariantHash(fixture.revision),
       },
+    });
+  });
+
+  it("uses the gated config snapshot for a regression CLI preflight result", async () => {
+    const fixture = await createActiveCase();
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-agents-"));
+    const notReady: WebDoctorResult = {
+      ...ready,
+      status: "not_ready",
+      checks: ready.checks.map((check) =>
+        check.code === "web.chrome_devtools_mcp"
+          ? { ...check, status: "fail" as const, message: "MCP missing" }
+          : check,
+      ),
+    };
+    const captured = createCapturedCli({
+      cwd: fixture.projectRoot,
+      env: {
+        AI_QA_HOME: fixture.aiQaHome,
+        AI_QA_AGENTS_HOME: agentsHome,
+      },
+      readStdin: async () => {
+        await writeProjectConfig(fixture.projectRoot, {
+          ...config,
+          recordingPolicy: { mode: "project-skill" },
+        });
+        return JSON.stringify(notReady);
+      },
+    });
+
+    expect(
+      await runCli(
+        [
+          "run",
+          "start",
+          "--kind",
+          "regression",
+          "--case",
+          "login-success",
+          "--platform",
+          "web",
+          "--execution",
+          "ci",
+          "--stdin-json",
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    const result = JSON.parse(captured.stdout.join("")) as { runId: string };
+    const workOrder = await new RunRepository(
+      fixture.projectRoot,
+      now,
+    ).readVerifiedWorkOrder(result.runId);
+
+    expect(workOrder).toMatchObject({
+      kind: "regression",
+      execution: "ci",
+      preflightResult: true,
+      recordingPolicy: { mode: "local-only" },
+    });
+  });
+
+  it("uses the gated config snapshot for a ready regression CLI run", async () => {
+    const fixture = await createActiveCase();
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-agents-"));
+    await installReleasedLegacyGlobalSkill(agentsHome);
+    const captured = createCapturedCli({
+      cwd: fixture.projectRoot,
+      env: {
+        AI_QA_HOME: fixture.aiQaHome,
+        AI_QA_AGENTS_HOME: agentsHome,
+      },
+      readStdin: async () => {
+        await writeProjectConfig(fixture.projectRoot, {
+          ...config,
+          recordingPolicy: { mode: "project-skill" },
+        });
+        return JSON.stringify(ready);
+      },
+    });
+
+    expect(
+      await runCli(
+        [
+          "run",
+          "start",
+          "--kind",
+          "regression",
+          "--case",
+          "login-success",
+          "--platform",
+          "web",
+          "--execution",
+          "ci",
+          "--stdin-json",
+        ],
+        captured.context,
+      ),
+    ).toBe(0);
+    const workOrder = JSON.parse(captured.stdout.join("")) as unknown;
+
+    expect(workOrder).toMatchObject({
+      kind: "regression",
+      execution: "ci",
+      recordingPolicy: { mode: "local-only" },
     });
   });
 

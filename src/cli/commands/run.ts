@@ -169,6 +169,7 @@ export function registerRunCommands(
             execution: parsedOptions.execution,
             readiness: { ...verifiedReadiness, status: "not_ready" },
             now: context.now,
+            projectConfig: config,
           }),
         );
         return;
@@ -201,6 +202,7 @@ export function registerRunCommands(
           execution: "local",
           readiness: { ...verifiedReadiness, status: "not_ready" },
           now: context.now,
+          projectConfig: config,
         }),
       );
     },

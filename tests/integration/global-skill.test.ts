@@ -18,6 +18,12 @@ import {
 } from "../../src/services/skill-management/global-skill.js";
 import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import {
+  copyReleasedLegacyGlobalSkill,
+  installReleasedLegacyGlobalSkill,
+  installedGlobalSkillReference,
+  readReleasedLegacyGlobalSkill,
+} from "../helpers/global-skill-fixture.js";
 
 const canonicalSkill = `---
 name: ai-qa
@@ -35,11 +41,6 @@ flow
 <!-- ai-qa:user:end -->
 `;
 
-const legacyCanonicalSkill = canonicalSkill
-  .replace("  aiQaSkillVersion: 1.1.0", "  aiQaSkillVersion: 1.0.0")
-  .replace("  aiQaProtocolRange: ^1.1.0", "  aiQaProtocolRange: ^1.0.0")
-  .replace("  aiQaRecordingReceipt: true\n", "");
-
 async function createSkillFixture(
   references: Readonly<Record<string, string>> = {
     "web-work-protocol.md": "# Protocol\n",
@@ -53,6 +54,7 @@ async function createSkillFixture(
   const sourceDirectory = join(agentsHome, "canonical");
   const sourcePath = join(sourceDirectory, "SKILL.md");
   await mkdir(join(sourceDirectory, "references"), { recursive: true });
+  await copyReleasedLegacyGlobalSkill(sourceDirectory);
   await writeFile(sourcePath, canonicalSkill);
   for (const [relativePath, content] of Object.entries(references)) {
     const path = join(sourceDirectory, "references", relativePath);
@@ -373,14 +375,7 @@ describe("syncGlobalSkill", () => {
 
   it("keeps a valid 1.0 skill runtime-compatible only for local-only recording", async () => {
     const fixture = await createSkillFixture();
-    await mkdir(dirname(fixture.destination), { recursive: true });
-    await writeFile(
-      fixture.destination,
-      mergeManagedSkill({
-        source: legacyCanonicalSkill,
-        confirmManagedReplacement: false,
-      }).content,
-    );
+    await installReleasedLegacyGlobalSkill(fixture.agentsHome);
 
     await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
       status: "stale",
@@ -395,6 +390,91 @@ describe("syncGlobalSkill", () => {
       checkGlobalSkillForProject({
         ...fixture,
         recordingMode: "project-skill",
+      }),
+    ).resolves.toMatchObject({ status: "stale" });
+  });
+
+  it.each([
+    { condition: "missing", expected: "stale" },
+    { condition: "tampered", expected: "conflict" },
+  ] as const)(
+    "rejects a current 1.1 skill when its managed reference is $condition",
+    async ({ condition, expected }) => {
+      const fixture = await createSkillFixture();
+      await syncGlobalSkill({
+        ...fixture,
+        confirmManagedReplacement: false,
+      });
+      const installedReference = join(
+        dirname(fixture.destination),
+        "references",
+        "web-work-protocol.md",
+      );
+      if (condition === "missing") {
+        await unlink(installedReference);
+      } else {
+        await writeFile(installedReference, "# Locally modified protocol\n");
+      }
+
+      for (const recordingMode of ["local-only", "project-skill"] as const) {
+        await expect(
+          checkGlobalSkillForProject({ ...fixture, recordingMode }),
+        ).resolves.toMatchObject({ status: expected });
+      }
+    },
+  );
+
+  it.each([
+    { condition: "missing", localStatus: "stale" },
+    { condition: "tampered", localStatus: "conflict" },
+  ] as const)(
+    "rejects a released legacy 1.0 skill when its pinned reference is $condition",
+    async ({ condition, localStatus }) => {
+      const fixture = await createSkillFixture();
+      await installReleasedLegacyGlobalSkill(fixture.agentsHome);
+      const installedReference = installedGlobalSkillReference(
+        fixture.agentsHome,
+      );
+      if (condition === "missing") {
+        await unlink(installedReference);
+      } else {
+        await writeFile(installedReference, "# Unknown legacy reference\n");
+      }
+
+      await expect(
+        checkGlobalSkillForProject({
+          ...fixture,
+          recordingMode: "local-only",
+        }),
+      ).resolves.toMatchObject({ status: localStatus });
+      await expect(
+        checkGlobalSkillForProject({
+          ...fixture,
+          recordingMode: "project-skill",
+        }),
+      ).resolves.toMatchObject({ status: "stale" });
+    },
+  );
+
+  it("rejects a checksum-self-consistent impostor claiming legacy 1.0", async () => {
+    const fixture = await createSkillFixture();
+    await installReleasedLegacyGlobalSkill(fixture.agentsHome);
+    const forged = (await readReleasedLegacyGlobalSkill()).replace(
+      "# AI QA Workflow",
+      "# Forged AI QA Workflow",
+    );
+    await writeFile(
+      fixture.destination,
+      mergeManagedSkill({
+        source: forged,
+        confirmManagedReplacement: false,
+      }).content,
+    );
+
+    await expect(
+      checkGlobalSkillForProject({
+        ...fixture,
+        recordingMode: "local-only",
       }),
     ).resolves.toMatchObject({ status: "stale" });
   });

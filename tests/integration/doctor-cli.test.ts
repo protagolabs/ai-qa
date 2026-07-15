@@ -1,12 +1,12 @@
-import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
-import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
@@ -37,33 +37,6 @@ const config: ProjectConfig = {
   secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
 };
 
-const legacyGlobalSkill = `---
-name: ai-qa
-description: QA
-metadata:
-  aiQaSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.0.0
-  aiQaManagedChecksum: bundled
----
-<!-- ai-qa:managed:start -->
-legacy flow
-<!-- ai-qa:managed:end -->
-<!-- ai-qa:user:start -->
-<!-- ai-qa:user:end -->
-`;
-
-async function installLegacyGlobalSkill(agentsHome: string): Promise<void> {
-  const directory = join(agentsHome, "skills", "ai-qa");
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(directory, "SKILL.md"),
-    mergeManagedSkill({
-      source: legacyGlobalSkill,
-      confirmManagedReplacement: false,
-    }).content,
-  );
-}
-
 async function listFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
   const files: string[] = [];
@@ -91,7 +64,7 @@ describe("web doctor CLI", () => {
     });
     await initializeTestProject({ projectRoot, aiQaHome, config });
 
-    await installLegacyGlobalSkill(agentsHome);
+    await installReleasedLegacyGlobalSkill(agentsHome);
 
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -176,7 +149,7 @@ describe("web doctor CLI", () => {
         recordingPolicy: { mode: "project-skill" },
       },
     });
-    await installLegacyGlobalSkill(agentsHome);
+    await installReleasedLegacyGlobalSkill(agentsHome);
 
     const captured = createCapturedCli({
       cwd: projectRoot,
