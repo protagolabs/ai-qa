@@ -2797,3 +2797,14 @@ Only the ten sections headed `AUDIT RAW A1` through `AUDIT RAW B5` are scored. T
 | B5  | P                      | P                     | —                  | P                         | P                    | P                      | P                              | P                 |
 
 Final audit result: every scored repetition has a complete fresh-context, two-artifact-only prompt/output envelope and passes every applicable behavioral observable. The earlier A3/A5 envelope omissions and A4/B4 placement error are excluded as superseded evidence rather than reconstructed by the coordinator.
+
+## Terminal whole-branch wire-contract review
+
+The terminal review found that the behavioral score above did not validate the emitted `projectSkill.content` against the CLI wire contract. The scored `AUDIT RAW A3` Cedar initialization request passes `initializationRequestSchema`, but its Project Skill fails `prepareProjectSkill()` with `skill.invalid_markers`. Adding only the four ordered markers exposes the next failure, `skill.invalid_frontmatter`, because the content lacks required managed metadata. Adding `aiQaProjectSkillVersion: 1.0.0`, an `aiQaProtocolRange` containing `1.1.0`, and `aiQaManagedChecksum` then exposes the invalid trigger description. The content is accepted only after its description also follows the CLI's trigger-only `Use when ...` grammar.
+
+Automated RED/GREEN evidence:
+
+- RED: `tests/integration/global-skill.test.ts` required a canonical Project Skill example from the bundled reference and mechanically submitted it through the initialization and Project Skill validators. It failed because the reference had no canonical wire artifact.
+- GREEN: the bundled 1.1 reference now documents the complete metadata, description grammar, ordered managed/user markers, size and secret limits, and checksum algorithm. Its concrete provider-neutral example has no placeholders, has a self-consistent managed checksum, passes `initializationRequestSchema`, reports compatible through `inspectProjectSkill()`, and passes `prepareProjectSkill()`.
+
+No raw worker output above was edited, and this finding does not reclassify an old scored payload as CLI-valid. Fresh-agent impacted Family A/B evaluation remains an integration follow-up for the controller after this branch is merged.

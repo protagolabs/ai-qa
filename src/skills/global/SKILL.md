@@ -19,8 +19,9 @@ metadata:
 3. Ask how the project currently manages QA results or defects without offering a provider list.
 4. When there is no existing process, default to `recordingPolicy.mode: local-only`. When there is an existing procedure, use `project-skill` and encode that procedure exactly in the Project Skill, including its match and rerun rules.
 5. Discuss targets, environment, evidence, report, storage, Git, and secret-reference policy. Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.
-6. The host owns permissions and authentication for every external tool. The CLI and this Skill neither acquire credentials nor bypass host approval.
-7. Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.
+6. Build `projectSkill.content` with the canonical Project Skill wire format in the reference. Include compatible metadata, a trigger-only description, managed and user markers, and a computed managed checksum; prose-only Skill content is not an initialization payload.
+7. The host owns permissions and authentication for every external tool. The CLI and this Skill neither acquire credentials nor bypass host approval.
+8. Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.
 
 Read `references/web-work-protocol.md` for the complete initialization payload and preview/apply commands.
 

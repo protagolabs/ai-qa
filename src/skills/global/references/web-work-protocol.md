@@ -4,6 +4,78 @@
 
 Ask how the project already manages QA results or defects. If no process exists, choose `recordingPolicy.mode: local-only`. If one exists, choose `project-skill` and put the exact procedure in `projectSkill.content`; do not replace it with a different workflow.
 
+### Project Skill wire contract
+
+`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. Generate it in this order:
+
+1. Use the fixed `name: ai-qa-project`. Include metadata `aiQaProjectSkillVersion: 1.0.0`, an `aiQaProtocolRange` containing `1.1.0`, and `aiQaManagedChecksum`.
+2. Start `description` with `Use when `. Make its primary trigger start with an `-ing` word. An optional `, including ` suffix may contain only short noun trigger contexts separated by commas, with `and` or `or` only on the last item. Put commands in the body, never in the description.
+3. Put each marker below exactly once, after frontmatter, in managed-start, managed-end, user-start, user-end order. Put generated project procedures inside the managed region. Start with an empty user region; sync preserves an installed user region byte-for-byte.
+4. Keep the combined managed and user body at or below 500 lines and 5,000 words. Use only configured environment-variable names for secret references and never put a literal secret in the Skill.
+5. Compute the managed checksum after the other frontmatter and managed content are final. Parse frontmatter as a YAML mapping, remove only `metadata.aiQaManagedChecksum`, serialize the full mapping with sorted map entries, normalize managed-region CRLF to LF, and SHA-256 `normalizedFrontmatter + "\n" + normalizedManagedRegion`. In JavaScript, the checksum operation is:
+
+```js
+import { createHash } from "node:crypto";
+import { stringify } from "yaml";
+
+const metadata = { ...frontmatter.metadata };
+delete metadata.aiQaManagedChecksum;
+const normalizedFrontmatter = stringify(
+  { ...frontmatter, metadata },
+  { sortMapEntries: true },
+);
+const managedLf = managedRegion.replace(/\r\n/g, "\n");
+const checksum = createHash("sha256")
+  .update(`${normalizedFrontmatter}\n${managedLf}`)
+  .digest("hex");
+```
+
+The preview path repeats this calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
+
+This provider-neutral example is a complete CLI-valid wire artifact:
+
+<!-- canonical-project-skill:start -->
+
+```markdown
+---
+name: ai-qa-project
+description: Use when performing Sample Web AI QA, including evidence, reports, or result recording.
+metadata:
+  aiQaProjectSkillVersion: 1.0.0
+  aiQaProtocolRange: ^1.1.0
+  aiQaManagedChecksum: 74da8973832c3263eca6b23b0661470997e10f815c68455622c831742a1c7f8f
+---
+
+<!-- ai-qa:managed:start -->
+
+# Sample Web Project Procedures
+
+## Match
+
+Apply only to the trusted project root `/workspace/sample-web` with project ID `sample-web`.
+
+## Web target
+
+Use the confirmed entry URL `http://127.0.0.1:3000` and `chrome-devtools-mcp`.
+
+## Evidence and reports
+
+Require internal screenshots, retain them for 30 days, and generate full Markdown and JSON engineering reports in project-local storage.
+
+## Result recording
+
+Use local-only recording. After the local report is generated and verified, show its paths and end without creating an external record or receipt.
+
+## Reruns
+
+Match this exact project and target. Create fresh observations, evidence, and reports for every rerun.
+<!-- ai-qa:managed:end -->
+<!-- ai-qa:user:start -->
+<!-- ai-qa:user:end -->
+```
+
+<!-- canonical-project-skill:end -->
+
 Build one complete request with these top-level fields:
 
 ```json

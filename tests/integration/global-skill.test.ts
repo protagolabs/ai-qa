@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
+import { initializationRequestSchema } from "../../src/services/initialization/project-setup.js";
 import {
   checkGlobalSkill,
   checkGlobalSkillForProject,
@@ -17,6 +18,10 @@ import {
   syncGlobalSkill,
 } from "../../src/services/skill-management/global-skill.js";
 import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
+import {
+  inspectProjectSkill,
+  prepareProjectSkill,
+} from "../../src/services/skill-management/project-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   copyReleasedLegacyGlobalSkill,
@@ -24,6 +29,7 @@ import {
   installedGlobalSkillReference,
   readReleasedLegacyGlobalSkill,
 } from "../helpers/global-skill-fixture.js";
+import { projectSetupRequest } from "../helpers/project-fixture.js";
 
 const canonicalSkill = `---
 name: ai-qa
@@ -590,6 +596,51 @@ describe("bundled global skill 1.1", () => {
       "Stop on lifecycle, evidence, report, recording, or storage integrity errors; never report them as `pending` and never submit a receipt before the verified-report boundary succeeds.",
     );
     expect(content).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
+  });
+
+  it("provides a canonical Project Skill wire example accepted by initialization", async () => {
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    const match =
+      /<!-- canonical-project-skill:start -->\s*```markdown\r?\n([\s\S]*?)\r?\n```\s*<!-- canonical-project-skill:end -->/.exec(
+        reference,
+      );
+    expect(match?.[1], "canonical Project Skill example").toBeDefined();
+    const source = `${match![1]}\n`;
+    const placeholderPattern =
+      /\b(?:TODO|TBD|placeholder)\b|aiQaManagedChecksum:\s*generated|<[A-Za-z][^>\n]*>/i;
+    expect(source).not.toMatch(placeholderPattern);
+
+    const fixture = projectSetupRequest({ mode: "local-only" });
+    const request = initializationRequestSchema.parse({
+      ...fixture,
+      projectSkill: {
+        reason: "Canonical provider-neutral Sample Web project procedures",
+        content: source,
+      },
+    });
+    expect(JSON.stringify(request)).not.toMatch(placeholderPattern);
+    const inspection = inspectProjectSkill({
+      projectRoot: "/workspace/sample-web",
+      content: request.projectSkill.content,
+    });
+    expect(inspection.status).toBe("compatible");
+
+    const prepared = prepareProjectSkill({
+      source: request.projectSkill.content,
+      secretReferences: request.config.secretReferences,
+    });
+    expect(prepared.managedChecksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(prepared.content).not.toMatch(placeholderPattern);
   });
 });
 
