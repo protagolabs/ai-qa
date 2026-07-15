@@ -22,17 +22,17 @@ The trust input schema is strict: `confirmed` must be literal `true`, and no oth
 
 ### Project Skill wire contract
 
-`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. For every generated Project Skill, copy this description template exactly:
+`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. For every generated Project Skill, copy this invariant description exactly:
 
 <!-- canonical-project-skill-description:start -->
 
 ```text
-Use when performing <Project Name> Web AI QA.
+Use when performing Web AI QA.
 ```
 
 <!-- canonical-project-skill-description:end -->
 
-Replace only `<Project Name>` and add no suffix. Existing descriptions still require an `-ing` primary trigger. For existing-description validation only, `Use when performing Sample Web AI QA, including reports, or reruns.` is valid; `Use when performing Sample Web AI QA, including reports or reruns.` is invalid. Put commands in the body, never in the description.
+Use this constant unchanged for every generated Project Skill; do not substitute project data or add a suffix. Existing descriptions still require an `-ing` primary trigger. For existing-description validation only, `Use when performing Sample Web AI QA, including reports, or reruns.` is valid; `Use when performing Sample Web AI QA, including reports or reruns.` is invalid. Put commands in the body, never in the description.
 
 Generate the remaining content in this order:
 
@@ -66,11 +66,11 @@ This provider-neutral example is a complete CLI-valid wire artifact:
 ```markdown
 ---
 name: ai-qa-project
-description: Use when performing Sample Web AI QA.
+description: Use when performing Web AI QA.
 metadata:
   aiQaProjectSkillVersion: 1.0.0
   aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: 7bbd06e5fde0bcd5a2943befd2a9131b82a98981c3c0ecbb38aece9cc65b6366
+  aiQaManagedChecksum: 3c17555d3aa7a210a234c5337394cba46341b525e3dde3e0ed2c42f794ec6c52
 ---
 
 <!-- ai-qa:managed:start -->

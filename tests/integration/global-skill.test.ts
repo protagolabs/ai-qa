@@ -710,13 +710,13 @@ describe("bundled global skill 1.1", () => {
     expect(prepared.content).not.toMatch(placeholderPattern);
   });
 
-  it("uses one fixed generated description and validates the complete request", async () => {
+  it("uses an invariant description for every schema-valid project name", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       "utf8",
     );
     expect(skill).toContain(
-      "Use the fixed description template `Use when performing <Project Name> Web AI QA.` by replacing only `<Project Name>`; add no suffix.",
+      "Use the invariant description `Use when performing Web AI QA.` exactly; do not substitute project data or add a suffix.",
     );
     expect(skill).toContain(
       "Run the complete request through production `initializationRequestSchema` and `prepareProjectSkill()` before presenting it.",
@@ -745,7 +745,10 @@ describe("bundled global skill 1.1", () => {
     if (template === undefined) {
       throw new Error("Canonical Project Skill description is missing");
     }
-    expect(template).toBe("Use when performing <Project Name> Web AI QA.");
+    expect(template).toBe("Use when performing Web AI QA.");
+    expect(reference).toContain(
+      "Use this constant unchanged for every generated Project Skill; do not substitute project data or add a suffix.",
+    );
     expect(reference).toContain(
       "`Use when performing Sample Web AI QA, including reports, or reruns.` is valid",
     );
@@ -756,13 +759,21 @@ describe("bundled global skill 1.1", () => {
       "Validate the complete initialization request with production `initializationRequestSchema`, then pass its `projectSkill.content` through production `prepareProjectSkill()` before presenting it.",
     );
 
-    const description = template.replace("<Project Name>", "Fjord Billing");
+    const description = template;
     const request = projectSetupRequest({ mode: "project-skill" });
+    request.config = {
+      ...request.config,
+      project: {
+        id: "research-development",
+        name: "Research and Development",
+      },
+    };
     request.projectSkill.content = request.projectSkill.content.replace(
       /^description: .+$/m,
       `description: ${description}`,
     );
     const parsed = initializationRequestSchema.parse(request);
+    expect(parsed.config.project.name).toBe("Research and Development");
     const prepared = prepareProjectSkill({
       source: parsed.projectSkill.content,
       secretReferences: parsed.config.secretReferences,
@@ -770,7 +781,7 @@ describe("bundled global skill 1.1", () => {
     expect(prepared.content).toContain(`description: ${description}`);
     expect(
       inspectProjectSkill({
-        projectRoot: "/workspace/fjord/billing-web",
+        projectRoot: "/workspace/research-development",
         content: prepared.content,
       }).status,
     ).toBe("compatible");
