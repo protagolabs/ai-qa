@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { open, rename, unlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import {
   ensureProjectLocalDirectory,
@@ -20,6 +21,18 @@ export interface ProjectFileTransactionHooks {
   }) => Promise<void>;
 }
 
+export interface ProjectFileDestinationSnapshot {
+  relativePath: string;
+  state: "missing" | "regular";
+  identity?: {
+    device: string;
+    inode: string;
+    size: string;
+    modifiedNanoseconds: string;
+  };
+  contentSha256?: string;
+}
+
 interface TransactionEntry {
   relativePath: string;
   destination: string;
@@ -29,9 +42,15 @@ interface TransactionEntry {
   backupPath?: string;
 }
 
+interface OwnedFileIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
 export async function applyProjectFileTransaction(input: {
   projectRoot: string;
   writes: readonly ProjectFileWrite[];
+  expectedDestinations: readonly ProjectFileDestinationSnapshot[];
   hooks?: ProjectFileTransactionHooks;
 }): Promise<void> {
   const transactionId = randomUUID();
@@ -47,12 +66,24 @@ export async function applyProjectFileTransaction(input: {
 
   const entries: TransactionEntry[] = [];
   for (const [index, write] of input.writes.entries()) {
+    const relativePath = relativePaths[index]!;
+    const expected = input.expectedDestinations.find(
+      (destination) => destination.relativePath === relativePath,
+    );
+    if (expected === undefined) {
+      throw new AiQaError(
+        "setup.checksum_mismatch",
+        "Confirmed setup does not include a transaction destination",
+        { relativePath },
+      );
+    }
     const original = await inspectOptionalProjectLocalRegularFile(
       input.projectRoot,
       write.relativeSegments,
     );
+    assertDestinationSnapshot(relativePath, original, expected);
     entries.push({
-      relativePath: relativePaths[index]!,
+      relativePath,
       destination: original.path,
       content: write.content,
       original,
@@ -67,8 +98,8 @@ export async function applyProjectFileTransaction(input: {
         : 0,
   );
 
-  const ownedStages = new Set<string>();
-  const ownedBackups = new Set<string>();
+  const ownedStages = new Map<string, OwnedFileIdentity>();
+  const ownedBackups = new Map<string, OwnedFileIdentity>();
   const published: TransactionEntry[] = [];
   let caughtError: unknown;
   try {
@@ -92,7 +123,16 @@ export async function applyProjectFileTransaction(input: {
         relativePath: entry.relativePath,
         publishIndex,
       });
+      const expected = input.expectedDestinations.find(
+        (destination) => destination.relativePath === entry.relativePath,
+      )!;
+      const current = await inspectOptionalProjectLocalRegularFile(
+        input.projectRoot,
+        entry.relativePath.split("/"),
+      );
+      assertDestinationSnapshot(entry.relativePath, current, expected);
       await rename(entry.stagePath, entry.destination);
+      ownedStages.delete(entry.stagePath);
       published.push(entry);
       await syncDirectory(dirname(entry.destination));
     }
@@ -120,25 +160,82 @@ export async function applyProjectFileTransaction(input: {
     }
     throw caughtError;
   } finally {
-    for (const path of [...ownedStages, ...ownedBackups]) {
-      await unlinkIfExists(path);
+    for (const [path, identity] of [...ownedStages, ...ownedBackups]) {
+      await unlinkIfOwned(path, identity);
     }
   }
+}
+
+function assertDestinationSnapshot(
+  relativePath: string,
+  file: OptionalProjectLocalFile,
+  expected: ProjectFileDestinationSnapshot,
+): void {
+  const actual = destinationSnapshot(relativePath, file);
+  if (canonicalJson(actual) !== canonicalJson(expected)) {
+    throw new AiQaError(
+      "setup.checksum_mismatch",
+      "Project setup destination changed after confirmation",
+      { relativePath, expected, actual },
+    );
+  }
+}
+
+function destinationSnapshot(
+  relativePath: string,
+  file: OptionalProjectLocalFile,
+): ProjectFileDestinationSnapshot {
+  if (file.state === "missing") return { relativePath, state: "missing" };
+  return {
+    relativePath,
+    state: "regular",
+    identity: {
+      device: file.stats!.dev.toString(),
+      inode: file.stats!.ino.toString(),
+      size: file.stats!.size.toString(),
+      modifiedNanoseconds: file.stats!.mtimeNs.toString(),
+    },
+    contentSha256: `sha256:${createHash("sha256")
+      .update(file.content!)
+      .digest("hex")}`,
+  };
 }
 
 async function writeOwnedFile(
   path: string,
   content: string,
-  ownedPaths: Set<string>,
+  ownedPaths: Map<string, OwnedFileIdentity>,
 ): Promise<void> {
   const handle = await open(path, "wx", 0o600);
-  ownedPaths.add(path);
   try {
+    const stats = await handle.stat({ bigint: true });
+    ownedPaths.set(path, { dev: stats.dev, ino: stats.ino });
     await handle.writeFile(content, "utf8");
     await handle.sync();
   } finally {
     await handle.close();
   }
+}
+
+async function unlinkIfOwned(
+  path: string,
+  identity: OwnedFileIdentity,
+): Promise<void> {
+  let stats;
+  try {
+    stats = await lstat(path, { bigint: true });
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return;
+    throw error;
+  }
+  if (
+    stats.isSymbolicLink() ||
+    stats.dev !== identity.dev ||
+    stats.ino !== identity.ino
+  ) {
+    return;
+  }
+  await unlink(path);
 }
 
 async function syncDirectory(path: string): Promise<void> {

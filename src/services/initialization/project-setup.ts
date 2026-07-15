@@ -121,7 +121,15 @@ export async function applyProjectSetup(
   ]);
   const release = await lockfile.lock(aiQaRoot, {
     realpath: false,
-    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+    stale: 30_000,
+    update: 10_000,
+    retries: {
+      forever: true,
+      factor: 2,
+      minTimeout: 10,
+      maxTimeout: 100,
+      randomize: false,
+    },
   });
   try {
     let inspected: InspectedSetup;
@@ -162,6 +170,7 @@ export async function applyProjectSetup(
     await applyProjectFileTransaction({
       projectRoot: inspected.projectRoot,
       writes: setupWrites(preview),
+      expectedDestinations: preview.destinations,
       ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
     });
     return preview;
@@ -308,6 +317,7 @@ function materializePreview(input: InspectedSetup): ProjectSetupPreview {
     secretReferences: input.effectiveRequest.config.secretReferences,
   });
   const configDiff =
+    (input.operation === "init" || input.operation === "configure") &&
     input.configFile.content !== undefined &&
     input.configFile.content !== proposedConfig
       ? createTwoFilesPatch(

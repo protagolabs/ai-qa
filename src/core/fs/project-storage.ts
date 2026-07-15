@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 
@@ -84,9 +85,15 @@ export interface OptionalProjectLocalFile {
   };
 }
 
+export interface OptionalProjectLocalInspectionHooks {
+  afterPathIdentity?: (input: { path: string }) => Promise<void>;
+  afterHandleRead?: (input: { path: string }) => Promise<void>;
+}
+
 export async function inspectOptionalProjectLocalRegularFile(
   projectRoot: string,
   segments: readonly string[],
+  hooks?: OptionalProjectLocalInspectionHooks,
 ): Promise<OptionalProjectLocalFile> {
   validateSegments(segments);
   const canonicalRoot = await realpath(projectRoot);
@@ -116,9 +123,9 @@ export async function inspectOptionalProjectLocalRegularFile(
       );
     }
   }
-  let stats;
+  let pathStats;
   try {
-    stats = await lstat(path, { bigint: true });
+    pathStats = await lstat(path, { bigint: true });
   } catch (error: unknown) {
     if (isNodeError(error, "ENOENT")) return { path, state: "missing" };
     throw storageError(
@@ -128,8 +135,8 @@ export async function inspectOptionalProjectLocalRegularFile(
     );
   }
   if (
-    stats.isSymbolicLink() ||
-    !stats.isFile() ||
+    pathStats.isSymbolicLink() ||
+    !pathStats.isFile() ||
     (await realpath(path)) !== path
   ) {
     throw storageError(
@@ -137,17 +144,83 @@ export async function inspectOptionalProjectLocalRegularFile(
       path,
     );
   }
-  return {
-    path,
-    state: "regular",
-    content: await readFile(path, "utf8"),
-    stats: {
-      dev: stats.dev,
-      ino: stats.ino,
-      size: stats.size,
-      mtimeNs: stats.mtimeNs,
-    },
-  };
+  await hooks?.afterPathIdentity?.({ path });
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const beforeRead = await handle.stat({ bigint: true });
+    if (
+      !beforeRead.isFile() ||
+      beforeRead.dev !== pathStats.dev ||
+      beforeRead.ino !== pathStats.ino
+    ) {
+      throw storageError(
+        "Project-local artifact changed during verification",
+        path,
+      );
+    }
+    const content = await handle.readFile({ encoding: "utf8" });
+    await hooks?.afterHandleRead?.({ path });
+    const afterRead = await handle.stat({ bigint: true });
+    if (!sameFileIdentity(beforeRead, afterRead)) {
+      throw storageError(
+        "Project-local artifact changed while being read",
+        path,
+      );
+    }
+    const afterPath = await lstat(path, { bigint: true });
+    if (
+      afterPath.isSymbolicLink() ||
+      !afterPath.isFile() ||
+      afterPath.dev !== afterRead.dev ||
+      afterPath.ino !== afterRead.ino ||
+      (await realpath(path)) !== path
+    ) {
+      throw storageError(
+        "Project-local artifact changed during verification",
+        path,
+      );
+    }
+    return {
+      path,
+      state: "regular",
+      content,
+      stats: {
+        dev: afterRead.dev,
+        ino: afterRead.ino,
+        size: afterRead.size,
+        mtimeNs: afterRead.mtimeNs,
+      },
+    };
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local artifact verification failed",
+      path,
+      nodeErrorCode(error),
+    );
+  } finally {
+    await handle?.close();
+  }
+}
+
+interface BigIntFileIdentity {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+}
+
+function sameFileIdentity(
+  left: BigIntFileIdentity,
+  right: BigIntFileIdentity,
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs
+  );
 }
 
 export async function requireProjectLocalRegularFile(

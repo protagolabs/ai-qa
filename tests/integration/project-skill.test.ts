@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,7 +26,10 @@ import {
 } from "../../src/services/initialization/project-setup.js";
 import { prepareProjectSkill } from "../../src/services/skill-management/project-skill.js";
 import { readRepositoryIdentity } from "../../src/services/trust/repository-identity.js";
-import { projectConfigV2 } from "../helpers/project-fixture.js";
+import {
+  projectConfigV1,
+  projectConfigV2,
+} from "../helpers/project-fixture.js";
 
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:crypto")>();
@@ -224,6 +228,64 @@ describe("project setup preview", () => {
       }),
     );
   });
+
+  it("binds but does not diff or rewrite a noncanonical v1 config for skill generate", async () => {
+    const projectRoot = await temporaryProject("ai-qa-skill-v1-preview-");
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const legacyConfig = `# preserve this legacy comment\n${stringify(
+      projectConfigV1(),
+      { sortMapEntries: false },
+    )}`;
+    await writeFile(join(projectRoot, CONFIG_PATH), legacyConfig);
+    const setupRequest = request();
+
+    const preview = await previewProjectSetup({
+      operation: "skill-generate",
+      projectRoot,
+      request: setupRequest,
+    });
+
+    expect(preview.writePaths).toEqual([SKILL_PATH]);
+    expect(preview.config).toMatchObject({
+      schemaVersion: 2,
+      recordingPolicy: { mode: "local-only" },
+    });
+    expect(preview.unifiedDiff).not.toContain(`--- ${CONFIG_PATH}`);
+    expect(preview.destinations[0]).toMatchObject({
+      relativePath: CONFIG_PATH,
+      state: "regular",
+      contentSha256: `sha256:${createHash("sha256")
+        .update(legacyConfig)
+        .digest("hex")}`,
+    });
+    const identity = await readRepositoryIdentity(projectRoot);
+    expect(preview.checksum).toBe(
+      sha256Canonical({
+        schemaVersion: 1,
+        operation: "skill-generate",
+        repository: {
+          canonicalPath: identity.canonicalPath,
+          fingerprint: identity.fingerprint,
+        },
+        request: {
+          config: preview.config,
+          projectSkill: setupRequest.projectSkill,
+        },
+        targetPaths: [CONFIG_PATH, SKILL_PATH],
+        destinations: preview.destinations,
+      }),
+    );
+
+    await applyProjectSetup({
+      operation: "skill-generate",
+      projectRoot,
+      request: setupRequest,
+      confirmChecksum: preview.checksum,
+    });
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(legacyConfig);
+  });
 });
 
 describe("checksum-confirmed project setup", () => {
@@ -400,6 +462,59 @@ describe("checksum-confirmed project setup", () => {
     ).resolves.toBe(originalConfig);
   });
 
+  it("rejects a destination changed immediately before publish and rolls back", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-publish-race-");
+    const originalConfig = await writeConfig(
+      projectRoot,
+      projectConfigV2("local-only"),
+    );
+    const originalSkill = prepareProjectSkill({
+      source: projectSkillSource(
+        "Record results using the original procedure.",
+      ),
+      secretReferences: SECRET_REFERENCES,
+    }).content;
+    await writeSkill(projectRoot, originalSkill);
+    const setupRequest = request(
+      "Record results using the proposed procedure.",
+    );
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: setupRequest,
+    });
+    const externalConfig = "external concurrent bytes\n";
+
+    await expect(
+      applyProjectSetup({
+        operation: "configure",
+        projectRoot,
+        request: setupRequest,
+        confirmChecksum: preview.checksum,
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex === 1) {
+              await writeFile(join(projectRoot, CONFIG_PATH), externalConfig);
+            }
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "setup.checksum_mismatch" });
+
+    expect(originalConfig).not.toBe(externalConfig);
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(externalConfig);
+    await expect(readFile(join(projectRoot, SKILL_PATH), "utf8")).resolves.toBe(
+      originalSkill,
+    );
+    expect(
+      (await readdir(projectRoot, { recursive: true })).filter((path) =>
+        /\.(?:stage|backup)$/.test(path),
+      ),
+    ).toEqual([]);
+  });
+
   it("serializes concurrent apply attempts to one winner", async () => {
     const projectRoot = await temporaryProject("ai-qa-setup-concurrent-");
     const setupRequest = request();
@@ -441,6 +556,60 @@ describe("checksum-confirmed project setup", () => {
       readFile(join(projectRoot, SKILL_PATH), "utf8"),
     ).resolves.toContain("name: ai-qa-project");
   });
+
+  it("waits through a long concurrent apply before returning stale state", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-long-lock-");
+    const setupRequest = request();
+    const preview = await previewProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+    });
+    let signalFirstPublish!: () => void;
+    const firstAtPublish = new Promise<void>((resolve) => {
+      signalFirstPublish = resolve;
+    });
+    let releaseFirst!: () => void;
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = applyProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+      confirmChecksum: preview.checksum,
+      hooks: {
+        beforePublish: async ({ publishIndex }) => {
+          if (publishIndex !== 0) return;
+          signalFirstPublish();
+          await holdFirst;
+        },
+      },
+    });
+    await firstAtPublish;
+    let secondSettled = false;
+    const second = applyProjectSetup({
+      operation: "init",
+      projectRoot,
+      request: setupRequest,
+      confirmChecksum: preview.checksum,
+    }).finally(() => {
+      secondSettled = true;
+    });
+    void second.catch(() => undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const settledBeforeRelease = secondSettled;
+    releaseFirst();
+    const results = await Promise.allSettled([first, second]);
+
+    expect(settledBeforeRelease).toBe(false);
+    expect(results[0]).toMatchObject({ status: "fulfilled" });
+    expect(results[1]).toMatchObject({
+      status: "rejected",
+      reason: { code: "setup.checksum_mismatch" },
+    });
+  }, 10_000);
 });
 
 describe("project file transaction ownership", () => {
@@ -459,10 +628,96 @@ describe("project file transaction ownership", () => {
     ];
 
     await expect(
-      applyProjectFileTransaction({ projectRoot, writes }),
+      applyProjectFileTransaction({
+        projectRoot,
+        writes,
+        expectedDestinations: [{ relativePath: CONFIG_PATH, state: "missing" }],
+      }),
     ).rejects.toMatchObject({ code: "EEXIST" });
 
     await expect(readFile(unowned, "utf8")).resolves.toBe("unowned fixture\n");
     await expectMissing(join(projectRoot, CONFIG_PATH));
+  });
+
+  it("does not remove an unowned replacement at a consumed stage path", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-stage-replaced-");
+    const uuid = "00000000-0000-4000-8000-000000000001";
+    const firstStage = join(projectRoot, `${SKILL_PATH}.${uuid}.stage`);
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+    const writes: ProjectFileWrite[] = [
+      {
+        relativeSegments: [".ai-qa", "config.yaml"],
+        content: "new config\n",
+      },
+      {
+        relativeSegments: [".agents", "skills", "ai-qa-project", "SKILL.md"],
+        content: "new skill\n",
+      },
+    ];
+
+    await expect(
+      applyProjectFileTransaction({
+        projectRoot,
+        writes,
+        expectedDestinations: [
+          { relativePath: CONFIG_PATH, state: "missing" },
+          { relativePath: SKILL_PATH, state: "missing" },
+        ],
+        hooks: {
+          beforePublish: async ({ publishIndex }) => {
+            if (publishIndex !== 1) return;
+            await writeFile(firstStage, "unowned replacement\n");
+            throw new Error("injected after first publish");
+          },
+        },
+      }),
+    ).rejects.toThrow("injected after first publish");
+
+    await expect(readFile(firstStage, "utf8")).resolves.toBe(
+      "unowned replacement\n",
+    );
+    await expectMissing(join(projectRoot, CONFIG_PATH));
+    await expectMissing(join(projectRoot, SKILL_PATH));
+  });
+
+  it("does not remove an identically named unowned backup fixture", async () => {
+    const projectRoot = await temporaryProject("ai-qa-setup-backup-owned-");
+    const originalConfig = await writeConfig(projectRoot);
+    const preview = await previewProjectSetup({
+      operation: "configure",
+      projectRoot,
+      request: request(),
+    });
+    const configSnapshot = preview.destinations.find(
+      ({ relativePath }) => relativePath === CONFIG_PATH,
+    )!;
+    const uuid = "00000000-0000-4000-8000-000000000002";
+    const backup = join(projectRoot, `${CONFIG_PATH}.${uuid}.backup`);
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+
+    await expect(
+      applyProjectFileTransaction({
+        projectRoot,
+        writes: [
+          {
+            relativeSegments: [".ai-qa", "config.yaml"],
+            content: "replacement config\n",
+          },
+        ],
+        expectedDestinations: [configSnapshot],
+        hooks: {
+          beforePublish: async () => {
+            await unlink(backup);
+            await writeFile(backup, "unowned backup\n");
+            throw new Error("injected after backup replacement");
+          },
+        },
+      }),
+    ).rejects.toThrow("injected after backup replacement");
+
+    await expect(readFile(backup, "utf8")).resolves.toBe("unowned backup\n");
+    await expect(
+      readFile(join(projectRoot, CONFIG_PATH), "utf8"),
+    ).resolves.toBe(originalConfig);
   });
 });
