@@ -689,6 +689,9 @@ git commit -m "feat: teach host-managed project skills"
 - Modify: `docs/validation/web-live-acceptance.md`
 - Modify: `docs/validation/project-recording-skill-eval.md`
 - Modify: `docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md`
+- Modify when required by failed evaluation: `src/skills/global/SKILL.md`
+- Modify when required by failed evaluation: `src/skills/global/references/web-work-protocol.md`
+- Modify when required by failed evaluation: `tests/integration/global-skill.test.ts`
 - Modify: `tests/helpers/project-fixture.ts`
 - Delete: `src/services/initialization/initialize-project.ts`
 - Delete: `src/services/initialization/project-file-transaction.ts`
@@ -758,7 +761,7 @@ Any failure invalidates the full affected five-repetition family. Preserve faile
 pnpm vitest run tests/e2e/project-recording-flow.test.ts tests/e2e/cli-web-vertical-slice.test.ts
 pnpm format:check
 git diff --check
-git add tests/e2e tests/helpers/project-fixture.ts README.md docs/validation docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md src/services/initialization src/services/skill-management/project-skill.ts
+git add tests/e2e tests/helpers/project-fixture.ts tests/integration/global-skill.test.ts README.md docs/validation docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md src/skills/global src/services/initialization src/services/skill-management/project-skill.ts
 git commit -m "docs: explain host-managed project recording"
 ```
 
