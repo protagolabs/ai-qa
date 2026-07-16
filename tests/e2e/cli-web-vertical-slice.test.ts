@@ -1,4 +1,11 @@
-import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -25,8 +32,8 @@ import {
 } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
+  initializeTestProject,
   projectConfigV1,
-  projectSkillSource,
 } from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-13T00:10:00.000Z");
@@ -808,28 +815,15 @@ describe("Increment 1 Web vertical slice CLI", () => {
       ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
       { confirmed: true },
     );
-    const initializationRequest = {
-      config: config(),
-      projectSkill: {
-        reason: "CLI vertical-slice project procedures",
-        content: projectSkillSource(),
-      },
-    };
-    const initPreview = await cli.run<{ checksum: string }>(
-      ["--project", projectRoot, "init", "--stdin-json", "--preview"],
-      initializationRequest,
-    );
-    await cli.run(
-      [
-        "--project",
-        projectRoot,
-        "init",
-        "--stdin-json",
-        "--confirm-checksum",
-        initPreview.checksum,
-      ],
-      initializationRequest,
-    );
+    const projectConfig = config();
+    await expect(
+      cli.run(["config", "validate", "--stdin-json"], projectConfig),
+    ).resolves.toEqual({ status: "valid", config: projectConfig });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: projectConfig,
+    });
     const doctor = await cli.run<WorkOrder["readiness"]>(
       ["doctor", "--platform", "web", "--json", "--stdin-json"],
       {
@@ -1056,9 +1050,12 @@ describe("Increment 1 Web vertical slice CLI", () => {
     const projectRoot = join(machineHome, "target-project");
     const aiQaHome = join(machineHome, "ai-qa-home");
     const agentsHome = join(machineHome, "agents-home");
-    await mkdir(join(projectRoot, ".ai-qa"), { recursive: true });
     const legacyConfig = stringify(projectConfigV1());
-    await writeFile(join(projectRoot, ".ai-qa", "config.yaml"), legacyConfig);
+    await initializeTestProject({ projectRoot, aiQaHome });
+    await Promise.all([
+      writeFile(join(projectRoot, ".ai-qa", "config.yaml"), legacyConfig),
+      rm(join(projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md")),
+    ]);
     const cli = createHarness({
       projectRoot,
       machineHome,

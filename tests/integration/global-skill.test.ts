@@ -578,6 +578,30 @@ describe("bundled global skill 1.2", () => {
     ]) {
       expect.soft(guidance).toContain(fact);
     }
+    expect.soft(reference).toContain("## Canonical schema-v2 config draft");
+    expect.soft(reference).toContain("targets:\n  web:\n    entryUrl:");
+    expect
+      .soft(reference)
+      .toContain('tools:\n  web:\n    controller: "chrome-devtools-mcp"');
+    expect
+      .soft(reference)
+      .toContain(
+        "evidencePolicy:\n  screenshots: required\n  defaultSensitivity: internal",
+      );
+    expect
+      .soft(reference)
+      .toContain("storagePolicy:\n  adapter: project-local");
+    expect
+      .soft(reference)
+      .toContain("secretReferences: {}\nrecordingPolicy:\n  mode: local-only");
+    expect
+      .soft(reference)
+      .toContain("A request to show the approval decision is proposal-only");
+    expect
+      .soft(reference)
+      .toContain(
+        "Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.",
+      );
     expect.soft(guidance).not.toContain("InitializationRequest");
     expect.soft(guidance).not.toContain("initializationRequestSchema");
     expect.soft(guidance).not.toContain("projectSkill.content");

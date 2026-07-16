@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfigV2 } from "../../src/core/config/schema.js";
 import {
@@ -14,22 +14,26 @@ import { runReportSchema } from "../../src/core/reports/schema.js";
 import type { WorkOrder } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
+  initializeTestProject,
+  projectConfigV2,
   projectRecordingReceipt,
-  projectSetupRequest,
+  projectSkillSource,
 } from "../helpers/project-fixture.js";
 
-const fixedNow = () => new Date("2026-07-15T09:30:00.000Z");
-const receiptTimes = {
-  recorded: "2026-07-15T09:31:00.000Z",
-  notRecorded: "2026-07-15T09:32:00.000Z",
-  unknown: "2026-07-15T09:33:00.000Z",
-} as const;
+const fixedNow = () => new Date("2026-07-16T09:30:00.000Z");
+const recordedAt = "2026-07-16T09:31:00.000Z";
+const replayedAt = "2026-07-16T09:32:00.000Z";
 const recordingProcedure = `Append a reviewed row to \`docs/qa-results.md\` using columns Run, Verdict, Summary,
 Evidence, and Owner. Match by Run before appending; update the existing row on rerun.
 Return only the repository-relative heading reference.`;
 
+interface CliError {
+  error: { code: string; message: string; details?: unknown };
+}
+
 interface CliHarness {
   run<T>(args: string[], stdin?: unknown): Promise<T>;
+  runError(args: string[], stdin?: unknown): Promise<CliError>;
 }
 
 interface TestProject {
@@ -57,47 +61,11 @@ interface StableRunArtifacts {
   jsonBytes: string;
   markdownBytes: string;
   eventBytes: string;
-  jsonHash: string;
-  markdownHash: string;
-  eventHash: string;
   verdict: unknown;
-  criterionResults: unknown;
-  integrity: unknown;
-  terminalEvent: unknown;
 }
 
-function sha256(value: string): string {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
-function expectCompletePreparedProjectSkill(
-  actual: string,
-  source: string,
-): void {
-  const split = (value: string) => {
-    const frontmatterEnd = value.indexOf("\n---\n", 4);
-    expect(value.startsWith("---\n")).toBe(true);
-    expect(frontmatterEnd).toBeGreaterThan(4);
-    return {
-      frontmatter: parse(value.slice(4, frontmatterEnd)) as {
-        metadata: Record<string, unknown>;
-        [key: string]: unknown;
-      },
-      body: value.slice(frontmatterEnd + 5),
-    };
-  };
-  const prepared = split(actual);
-  const requested = split(source);
-  const managedChecksum = prepared.frontmatter.metadata.aiQaManagedChecksum;
-  expect(managedChecksum).toMatch(/^[a-f0-9]{64}$/u);
-  expect(prepared.frontmatter).toEqual({
-    ...requested.frontmatter,
-    metadata: {
-      ...requested.frontmatter.metadata,
-      aiQaManagedChecksum: managedChecksum,
-    },
-  });
-  expect(prepared.body).toBe(requested.body);
+function contentSha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function createHarness(input: {
@@ -107,30 +75,40 @@ function createHarness(input: {
   agentsHome: string;
   now: () => Date;
 }): CliHarness {
+  const execute = async (args: string[], stdin?: unknown) => {
+    const captured = createCapturedCli({
+      cwd: input.projectRoot,
+      homeDir: input.machineHome,
+      env: {
+        AI_QA_HOME: input.aiQaHome,
+        AI_QA_AGENTS_HOME: input.agentsHome,
+      },
+      now: input.now,
+      fetchImpl: vi.fn<typeof fetch>(),
+      readStdin: () =>
+        Promise.resolve(stdin === undefined ? "" : JSON.stringify(stdin)),
+    });
+    const exitCode = await runCli(args, captured.context);
+    return { exitCode, stdout: captured.stdout, stderr: captured.stderr };
+  };
   return {
     async run<T>(args: string[], stdin?: unknown): Promise<T> {
-      const captured = createCapturedCli({
-        cwd: input.projectRoot,
-        homeDir: input.machineHome,
-        env: {
-          AI_QA_HOME: input.aiQaHome,
-          AI_QA_AGENTS_HOME: input.agentsHome,
-        },
-        now: input.now,
-        fetchImpl: vi.fn<typeof fetch>(),
-        readStdin: () =>
-          Promise.resolve(stdin === undefined ? "" : JSON.stringify(stdin)),
-      });
-      const exitCode = await runCli(args, captured.context);
-      expect(exitCode, `exit code for: ai-qa ${args.join(" ")}`).toBe(0);
-      expect(captured.stderr, `stderr for: ai-qa ${args.join(" ")}`).toEqual(
-        [],
+      const result = await execute(args, stdin);
+      expect(result.exitCode, `exit code for: ai-qa ${args.join(" ")}`).toBe(0);
+      expect(result.stderr, `stderr for: ai-qa ${args.join(" ")}`).toEqual([]);
+      expect(result.stdout, `stdout for: ai-qa ${args.join(" ")}`).toHaveLength(
+        1,
       );
-      expect(
-        captured.stdout,
-        `stdout for: ai-qa ${args.join(" ")}`,
-      ).toHaveLength(1);
-      return JSON.parse(captured.stdout[0]!) as T;
+      return JSON.parse(result.stdout[0]!) as T;
+    },
+    async runError(args: string[], stdin?: unknown): Promise<CliError> {
+      const result = await execute(args, stdin);
+      expect(result.exitCode, `exit code for: ai-qa ${args.join(" ")}`).toBe(1);
+      expect(result.stdout, `stdout for: ai-qa ${args.join(" ")}`).toEqual([]);
+      expect(result.stderr, `stderr for: ai-qa ${args.join(" ")}`).toHaveLength(
+        1,
+      );
+      return JSON.parse(result.stderr[0]!) as CliError;
     },
   };
 }
@@ -164,53 +142,39 @@ async function createTrustedProject(): Promise<TestProject> {
   };
 }
 
-async function initializeThroughCli(
-  fixture: TestProject,
-  request: ReturnType<typeof projectSetupRequest>,
-): Promise<string> {
-  const preview = await fixture.cli.run<{
-    checksum: string;
-    operation: string;
-    writePaths: string[];
-    config: ProjectConfigV2;
-    projectSkill: { content: string };
-  }>(
-    ["--project", fixture.projectRoot, "init", "--stdin-json", "--preview"],
-    request,
-  );
-  expect(preview).toMatchObject({
-    operation: "init",
-    writePaths: [".ai-qa/config.yaml", ".agents/skills/ai-qa-project/SKILL.md"],
-    config: request.config,
+async function installHostManagedProject(input: {
+  fixture: TestProject;
+  mode: "local-only" | "project-skill";
+  procedure?: string;
+}): Promise<{ config: ProjectConfigV2; skill: string }> {
+  const config = projectConfigV2(input.mode);
+  const skill = projectSkillSource(input.procedure);
+  await expect(
+    input.fixture.cli.run(["config", "validate", "--stdin-json"], config),
+  ).resolves.toEqual({ status: "valid", config });
+  await initializeTestProject({
+    projectRoot: input.fixture.projectRoot,
+    aiQaHome: input.fixture.aiQaHome,
+    config,
+    projectSkill: skill,
   });
-  expectCompletePreparedProjectSkill(
-    preview.projectSkill.content,
-    request.projectSkill.content,
-  );
-  expect(preview.checksum).toMatch(/^sha256:[a-f0-9]{64}$/u);
-  await fixture.cli.run(
-    [
-      "--project",
-      fixture.projectRoot,
-      "init",
-      "--stdin-json",
-      "--confirm-checksum",
-      preview.checksum,
-    ],
-    request,
-  );
   const installedSkill = await readFile(
-    join(fixture.projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+    join(
+      input.fixture.projectRoot,
+      ".agents",
+      "skills",
+      "ai-qa-project",
+      "SKILL.md",
+    ),
     "utf8",
   );
-  expect(installedSkill).toBe(preview.projectSkill.content);
-  return installedSkill;
+  expect(installedSkill).toBe(skill);
+  expect(installedSkill).not.toContain("aiQaManagedChecksum");
+  return { config, skill };
 }
 
 function recordingProcedureFromSkill(skill: string): string {
-  const match = skill.match(
-    /## Project result recording\n\n([\s\S]*?)\n<!-- ai-qa:managed:end -->/u,
-  );
+  const match = skill.match(/## Result recording\n\n([\s\S]*?)\n?$/u);
   expect(match).not.toBeNull();
   return match![1]!.trimEnd();
 }
@@ -244,7 +208,7 @@ async function startAndCancelWebRun(fixture: TestProject): Promise<WorkOrder> {
       "--stdin-json",
     ],
     {
-      goal: "Verify the recording lifecycle independently from QA execution",
+      goal: "Verify recording without changing the QA verdict",
       acceptanceCriteria: [
         {
           id: "recording-lifecycle-covered",
@@ -255,22 +219,13 @@ async function startAndCancelWebRun(fixture: TestProject): Promise<WorkOrder> {
       readiness,
     },
   );
-  const cancelled = await fixture.cli.run<{
-    runId: string;
-    status: string;
-    verdict: string;
-  }>([
+  await fixture.cli.run([
     "run",
     "cancel",
     run.runId,
     "--reason",
     "Keep the E2E focused on recording orchestration",
   ]);
-  expect(cancelled).toMatchObject({
-    runId: run.runId,
-    status: "cancelled",
-    verdict: "not_verified",
-  });
   return run;
 }
 
@@ -278,16 +233,7 @@ async function generateReport(
   fixture: TestProject,
   runId: string,
 ): Promise<GeneratedReportPaths> {
-  const report = await fixture.cli.run<GeneratedReportPaths>([
-    "report",
-    "generate",
-    runId,
-  ]);
-  expect(report).toEqual({
-    jsonPath: `.ai-qa/reports/runs/${runId}/report.json`,
-    markdownPath: `.ai-qa/reports/runs/${runId}/report.md`,
-  });
-  return report;
+  return fixture.cli.run(["report", "generate", runId]);
 }
 
 async function readStableRunArtifacts(input: {
@@ -307,60 +253,49 @@ async function readStableRunArtifacts(input: {
     join(input.projectRoot, ".ai-qa", "runs", input.runId, "events.jsonl"),
     "utf8",
   );
-  const parsedReport = runReportSchema.parse(JSON.parse(jsonBytes));
-  const eventLines = eventBytes.trimEnd().split("\n");
   return {
     jsonBytes,
     markdownBytes,
     eventBytes,
-    jsonHash: sha256(jsonBytes),
-    markdownHash: sha256(markdownBytes),
-    eventHash: sha256(eventBytes),
-    verdict: parsedReport.verdict,
-    criterionResults: parsedReport.verdict.criterionResults,
-    integrity: parsedReport.integrity,
-    terminalEvent: JSON.parse(eventLines.at(-1)!),
+    verdict: runReportSchema.parse(JSON.parse(jsonBytes)).verdict,
   };
 }
 
+async function switchMode(
+  fixture: TestProject,
+  mode: "local-only" | "project-skill",
+): Promise<void> {
+  const config = projectConfigV2(mode);
+  await expect(
+    fixture.cli.run(["config", "validate", "--stdin-json"], config),
+  ).resolves.toEqual({ status: "valid", config });
+  await writeFile(
+    join(fixture.projectRoot, ".ai-qa", "config.yaml"),
+    stringify(config, { sortMapEntries: true }),
+  );
+}
+
 describe("project recording workflow CLI", () => {
-  it("ends a local-only run after verified local reports without recording artifacts", async () => {
+  it("ends a local-only run after verified local reports without recording files", async () => {
     const fixture = await createTrustedProject();
-    const request = projectSetupRequest({ mode: "local-only" });
-    await initializeThroughCli(fixture, request);
-
-    const installedSkill = await readFile(
-      join(
-        fixture.projectRoot,
-        ".agents",
-        "skills",
-        "ai-qa-project",
-        "SKILL.md",
-      ),
-      "utf8",
-    );
-    expect(installedSkill).toContain("# Project AI QA Procedures");
-    expect(installedSkill).toContain(
-      "No additional project record is required; the verified local report completes the workflow.",
-    );
-
+    await installHostManagedProject({ fixture, mode: "local-only" });
     const run = await startAndCancelWebRun(fixture);
     const report = await generateReport(fixture, run.runId);
     await expect(
       readFile(join(fixture.projectRoot, report.jsonPath), "utf8"),
     ).resolves.toContain('"status": "cancelled"');
-    expect(
-      await fixture.cli.run<RecordingStatus>([
-        "report",
-        "recording-status",
-        run.runId,
-      ]),
-    ).toEqual({
+
+    const status = await fixture.cli.run<RecordingStatus>([
+      "report",
+      "recording-status",
+      run.runId,
+    ]);
+    expect(status).toEqual({
       runId: run.runId,
       status: "not_applicable",
       references: [],
     });
-    const recordingDirectory = join(
+    const reportDirectory = join(
       fixture.projectRoot,
       ".ai-qa",
       "reports",
@@ -368,32 +303,33 @@ describe("project recording workflow CLI", () => {
       run.runId,
     );
     await expect(
-      access(join(recordingDirectory, "recording.jsonl")),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+      access(join(reportDirectory, "recording.jsonl")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(
-      access(join(recordingDirectory, "recording.json")),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+      access(join(reportDirectory, "recording.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("records an arbitrary local procedure as neutral receipts without changing the QA result", async () => {
+  it("executes an exact arbitrary project procedure and stores one keyless idempotent neutral receipt", async () => {
     const fixture = await createTrustedProject();
-    const request = projectSetupRequest({
+    const installed = await installHostManagedProject({
+      fixture,
       mode: "project-skill",
-      recordingProcedure,
+      procedure: recordingProcedure,
     });
-    const installedSkill = await initializeThroughCli(fixture, request);
-    const installedProcedure = recordingProcedureFromSkill(installedSkill);
+    const installedProcedure = recordingProcedureFromSkill(installed.skill);
     expect(installedProcedure).toBe(recordingProcedure);
     const procedureTarget = installedProcedure.match(/`([^`]+)`/u)?.[1];
     expect(procedureTarget).toBe("docs/qa-results.md");
     if (procedureTarget === undefined) {
-      throw new Error("Installed recording procedure requires a local target");
+      throw new Error("Project recording procedure requires a local target");
     }
+
     const run = await startAndCancelWebRun(fixture);
+    expect(run.projectSkill).toEqual({
+      path: ".agents/skills/ai-qa-project/SKILL.md",
+      contentSha256: contentSha256(installed.skill),
+    });
     const report = await generateReport(fixture, run.runId);
     expect(
       await fixture.cli.run<RecordingStatus>([
@@ -403,11 +339,8 @@ describe("project recording workflow CLI", () => {
       ]),
     ).toEqual({ runId: run.runId, status: "pending", references: [] });
 
-    const targetSegments = procedureTarget.split("/");
-    const qaResultsPath = join(fixture.projectRoot, ...targetSegments);
-    await mkdir(join(fixture.projectRoot, ...targetSegments.slice(0, -1)), {
-      recursive: true,
-    });
+    const qaResultsPath = join(fixture.projectRoot, procedureTarget);
+    await mkdir(join(fixture.projectRoot, "docs"), { recursive: true });
     await writeFile(
       qaResultsPath,
       `# QA Results\n\n## Run 1\n\n| Run | Verdict | Summary | Evidence | Owner |\n| --- | --- | --- | --- | --- |\n| ${run.runId} | not_verified | Run cancelled after lifecycle coverage | ${report.jsonPath} | QA |\n`,
@@ -418,85 +351,43 @@ describe("project recording workflow CLI", () => {
       runId: run.runId,
       report,
     });
+    const receipt = projectRecordingReceipt({
+      status: "recorded",
+      references: [reference],
+    });
 
-    fixture.setNow(receiptTimes.recorded);
+    fixture.setNow(recordedAt);
     const recorded = await fixture.cli.run<{
       eventId: string;
       status: string;
       references: string[];
       replayed: boolean;
-    }>(
-      ["report", "receipt", run.runId, "--stdin-json"],
-      projectRecordingReceipt({
-        idempotencyKey: "local-markdown-run-1",
-        status: "recorded",
-        references: [reference],
-      }),
-    );
+    }>(["report", "receipt", run.runId, "--stdin-json"], receipt);
     expect(recorded).toMatchObject({
       status: "recorded",
       references: [reference],
       replayed: false,
     });
+
+    fixture.setNow(replayedAt);
+    await expect(
+      fixture.cli.run(
+        ["report", "receipt", run.runId, "--stdin-json"],
+        receipt,
+      ),
+    ).resolves.toEqual({ ...recorded, replayed: true });
     expect(
       await fixture.cli.run<RecordingStatus>([
         "report",
         "recording-status",
         run.runId,
       ]),
-    ).toMatchObject({
+    ).toEqual({
       runId: run.runId,
       status: "recorded",
       references: [reference],
       eventId: recorded.eventId,
-      recordedAt: receiptTimes.recorded,
-    });
-
-    fixture.setNow(receiptTimes.notRecorded);
-    await fixture.cli.run(
-      ["report", "receipt", run.runId, "--stdin-json"],
-      projectRecordingReceipt({
-        idempotencyKey: "local-markdown-not-recorded",
-        status: "not_recorded",
-      }),
-    );
-    expect(
-      await fixture.cli.run<RecordingStatus>([
-        "report",
-        "recording-status",
-        run.runId,
-      ]),
-    ).toMatchObject({
-      status: "not_recorded",
-      references: [],
-      recordedAt: receiptTimes.notRecorded,
-    });
-    expect(
-      await readStableRunArtifacts({
-        projectRoot: fixture.projectRoot,
-        runId: run.runId,
-        report,
-      }),
-    ).toEqual(before);
-
-    fixture.setNow(receiptTimes.unknown);
-    await fixture.cli.run(
-      ["report", "receipt", run.runId, "--stdin-json"],
-      projectRecordingReceipt({
-        idempotencyKey: "local-markdown-unknown",
-        status: "unknown",
-      }),
-    );
-    expect(
-      await fixture.cli.run<RecordingStatus>([
-        "report",
-        "recording-status",
-        run.runId,
-      ]),
-    ).toMatchObject({
-      status: "unknown",
-      references: [],
-      recordedAt: receiptTimes.unknown,
+      recordedAt,
     });
     expect(
       await readStableRunArtifacts({
@@ -513,104 +404,167 @@ describe("project recording workflow CLI", () => {
       "runs",
       run.runId,
     );
-    const journalBytes = await readFile(
-      join(reportDirectory, "recording.jsonl"),
-      "utf8",
-    );
-    const journal = journalBytes
+    const journal = (
+      await readFile(join(reportDirectory, "recording.jsonl"), "utf8")
+    )
       .trimEnd()
       .split("\n")
       .map((line) => recordingEventSchema.parse(JSON.parse(line)));
-    for (const event of journal) {
-      expect(Object.keys(event).sort()).toEqual([
-        "eventId",
-        "idempotencyKey",
-        "recordedAt",
-        "references",
-        "runId",
-        "schemaVersion",
-        "status",
-      ]);
-    }
-    const materializedBytes = await readFile(
-      join(reportDirectory, "recording.json"),
-      "utf8",
-    );
-    const materialized = recordingArtifactSchema.parse(
-      JSON.parse(materializedBytes),
-    );
-    expect(Object.keys(materialized).sort()).toEqual([
-      "current",
-      "history",
-      "materializedAt",
-      "runId",
-      "schemaVersion",
-    ]);
-    expect(Object.keys(materialized.current).sort()).toEqual([
-      "eventId",
-      "references",
-      "status",
-    ]);
-    for (const event of materialized.history) {
-      expect(Object.keys(event).sort()).toEqual([
-        "eventId",
-        "idempotencyKey",
-        "recordedAt",
-        "references",
-        "status",
-      ]);
-    }
-    const expectedHistory = journal.map(
-      ({ eventId, recordedAt, idempotencyKey, status, references }) => ({
-        eventId,
-        recordedAt,
-        idempotencyKey,
-        status,
-        references,
-      }),
-    );
-    expect(
-      journal.map(({ status, references }) => ({ status, references })),
-    ).toEqual([
-      { status: "recorded", references: [reference] },
-      { status: "not_recorded", references: [] },
-      { status: "unknown", references: [] },
-    ]);
-    expect(materialized.history).toEqual(expectedHistory);
-    expect(journal.map((event) => event.recordedAt)).toEqual([
-      receiptTimes.recorded,
-      receiptTimes.notRecorded,
-      receiptTimes.unknown,
-    ]);
-    expect(materialized.materializedAt).toBe(journal.at(-1)!.recordedAt);
-    expect(materialized.materializedAt).not.toBe(journal[0]!.recordedAt);
-    expect(materialized.current).toEqual({
-      eventId: journal.at(-1)!.eventId,
-      status: journal.at(-1)!.status,
-      references: journal.at(-1)!.references,
+    expect(journal).toHaveLength(1);
+    expect(journal[0]).toMatchObject({
+      runId: run.runId,
+      status: "recorded",
+      references: [reference],
+      recordedAt,
+      idempotencyKey: `recording:${run.runId}:v1`,
     });
-    expect(
-      await fixture.cli.run<GeneratedReportPaths>([
-        "report",
-        "export",
-        run.runId,
-        "--adapter",
-        "project-local",
-      ]),
-    ).toEqual(report);
-    expect(Object.values(report)).not.toContain("recording.jsonl");
-    expect(Object.values(report)).not.toContain("recording.json");
+    const materialized = recordingArtifactSchema.parse(
+      JSON.parse(
+        await readFile(join(reportDirectory, "recording.json"), "utf8"),
+      ),
+    );
+    expect(materialized.history).toHaveLength(1);
+    expect(materialized.current).toEqual({
+      eventId: recorded.eventId,
+      status: "recorded",
+      references: [reference],
+    });
     expect(await readFile(qaResultsPath, "utf8")).toContain(
       `| ${run.runId} | not_verified |`,
     );
+    const storedConfig = parse(
+      await readFile(
+        join(fixture.projectRoot, ".ai-qa", "config.yaml"),
+        "utf8",
+      ),
+    ) as ProjectConfigV2;
+    expect(storedConfig).toEqual(installed.config);
+  });
 
-    const configBytes = await readFile(
-      join(fixture.projectRoot, ".ai-qa", "config.yaml"),
-      "utf8",
+  it("stops a drifted run and snapshots the edited Project Skill only for a new run", async () => {
+    const fixture = await createTrustedProject();
+    const installed = await installHostManagedProject({
+      fixture,
+      mode: "project-skill",
+      procedure: recordingProcedure,
+    });
+    const originalRun = await startAndCancelWebRun(fixture);
+    const report = await generateReport(fixture, originalRun.runId);
+    const before = await readStableRunArtifacts({
+      projectRoot: fixture.projectRoot,
+      runId: originalRun.runId,
+      report,
+    });
+    const editedSkill = projectSkillSource(
+      `${recordingProcedure}\nPreserve the existing heading when updating a row.`,
     );
-    const storedConfig = parse(configBytes) as ProjectConfigV2;
-    expect(storedConfig).toEqual(request.config);
-    expect(storedConfig.recordingPolicy).toEqual({ mode: "project-skill" });
-    expect(Object.keys(storedConfig.recordingPolicy)).toEqual(["mode"]);
+    await writeFile(
+      join(
+        fixture.projectRoot,
+        ".agents",
+        "skills",
+        "ai-qa-project",
+        "SKILL.md",
+      ),
+      editedSkill,
+    );
+
+    for (const command of [
+      ["report", "recording-status", originalRun.runId],
+      ["report", "receipt", originalRun.runId, "--stdin-json"],
+    ]) {
+      const error = await fixture.cli.runError(
+        command,
+        command[1] === "receipt"
+          ? projectRecordingReceipt({
+              status: "recorded",
+              references: ["docs/qa-results.md#run-1"],
+            })
+          : undefined,
+      );
+      expect(error.error.code).toBe("project_skill.changed");
+    }
+    expect(
+      await readStableRunArtifacts({
+        projectRoot: fixture.projectRoot,
+        runId: originalRun.runId,
+        report,
+      }),
+    ).toEqual(before);
+    const reportDirectory = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "reports",
+      "runs",
+      originalRun.runId,
+    );
+    await expect(
+      access(join(reportDirectory, "recording.jsonl")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      access(join(reportDirectory, "recording.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    const nextRun = await startAndCancelWebRun(fixture);
+    await generateReport(fixture, nextRun.runId);
+    expect(originalRun.projectSkill?.contentSha256).toBe(
+      contentSha256(installed.skill),
+    );
+    expect(nextRun.projectSkill).toEqual({
+      path: ".agents/skills/ai-qa-project/SKILL.md",
+      contentSha256: contentSha256(editedSkill),
+    });
+    expect(nextRun.projectSkill?.contentSha256).not.toBe(
+      originalRun.projectSkill?.contentSha256,
+    );
+    expect(
+      await fixture.cli.run<RecordingStatus>([
+        "report",
+        "recording-status",
+        nextRun.runId,
+      ]),
+    ).toEqual({ runId: nextRun.runId, status: "pending", references: [] });
+  });
+
+  it("freezes historical recording modes across both config switch directions", async () => {
+    const fixture = await createTrustedProject();
+    await installHostManagedProject({ fixture, mode: "local-only" });
+    const firstLocalRun = await startAndCancelWebRun(fixture);
+    await generateReport(fixture, firstLocalRun.runId);
+
+    await switchMode(fixture, "project-skill");
+    const projectSkillRun = await startAndCancelWebRun(fixture);
+    await generateReport(fixture, projectSkillRun.runId);
+    expect(firstLocalRun.recordingPolicy).toEqual({ mode: "local-only" });
+    expect(
+      await fixture.cli.run<RecordingStatus>([
+        "report",
+        "recording-status",
+        firstLocalRun.runId,
+      ]),
+    ).toEqual({
+      runId: firstLocalRun.runId,
+      status: "not_applicable",
+      references: [],
+    });
+
+    await switchMode(fixture, "local-only");
+    const secondLocalRun = await startAndCancelWebRun(fixture);
+    await generateReport(fixture, secondLocalRun.runId);
+    expect(projectSkillRun.recordingPolicy).toEqual({ mode: "project-skill" });
+    expect(projectSkillRun.projectSkill).toBeDefined();
+    expect(
+      await fixture.cli.run<RecordingStatus>([
+        "report",
+        "recording-status",
+        projectSkillRun.runId,
+      ]),
+    ).toEqual({
+      runId: projectSkillRun.runId,
+      status: "pending",
+      references: [],
+    });
+    expect(secondLocalRun.recordingPolicy).toEqual({ mode: "local-only" });
+    expect(secondLocalRun.projectSkill).toBeUndefined();
   });
 });

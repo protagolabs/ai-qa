@@ -21,15 +21,60 @@ printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdi
 
 3. Before drafting, run `ai-qa doctor --json` and any applicable host-visible readiness checks. Treat a missing config as the expected `uninitialized` state. Discuss and resolve startup, targets, environments, authentication and test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording before choosing configuration values.
 4. Inspect the existing config, Project Skill, and project instructions. Ask how QA results or defects are already managed without suggesting providers. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Use `project-skill` only for an existing procedure, copied exactly with its match and rerun rules.
-5. Draft the complete schema-v2 config as JSON in scratch space. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
-6. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and supported secret environment-variable references in its body, never literal secrets or provider assumptions.
-7. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
-8. Before displaying diffs or requesting confirmation, verify that `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` are within the exact target project root. Reject either target, or an existing parent below the root, when it is a symlink. Reject literal secrets and secret handling other than config-declared environment-variable references; stop when the requested handling is unsupported.
-9. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
-10. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
-11. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.
+5. A request to show the approval decision is proposal-only: produce the complete drafts and diffs from confirmed facts, but do not run host commands, write files, or treat an unavailable example path or CLI as a task failure before approval.
+6. Draft the complete schema-v2 config as JSON in scratch space. Use the canonical object shape below; substitute confirmed values, omit no required keys, and add no other config keys. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
+7. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and supported secret environment-variable references in its body, never literal secrets or provider assumptions.
+8. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
+9. Before displaying diffs or requesting confirmation, verify that `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` are within the exact target project root. Reject either target, or an existing parent below the root, when it is a symlink. Reject literal secrets and secret handling other than config-declared environment-variable references; stop when the requested handling is unsupported.
+10. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Include this required method line in the approval package: Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
+11. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
+12. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.
 
 Permissions, authentication, file writes, and external tools remain host-owned.
+
+## Canonical schema-v2 config draft
+
+Use this exact config shape for a Web project. Substitute only confirmed values.
+Project startup, authentication/test-data procedures, rerun rules, and project
+matching belong in the Project Skill body, not as extra config fields.
+
+```yaml
+schemaVersion: 2
+project:
+  id: "<project-id>"
+  name: "<project-name>"
+targets:
+  web:
+    entryUrl: "<confirmed-entry-url>"
+environments: {}
+tools:
+  web:
+    controller: "chrome-devtools-mcp"
+evidencePolicy:
+  screenshots: required
+  defaultSensitivity: internal
+  retentionDays: 30
+reportPolicy:
+  formats:
+    - markdown
+    - json
+  audience: engineering
+  detail: full
+storagePolicy:
+  adapter: project-local
+gitPolicy:
+  config: track
+  artifacts: ignore
+ciPolicy:
+  nonPassExit: failure
+secretReferences: {}
+recordingPolicy:
+  mode: local-only
+```
+
+Use `mode: project-skill` only when the confirmed Project Skill contains an
+existing result-management procedure. `recordingPolicy` contains only `mode`;
+do not put a Skill path, provider, idempotency key, or procedure in config.
 
 ### Arbitrary local Project Skill body example
 

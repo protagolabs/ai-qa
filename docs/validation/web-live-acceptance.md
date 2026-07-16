@@ -38,21 +38,20 @@ This is the release-gate procedure for Increment 1. It is not satisfied by the a
 - Visual inspection confirmed that the screenshot shows `Authenticated home` and `Current account: qa@example.test` without the password.
 - The fixture password value is absent from project state and reports. Trust exists only at `/private/tmp/ai-qa-machine.0jP1NE/ai-qa/trust.json`; the only fixture `.ai-qa` directory is `fixtures/web-app/.ai-qa/`.
 
-## Project recording 1.1 acceptance addendum
+## Host-managed Project Skill 1.2 acceptance addendum
 
 The live proof above records the Increment 1 browser run at its stated commit.
-The provider-neutral Project Skill and recording-receipt extension is released
-only when the following reproducible automated gate also passes from the
+It does not prove the later host-owned initialization and recording lifecycle.
+That extension is released only when this reproducible gate passes from the
 repository root:
 
 ```bash
 pnpm vitest run \
   tests/unit/config-migration.test.ts \
-  tests/unit/project-skill.test.ts \
   tests/unit/recording-schema.test.ts \
-  tests/integration/init.test.ts \
-  tests/integration/project-skill.test.ts \
+  tests/integration/doctor-cli.test.ts \
   tests/integration/global-skill.test.ts \
+  tests/integration/run-journal.test.ts \
   tests/integration/report-generation.test.ts \
   tests/integration/recording-receipt.test.ts \
   tests/e2e/project-recording-flow.test.ts \
@@ -65,69 +64,57 @@ Acceptance checklist and test evidence:
       original bytes before and after normalization; `cli-web-vertical-slice.test.ts`
       also runs a legacy project without rewriting its config or creating recording
       artifacts.
-- [ ] Local-only initialization and completion:
-      `project-recording-flow.test.ts` previews and checksum-confirms the complete
-      v2 config plus Project Skill, generates a verified report, returns
-      `not_applicable`, and confirms that neither recording file exists.
+- [ ] Host-managed initialization: the E2Es use `config validate` as a
+      read-only draft check, then the host fixture creates the config, all four
+      canonical directories, and an ordinary project-owned Project Skill. No init
+      command, combined initialization JSON, managed marker, or manual checksum is
+      used.
+- [ ] Local-only completion: `project-recording-flow.test.ts` generates a
+      verified report, returns `not_applicable`, and confirms that neither
+      recording file exists.
 - [ ] Arbitrary local Markdown procedure: the project-skill E2E installs and
-      follows a `docs/qa-results.md` procedure taken from the Project Skill, then
-      registers only neutral status and opaque references. No built-in provider is
-      needed.
-- [ ] Managed/user preservation: `project-skill.test.ts` proves the user region
-      is preserved byte-for-byte, including CRLF content, and that replacing an
-      edited managed region requires a confirmed diff.
-- [ ] Preview freshness: `project-skill.test.ts` changes the submitted request
-      and destination after preview and expects `setup.checksum_mismatch` with no
-      partial publication; the transaction rollback cases preserve original bytes.
-- [ ] Concurrent-writer transaction boundary: `project-skill.test.ts` replaces,
-      deletes, and symlinks public destinations during publish and rollback. The
-      transaction preserves external replacements, restores verified originals
-      when possible, otherwise reports only project-relative `recoveryPaths`, and
-      leaves no owned private namespace after a successful cleanup. The supported
-      threat model is an ordinary writer that does not honor the setup lock; an
-      active same-identity actor tampering with the random `0700` namespace or
-      swapping ancestor directories remains out of scope. Parent-directory entries
-      are not `fsync`-durable across a host crash.
-- [ ] Receipt idempotency: `recording-receipt.test.ts` replays the same key and
-      payload without another journal write, and rejects reuse of the key with a
-      different payload as `recording.idempotency_conflict`.
+      reads and follows the exact `docs/qa-results.md` procedure from the normal
+      Skill, performs the host-side update, then registers only neutral status and
+      opaque references. No built-in provider is needed.
+- [ ] Receipt idempotency: the E2E submits no caller key. Production derives the
+      run key internally, replays the same payload without another journal write,
+      and rejects a conflicting payload as `recording.idempotency_conflict`.
 - [ ] Crash recovery: the same integration file removes `recording.json` to
       simulate a crash after canonical journal publication, then separately makes
       the view lag by one event. Status/retry deterministically rebuilds the view
       from unchanged `recording.jsonl` in both cases.
-- [ ] Frozen bidirectional mode switches: receipt integration changes current
-      config from `project-skill` to `local-only` and in the reverse direction. The
-      immutable work-order snapshot keeps historical status and receipt eligibility
-      unchanged; legacy work orders remain local-only without a rewrite.
+- [ ] Frozen bidirectional mode switches: the E2E changes current config from
+      `local-only` to `project-skill` and back. Historical work-order snapshots keep
+      their original status and receipt eligibility.
+- [ ] Project Skill drift: after report generation, editing the Skill makes both
+      receipt and status stop with `project_skill.changed` without recording files
+      or QA artifact mutation. A new run snapshots the edited Skill hash.
 - [ ] Verified-report boundary: before report generation, recording status and
       receipt return `report.not_generated`; after a terminal verified report, an
       empty project-skill repository returns `pending`. Report/evidence drift stays
       an integrity error instead of becoming pending.
-- [ ] Report-only export: after real recording artifacts exist,
-      `project-recording-flow.test.ts` exports exactly the configured
-      `report.json` and `report.md` project-relative paths and explicitly excludes
-      `recording.jsonl`/`recording.json`. Recording state is queried separately.
-- [ ] Immutable QA artifacts: receipt integration and the project-skill E2E hash
-      report JSON, report Markdown, and run journal bytes before and after all three
-      receipt statuses, and compare the verdict, criterion results, integrity block,
-      and terminal event unchanged.
-- [ ] Symlink rejection: `project-skill.test.ts` covers every Project Skill
-      ancestor and `SKILL.md`; `recording-receipt.test.ts` covers both recording
-      paths. Each existing symlink is rejected with an integrity error without
-      following or modifying its target.
+- [ ] Immutable QA artifacts: receipt integration and the project-skill E2E
+      compare report JSON, report Markdown, run journal, and verdict before and
+      after initial receipt and replay.
+- [ ] Doctor boundaries: doctor reports installation and availability only. It
+      never installs, authenticates, grants permission, creates project files, or
+      mutates the project; a stored config-v1 project without a Skill receives a
+      migration advisory.
 - [ ] Packaged global Skill metadata: after `pnpm build`, verify the copied
       artifact directly:
 
   ```bash
-  rg -n "aiQaSkillVersion: 1.1.0|aiQaProtocolRange: \^1.1.0|aiQaRecordingReceipt: true" \
+  rg -n "aiQaSkillVersion: 1.2.0|aiQaProtocolRange: \^1.2.0|aiQaRecordingReceipt: true" \
     dist/skills/global/SKILL.md
   ```
 
-For a current manual replay, initialization must use a schema-v2
-`InitializationRequest` containing both `config.recordingPolicy` and the
-complete `projectSkill`; preview that exact JSON and apply it only with the
-displayed checksum. The schema-v1 fixture below is retained as the immutable
-input used by the dated historical live proof, not as current init input.
+For a current manual replay, follow the exact two-doctor workflow in the
+README: Codex drafts config and uses `skill-creator` in scratch space, validates
+both drafts, shows both complete diffs, obtains one confirmation, writes the
+config and project-owned Skill, and runs doctor again. `ai-qa` is not a runtime;
+doctor never installs. Git and GitHub are optional. The schema-v1 fixture below
+is retained as immutable input from the dated historical proof, not current
+initialization input.
 
 ## Target
 
@@ -153,10 +140,10 @@ AI_QA_FIXTURE_PASSWORD="$AI_QA_WEB_FIXTURE_PASSWORD" pnpm fixture:web
 
 The bare schema-v1 object below is preserved only as the exact historical input
 used for the live proof at commit `bf16b87978d7391cddc1066270c52f4ec7b6879d`.
-It is not valid input for the current `ai-qa init`: the current CLI requires a
-complete schema-v2 `{ "config": ..., "projectSkill": ... }`
-`InitializationRequest` and rejects this bare object with `input.invalid_json`.
-Do not submit or adapt this block as a current init request.
+It is not a schema-v2 config draft and is not valid input for the current
+read-only `ai-qa config validate --stdin-json` command. There is no current
+`ai-qa init` command or combined initialization request. Do not submit or adapt
+this block as a current initialization draft.
 
 ```json
 {
@@ -208,7 +195,7 @@ The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm
 ## Current replay ordered execution
 
 1. Start the fixture and confirm `/health` returns `ok`. Keep its terminal open for the complete run.
-2. Use the isolated CLI with `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above. Explicitly confirm trust for `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): create one complete schema-v2 `init-request.json` containing both the fixture config (including `recordingPolicy.mode: local-only`) and a complete fixture Project Skill, display the full preview, and apply the exact same file with its confirmed checksum. Never pass the historical bare schema-v1 block above to the current CLI.
+2. Use the isolated CLI with `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above. Explicitly confirm trust for `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): run doctor, discuss requirements, draft the schema-v2 config (including `recordingPolicy.mode: local-only`) and ordinary fixture Project Skill in scratch space with `skill-creator`, validate them separately, display both complete diffs, obtain one confirmation, write both files through the host, and run doctor again. Never pass the historical bare schema-v1 block above to the current CLI.
 3. Activate the installed `ai-qa` skill. Use Chrome DevTools MCP to open the entry URL, confirm that the login fixture is rendered, and supply that observation to `doctor --platform web --json --stdin-json`.
 4. Start one exploratory run with the two stable criterion IDs above.
 5. For every Chrome DevTools MCP call—including navigation, DOM observation, form interaction, and screenshot capture—first record `action plan` with `tool: "chrome-devtools-mcp"`, invoke MCP, then record `action complete`. Retain the login interaction's returned `payload.stepId`; use it for the fresh authenticated observation action, the later evidence-capture action, and the satisfied assertions. The interaction terminal result must precede the fresh observation, and the fresh observation must precede screenshot capture.

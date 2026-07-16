@@ -1,6 +1,11 @@
 # ai-qa
 
-`ai-qa` is an agent-orchestrated QA CLI and Agent Skill. The agent controls the Web target through Chrome DevTools MCP; the Node.js CLI owns the trusted configuration, immutable work orders, typed event protocol, evidence files and hashes, regression cases, verdict validation, and project-local reports.
+`ai-qa` is an agent-orchestrated QA CLI and Agent Skill. It is not a runtime,
+daemon, or background service: the host invokes the CLI on demand and each
+command exits. The agent controls the Web target through Chrome DevTools MCP;
+the Node.js CLI owns the trusted configuration, immutable work orders, typed
+event protocol, evidence files and hashes, regression cases, verdict
+validation, and project-local reports.
 
 The split is intentional: the agent decides what to observe and do, while the CLI is the authority for persisted state and whether the available evidence supports a verdict.
 
@@ -65,65 +70,48 @@ Repository trust is machine-level state under `$AI_QA_HOME/trust.json` (default 
 
 ## Initialize a target project
 
-Initialization writes both `.ai-qa/config.yaml` and the target project's
-`.agents/skills/ai-qa-project/SKILL.md`. First discuss the complete QA and
-recording policy with the user. If the project has no existing results or
-defect-management procedure, keep `recordingPolicy.mode` as `local-only`; do
-not introduce an external system.
+Initialization is a host-managed project change. Follow this exact two-doctor
+workflow:
 
-Save the confirmed request as `init-request.json`. This local-only example is a
-complete request; replace the project identity, target, and Project Skill
-procedure with the values agreed for the real target.
-
-```json
-{
-  "config": {
-    "schemaVersion": 2,
-    "project": { "id": "sample-web", "name": "Sample Web" },
-    "targets": { "web": { "entryUrl": "http://127.0.0.1:3000" } },
-    "environments": {},
-    "tools": { "web": { "controller": "chrome-devtools-mcp" } },
-    "evidencePolicy": {
-      "screenshots": "required",
-      "defaultSensitivity": "internal",
-      "retentionDays": 30
-    },
-    "reportPolicy": {
-      "formats": ["markdown", "json"],
-      "audience": "engineering",
-      "detail": "full"
-    },
-    "storagePolicy": { "adapter": "project-local" },
-    "recordingPolicy": { "mode": "local-only" },
-    "gitPolicy": { "config": "track", "artifacts": "ignore" },
-    "ciPolicy": { "nonPassExit": "failure" },
-    "secretReferences": {}
-  },
-  "projectSkill": {
-    "reason": "Record the confirmed project-specific startup, evidence, report, and result-management procedure.",
-    "content": "---\nname: ai-qa-project\ndescription: Use when performing AI QA work in this target project, including startup, authentication, evidence, reports, or result recording.\nmetadata:\n  aiQaProjectSkillVersion: 1.0.0\n  aiQaProtocolRange: ^1.1.0\n  aiQaManagedChecksum: generated\n---\n<!-- ai-qa:managed:start -->\n# Project AI QA Procedures\n\n## Startup and environment\n\nRun the target using the project's documented local development command.\n\n## Authentication and test data\n\nUse only user-approved test data and host-managed authentication.\n\n## Navigation and platform constraints\n\nStart at the configured Web entry URL and prefer stable test IDs.\n\n## Evidence, privacy, and reports\n\nFollow the configured sensitivity, retention, and local report policy.\n\n## Project result recording\n\nNo additional project record is required; the verified local report completes the workflow.\n<!-- ai-qa:managed:end -->\n<!-- ai-qa:user:start -->\n<!-- ai-qa:user:end -->\n"
-  }
-}
+```text
+Codex loads global ai-qa Skill
+Codex runs doctor
+Codex discusses requirements
+Codex drafts config and uses skill-creator in scratch space
+Codex validates both drafts
+Codex displays complete diffs and obtains one confirmation
+Codex writes .ai-qa/config.yaml and .agents/skills/ai-qa-project/SKILL.md
+Codex runs doctor again
 ```
 
-Preview and apply by resubmitting that exact file. Display and review the full
-preview JSON—including the normalized config, complete Skill, paths, and
-unified diff—before extracting its checksum:
+The first doctor run reports installation and availability, including an
+expected `uninitialized` project state. Doctor never installs a Skill, creates
+directories, grants permissions, authenticates, or edits project files. Codex
+confirms the exact trusted project and discusses startup, targets,
+environments, authentication and test data, evidence, retention, reports,
+reruns, Git, CI, secrets, and result recording before choosing values.
+
+Draft the complete schema-v2 config and the complete Project Skill separately
+in scratch space. Validate the config without writing project files:
 
 ```bash
-preview_json="$(ai-qa --project /absolute/target init --stdin-json --preview < init-request.json)"
-printf '%s\n' "$preview_json"
-checksum="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).checksum))' <<<"$preview_json")"
-ai-qa --project /absolute/target init --stdin-json \
-  --confirm-checksum "$checksum" < init-request.json
+ai-qa config validate --stdin-json < config-draft.json
 ```
 
-If the request or either destination changes after preview, the apply is
-rejected as stale and must be previewed again. The host Agent—not `ai-qa`—loads
-the trusted Project Skill, chooses tools, handles authentication, requests
-permissions and approvals, and executes any project-specific procedure. The
-checksum-confirmed Project Skill is the durable, once-approved project rule;
-later runs that match it reuse that procedure without regenerating a new rule.
+Use `skill-creator` to create and validate the Skill draft. The target Skill is
+an ordinary, complete, project-owned Skill; it has no AI-QA managed/user
+regions or embedded AI-QA checksum. Display the complete config and Skill diffs
+and obtain one confirmation covering both files. Only then may Codex create the
+canonical `.ai-qa/` directories and write the two approved files. There is no
+combined initialization JSON, manual checksum, `ai-qa init`, or CLI-owned
+Project Skill generate/sync step.
+
+If the project has no existing result-management procedure, use
+`recordingPolicy.mode: local-only` and do not invent a provider. If it has one,
+use `project-skill` and put that exact arbitrary procedure, including match and
+rerun rules, in the Project Skill. Git tracking and commits are optional;
+GitHub and a Git remote are not assumed or required. Codex owns filesystem and
+tool permissions, authentication, and the final doctor run.
 
 ## Finish reporting and project recording
 
@@ -152,7 +140,7 @@ ai-qa --project /absolute/target report recording-status <run-id>
 # {"runId":"<run-id>","status":"pending","references":[]}
 
 printf '%s\n' \
-  '{"idempotencyKey":"run-id:project-recording:v1","status":"recorded","references":["docs/qa-results.md#run-id"]}' \
+  '{"status":"recorded","references":["docs/qa-results.md#run-id"]}' \
   | ai-qa --project /absolute/target report receipt <run-id> --stdin-json
 
 ai-qa --project /absolute/target report recording-status <run-id>
@@ -163,6 +151,12 @@ made. Use `unknown` when the host cannot determine the outcome, and do not
 retry an uncertain external operation. `ai-qa` stores no provider payload and
 never changes the QA verdict based on a recording receipt.
 
+Receipt idempotency is derived internally from the run and frozen recording
+context. Do not construct or submit an idempotency key. If the Project Skill
+changes after a project-skill run starts, status and receipt operations stop
+with `project_skill.changed`; the verified report and QA verdict remain intact.
+Start a new run to snapshot the updated Skill.
+
 `report export <run-id> --adapter project-local` verifies and returns only the
 configured `report.json` and `report.md` paths. It deliberately excludes
 `recording.jsonl` and `recording.json`; query the latest recording state through
@@ -172,9 +166,9 @@ configured `report.json` and `report.md` paths. It deliberately excludes
 
 The user and agent first discuss the target, acceptance criteria, evidence policy, report formats, storage, and secret references. Only the complete user-confirmed configuration is submitted.
 
-1. Install/check the managed skill with `ai-qa skill install --global` and `ai-qa skill check --global`.
+1. Install/check the global product Skill explicitly with `ai-qa skill install --global` and `ai-qa skill check --global`.
 2. Confirm machine trust with `ai-qa trust confirm --project <target> --stdin-json`.
-3. Preview and apply one complete request with `ai-qa --project <target> init --stdin-json --preview`, then repeat it with `--confirm-checksum <preview-checksum>`.
+3. Follow the host-managed two-doctor initialization workflow above. Use `config validate` and `skill-creator`, then write only after one confirmation.
 4. Use Chrome DevTools MCP read-only checks and submit their result to `ai-qa doctor --platform web --json --stdin-json`.
 5. Start exploratory QA with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
 6. Before every browser call, record `ai-qa action plan`. After the call, record `ai-qa action complete`; then use the typed `observation`, `evidence`, `assertion`, `decision`, `recovery`, or `blocker` commands as appropriate.

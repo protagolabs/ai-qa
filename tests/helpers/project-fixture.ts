@@ -6,7 +6,6 @@ import type {
   ProjectConfigV2,
 } from "../../src/core/config/schema.js";
 import type { RecordingReceiptInput } from "../../src/core/recording/schema.js";
-import type { InitializationRequest } from "../../src/services/initialization/project-setup.js";
 
 function projectFields() {
   return {
@@ -45,7 +44,7 @@ export function projectConfigV2(
   };
 }
 
-export function hostManagedProjectSkillSource(
+export function projectSkillSource(
   recordingProcedure = "Show the verified local report paths and stop.",
 ): string {
   return `---
@@ -61,60 +60,7 @@ ${recordingProcedure}
 `;
 }
 
-export function projectSkillSource(
-  recordingProcedure: string = "No additional project record is required; the verified local report completes the workflow.",
-): string {
-  return `---
-name: ai-qa-project
-description: Use when performing AI QA work in this target project, including startup, authentication, evidence, reports, or result recording.
-metadata:
-  aiQaProjectSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: generated
----
-<!-- ai-qa:managed:start -->
-# Project AI QA Procedures
-
-## Startup and environment
-
-Run the existing local development command documented by the project.
-
-## Authentication and test data
-
-Read credentials only from \${QA_TEST_PASSWORD}; never persist the value.
-
-## Navigation and platform constraints
-
-Start at the configured Web entry URL and prefer stable test IDs.
-
-## Evidence, privacy, and reports
-
-Follow config sensitivity, retention, and local report policy.
-
-## Project result recording
-
-${recordingProcedure}
-<!-- ai-qa:managed:end -->
-<!-- ai-qa:user:start -->
-<!-- ai-qa:user:end -->
-`;
-}
-
-export function projectSetupRequest(input: {
-  mode: "local-only" | "project-skill";
-  recordingProcedure?: string;
-}): InitializationRequest {
-  return {
-    config: projectConfigV2(input.mode),
-    projectSkill: {
-      reason: "Test fixture project procedures",
-      content: projectSkillSource(input.recordingProcedure),
-    },
-  };
-}
-
 export function projectRecordingReceipt(input: {
-  idempotencyKey?: string;
   status: RecordingReceiptInput["status"];
   references?: string[];
 }): RecordingReceiptInput {
@@ -128,6 +74,7 @@ export async function initializeTestProject(input: {
   projectRoot: string;
   aiQaHome: string;
   config?: ProjectConfigV2;
+  projectSkill?: string;
 }): Promise<void> {
   await Promise.all([
     mkdir(join(input.projectRoot, ".ai-qa", "cases"), { recursive: true }),
@@ -148,7 +95,7 @@ export async function initializeTestProject(input: {
     ),
     writeFile(
       join(input.projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md"),
-      hostManagedProjectSkillSource(),
+      input.projectSkill ?? projectSkillSource(),
       "utf8",
     ),
   ]);
