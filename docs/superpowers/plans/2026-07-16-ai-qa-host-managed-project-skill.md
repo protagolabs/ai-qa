@@ -67,6 +67,7 @@ src/services/skill-management/project-skill.ts
 - Modify: `src/cli/program.ts`
 - Modify: `src/cli/commands/skill.ts`
 - Modify: `tests/helpers/project-fixture.ts`
+- Modify: `tests/cli/help.test.ts`
 - Modify: `tests/integration/global-skill.test.ts`
 - Delete: `src/cli/commands/init.ts`
 - Delete: `tests/integration/init.test.ts`
@@ -166,6 +167,8 @@ ai-qa skill check --global
 Make `--global` required on all three commands. Preserve `--confirm-managed-replacement` only on install/sync. Add CLI assertions that `skill generate`, project `skill sync`, and project `skill check` return an unknown-command or required-option error without touching a project.
 
 Update the former `skill sync --global --preview` assertion to expect Commander `unknownOption`: `--preview` was project-only and must not remain as a recognized compatibility option on the global command.
+
+Update `tests/cli/help.test.ts` in the same task so the root help describes `config validate`, omits `init` and `configure`, and the `skill` help exposes only the three global-only commands and their supported options.
 
 - [ ] **Step 5: Replace test setup with direct host-owned files**
 
