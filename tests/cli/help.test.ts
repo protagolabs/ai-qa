@@ -15,38 +15,63 @@ describe("ai-qa CLI shell", () => {
     const exitCode = await runCli(["--help"], captured.context);
 
     expect(exitCode).toBe(0);
-    expect(captured.stdout.join("")).toContain("Usage: ai-qa");
+    const help = captured.stdout.join("");
+    expect(help).toContain("Usage: ai-qa");
+    expect(help).toMatch(/config\s+validate AI QA configuration drafts/);
+    expect(help).not.toMatch(/^\s+init(?:\s|\[)/m);
+    expect(help).not.toMatch(/^\s+configure(?:\s|\[)/m);
   });
 
   it.each([
     {
-      args: ["init", "--help"],
-      options: ["--stdin-json", "--preview", "--confirm-checksum"],
+      args: ["config", "validate", "--help"],
+      options: ["--stdin-json"],
+      excludedOptions: ["--preview", "--confirm-checksum"],
     },
     {
-      args: ["configure", "--help"],
-      options: ["--stdin-json", "--preview", "--confirm-checksum"],
+      args: ["skill", "install", "--help"],
+      options: ["--global", "--confirm-managed-replacement"],
+      excludedOptions: ["--stdin-json", "--preview", "--confirm-checksum"],
     },
-    {
-      args: ["skill", "generate", "--help"],
-      options: ["--stdin-json", "--preview", "--confirm-checksum"],
-    },
-    { args: ["skill", "check", "--help"], options: ["--global"] },
     {
       args: ["skill", "sync", "--help"],
-      options: ["--global", "--stdin-json", "--preview", "--confirm-checksum"],
+      options: ["--global", "--confirm-managed-replacement"],
+      excludedOptions: ["--stdin-json", "--preview", "--confirm-checksum"],
+    },
+    {
+      args: ["skill", "check", "--help"],
+      options: ["--global"],
+      excludedOptions: [
+        "--confirm-managed-replacement",
+        "--stdin-json",
+        "--preview",
+        "--confirm-checksum",
+      ],
     },
   ])(
-    "documents the project setup command surface for $args",
-    async ({ args, options }) => {
+    "documents the host-managed command surface for $args",
+    async ({ args, options, excludedOptions }) => {
       const captured = createCapturedCli();
 
       expect(await runCli(args, captured.context)).toBe(0);
 
       const help = captured.stdout.join("");
       for (const option of options) expect(help).toContain(option);
+      for (const option of excludedOptions) expect(help).not.toContain(option);
     },
   );
+
+  it("exposes only global main Skill commands", async () => {
+    const captured = createCapturedCli();
+
+    expect(await runCli(["skill", "--help"], captured.context)).toBe(0);
+
+    const help = captured.stdout.join("");
+    expect(help).toMatch(/^\s+install\s/m);
+    expect(help).toMatch(/^\s+sync\s/m);
+    expect(help).toMatch(/^\s+check\s/m);
+    expect(help).not.toMatch(/^\s+generate\s/m);
+  });
 
   it("preserves the caller context identity in program output closures", async () => {
     const captured = createCapturedCli();

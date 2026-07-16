@@ -955,7 +955,7 @@ describe("global skill CLI", () => {
       ),
     ).toBe(1);
     expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
-      error: { code: "skill.conflicting_scope_options" },
+      error: { code: "commander.unknownOption" },
     });
     await expectMissing(join(agentsHome, "skills", "ai-qa", "SKILL.md"));
   });

@@ -7,6 +7,7 @@ export default tseslint.config(
       "coverage",
       "dist",
       "node_modules",
+      ".superpowers/**",
       "eslint.config.js",
       "scripts/**/*.mjs",
       "fixtures/**/*.mjs",

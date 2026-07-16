@@ -1,12 +1,11 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { stringify } from "yaml";
 import type {
   ProjectConfigV1,
   ProjectConfigV2,
 } from "../../src/core/config/schema.js";
 import type { RecordingReceiptInput } from "../../src/core/recording/schema.js";
-import {
-  applyProjectSetup,
-  previewProjectSetup,
-} from "../../src/services/initialization/initialize-project.js";
 import type { InitializationRequest } from "../../src/services/initialization/project-setup.js";
 
 function projectFields() {
@@ -44,6 +43,22 @@ export function projectConfigV2(
     ...projectFields(),
     recordingPolicy: { mode },
   };
+}
+
+export function hostManagedProjectSkillSource(
+  recordingProcedure = "Show the verified local report paths and stop.",
+): string {
+  return `---
+name: ai-qa-project
+description: Use when performing Web AI QA for this project.
+---
+
+# Project AI QA Procedures
+
+## Result recording
+
+${recordingProcedure}
+`;
 }
 
 export function projectSkillSource(
@@ -115,24 +130,27 @@ export async function initializeTestProject(input: {
   aiQaHome: string;
   config?: ProjectConfigV2;
 }): Promise<void> {
-  const request = {
-    config: input.config ?? projectConfigV2(),
-    projectSkill: {
-      reason: "Test fixture project procedures",
-      content: projectSkillSource(),
-    },
-  };
-  const preview = await previewProjectSetup({
-    operation: "init",
-    projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
-    request,
-  });
-  await applyProjectSetup({
-    operation: "init",
-    projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
-    request,
-    confirmChecksum: preview.checksum,
-  });
+  await Promise.all([
+    mkdir(join(input.projectRoot, ".ai-qa", "cases"), { recursive: true }),
+    mkdir(join(input.projectRoot, ".ai-qa", "runs"), { recursive: true }),
+    mkdir(join(input.projectRoot, ".ai-qa", "evidence"), { recursive: true }),
+    mkdir(join(input.projectRoot, ".ai-qa", "reports", "runs"), {
+      recursive: true,
+    }),
+    mkdir(join(input.projectRoot, ".agents", "skills", "ai-qa-project"), {
+      recursive: true,
+    }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(input.projectRoot, ".ai-qa", "config.yaml"),
+      stringify(input.config ?? projectConfigV2(), { sortMapEntries: true }),
+      "utf8",
+    ),
+    writeFile(
+      join(input.projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+      hostManagedProjectSkillSource(),
+      "utf8",
+    ),
+  ]);
 }
