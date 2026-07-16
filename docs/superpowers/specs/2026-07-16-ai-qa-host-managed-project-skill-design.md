@@ -1,7 +1,7 @@
 # AI QA Host-Managed Project Skill Design
 
 **Date:** 2026-07-16  
-**Status:** Proposed written specification; awaiting user review  
+**Status:** Approved by user on 2026-07-16  
 **Supersedes:** The Project Skill authoring, preview/apply, managed-region, embedded-checksum, and project `skill generate|sync` portions of `2026-07-15-ai-qa-project-recording-skill-design.md`. The provider-neutral recording model, per-run recording-mode snapshot, verified-report boundary, neutral receipt, crash recovery, and immutable QA verdict remain in force unless this document changes them explicitly.
 
 ## 1. Objective
