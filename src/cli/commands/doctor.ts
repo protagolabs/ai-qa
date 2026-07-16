@@ -117,7 +117,7 @@ export function registerDoctorCommand(
         chromeDevtoolsMcp: input.chromeDevtoolsMcp,
         fetchImpl: context.fetchImpl,
       });
-      writeJson(context, result);
+      writeJson(context, { ...result, requiredAction: null });
     },
   );
 }

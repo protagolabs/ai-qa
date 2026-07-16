@@ -96,10 +96,16 @@ describe("web doctor CLI", () => {
     expect(readStdin).not.toHaveBeenCalled();
     const output = JSON.parse(captured.stdout.join("")) as {
       status: string;
+      requiredAction: unknown;
       checks: Array<{ code: string; status: string }>;
     };
     expect(output).toMatchObject({
       status: "uninitialized",
+    });
+    expect(output.requiredAction).toEqual({
+      kind: "configure-project",
+      blocking: true,
+      reason: "project-config-missing",
     });
     expect(
       output.checks.find((check) => check.code === "project.config"),
@@ -181,9 +187,11 @@ describe("web doctor CLI", () => {
     expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     const output = JSON.parse(captured.stdout.join("")) as {
       status: string;
+      requiredAction: unknown;
       checks: Array<{ code: string; status: string; message: string }>;
     };
     expect(output.status).toBe("ready");
+    expect(output.requiredAction).toBeNull();
     expect(output.checks.map((check) => check.code)).toEqual([
       "runtime.node",
       "agent.global_skill",
@@ -323,9 +331,11 @@ describe("web doctor CLI", () => {
       ).toBe(0);
       const output = JSON.parse(captured.stdout.join("")) as {
         status: unknown;
+        requiredAction: unknown;
         checks: unknown[];
       };
       expect(output.status).toBe("not_ready");
+      expect(output.requiredAction).toBeNull();
       expect(output.checks).toContainEqual({
         code: "agent.global_skill",
         status: "fail",

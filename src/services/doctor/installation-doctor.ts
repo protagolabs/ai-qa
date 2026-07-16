@@ -20,8 +20,17 @@ export interface InstallationCheck {
   message: string;
 }
 
+export interface ConfigureProjectRequiredAction {
+  kind: "configure-project";
+  blocking: true;
+  reason: "project-config-missing";
+}
+
+export type DoctorRequiredAction = ConfigureProjectRequiredAction | null;
+
 export interface InstallationDoctorResult {
   status: InstallationStatus;
+  requiredAction: DoctorRequiredAction;
   checks: InstallationCheck[];
 }
 
@@ -72,7 +81,15 @@ export async function runInstallationDoctor(
         message: "Canonical project storage is not initialized",
       },
     );
-    return { status: "uninitialized", checks };
+    return {
+      status: "uninitialized",
+      requiredAction: {
+        kind: "configure-project",
+        blocking: true,
+        reason: "project-config-missing",
+      },
+      checks,
+    };
   }
 
   if (storedConfig.state === "invalid") {
@@ -89,7 +106,7 @@ export async function runInstallationDoctor(
       },
       await storageCheck(input.projectRoot),
     );
-    return { status: "not_ready", checks };
+    return { status: "not_ready", requiredAction: null, checks };
   }
 
   checks.push({
@@ -103,6 +120,7 @@ export async function runInstallationDoctor(
     status: checks.some((check) => check.status === "fail")
       ? "not_ready"
       : "ready",
+    requiredAction: null,
     checks,
   };
 }

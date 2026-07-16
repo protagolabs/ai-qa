@@ -95,6 +95,11 @@ describe("runInstallationDoctor", () => {
     });
 
     expect(result.status).toBe("uninitialized");
+    expect(result.requiredAction).toEqual({
+      kind: "configure-project",
+      blocking: true,
+      reason: "project-config-missing",
+    });
     expect(check(result, "project.config")).toMatchObject({
       status: "missing",
     });
@@ -119,6 +124,7 @@ describe("runInstallationDoctor", () => {
       });
 
       expect(result.status).toBe("not_ready");
+      expect(result.requiredAction).toBeNull();
       const projectSkill = check(result, "agent.project_skill");
       expect(projectSkill).toMatchObject({ status: "fail" });
       expect(projectSkill?.message).toContain(projectSkillPath);
@@ -270,6 +276,7 @@ describe("runInstallationDoctor", () => {
     });
 
     expect(result.status).toBe("ready");
+    expect(result.requiredAction).toBeNull();
     expect(
       result.checks.every((candidate) => candidate.status === "pass"),
     ).toBe(true);
