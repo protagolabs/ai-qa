@@ -15,7 +15,20 @@ export const eventIdSchema = z
 
 export const actionIdSchema = eventIdSchema;
 
-export const storedWorkProtocolVersionSchema = z.enum(["1.0.0", "1.1.0"]);
+export const storedWorkProtocolVersionSchema = z.enum([
+  "1.0.0",
+  "1.1.0",
+  "1.2.0",
+]);
+
+export const projectSkillSnapshotSchema = z
+  .object({
+    path: z.literal(".agents/skills/ai-qa-project/SKILL.md"),
+    contentSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
+export type ProjectSkillSnapshot = z.infer<typeof projectSkillSnapshotSchema>;
 
 export const stepIdSchema = z.string().regex(/^step-[a-z0-9][a-z0-9-]{0,126}$/);
 
@@ -121,6 +134,7 @@ const workOrderBaseSchema = z
       .object({ mode: z.enum(["local-only", "project-skill"]) })
       .strict()
       .optional(),
+    projectSkill: projectSkillSnapshotSchema.optional(),
     budget: executionBudgetSchema,
     pinnedCase: z
       .object({
@@ -136,6 +150,29 @@ const workOrderBaseSchema = z
 
 export const workOrderSchema = workOrderBaseSchema.superRefine(
   (workOrder, context) => {
+    const recordingMode = workOrder.recordingPolicy?.mode ?? "local-only";
+    if (
+      recordingMode === "local-only" &&
+      workOrder.projectSkill !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectSkill"],
+        message:
+          "Local-only work orders cannot include a Project Skill snapshot",
+      });
+    }
+    if (
+      workOrder.protocolVersion === "1.2.0" &&
+      recordingMode === "project-skill" &&
+      workOrder.projectSkill === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectSkill"],
+        message: "Project-skill work orders require a Project Skill snapshot",
+      });
+    }
     if (workOrder.kind === "regression") {
       if (workOrder.pinnedCase === undefined) {
         context.addIssue({
@@ -254,6 +291,7 @@ export function createExploratoryWorkOrder(input: {
     defaultSensitivity: "public" | "internal" | "sensitive";
   };
   recordingPolicy?: { mode: "local-only" | "project-skill" };
+  projectSkill?: ProjectSkillSnapshot;
   startedAt: Date;
   preflightResult?: true;
 }): Readonly<WorkOrder> {
@@ -278,6 +316,9 @@ export function createExploratoryWorkOrder(input: {
       : { preflightResult: input.preflightResult }),
     evidencePolicy: input.evidencePolicy,
     recordingPolicy: input.recordingPolicy ?? { mode: "local-only" },
+    ...(input.projectSkill === undefined
+      ? {}
+      : { projectSkill: input.projectSkill }),
     budget: { maxToolCalls: 100, maxRecoveryActions: 10, deadline },
   });
   return deepFreezeWorkOrder(value);

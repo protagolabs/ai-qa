@@ -14,10 +14,14 @@ import {
 import { projectConfigV2 } from "../helpers/project-fixture.js";
 
 describe("exploratory work orders", () => {
-  it("preserves legacy bytes and hashes while deriving local-only recording", () => {
+  const projectSkill = {
+    path: ".agents/skills/ai-qa-project/SKILL.md" as const,
+    contentSha256: "a".repeat(64),
+  };
+
+  it("preserves stored 1.0/1.1 local-only bytes and hashes", () => {
     const legacy = {
       schemaVersion: 1,
-      protocolVersion: "1.0.0",
       runId: "run-legacy",
       kind: "exploratory",
       execution: "local",
@@ -44,18 +48,62 @@ describe("exploratory work orders", () => {
         deadline: "2026-07-13T00:30:00.000Z",
       },
     };
-    const bytes = canonicalJson(legacy);
-    const hash = sha256Canonical(legacy);
 
-    const parsed = workOrderSchema.parse(legacy);
+    for (const protocolVersion of ["1.0.0", "1.1.0"] as const) {
+      const stored = { ...legacy, protocolVersion };
+      const bytes = canonicalJson(stored);
+      const hash = sha256Canonical(stored);
 
-    expect(canonicalJson(parsed)).toBe(bytes);
-    expect(sha256Canonical(parsed)).toBe(hash);
-    expect(parsed).not.toHaveProperty("recordingPolicy");
-    expect(effectiveWorkOrderRecordingMode(parsed)).toBe("local-only");
-    expect(storedWorkProtocolVersionSchema.parse(parsed.protocolVersion)).toBe(
-      "1.0.0",
-    );
+      const parsed = workOrderSchema.parse(stored);
+
+      expect(canonicalJson(parsed)).toBe(bytes);
+      expect(sha256Canonical(parsed)).toBe(hash);
+      expect(parsed).not.toHaveProperty("recordingPolicy");
+      expect(parsed).not.toHaveProperty("projectSkill");
+      expect(effectiveWorkOrderRecordingMode(parsed)).toBe("local-only");
+      expect(
+        storedWorkProtocolVersionSchema.parse(parsed.protocolVersion),
+      ).toBe(protocolVersion);
+    }
+  });
+
+  it("reads a stored 1.1 project-skill work order without a snapshot", () => {
+    const stored = {
+      schemaVersion: 1,
+      protocolVersion: "1.1.0",
+      runId: "run-historical-project-skill",
+      kind: "exploratory",
+      execution: "local",
+      projectId: "sample-web",
+      platform: "web",
+      startedAt: "2026-07-13T00:00:00.000Z",
+      goal: "Verify successful login",
+      acceptanceCriteria: [
+        {
+          id: "authenticated-home-visible",
+          description: "Authenticated home is visible",
+          requiredEvidence: ["post-action-screenshot"],
+        },
+      ],
+      requiredSteps: [],
+      readiness: { platform: "web", status: "ready", checks: [] },
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      recordingPolicy: { mode: "project-skill" },
+      budget: {
+        maxToolCalls: 100,
+        maxRecoveryActions: 10,
+        deadline: "2026-07-13T00:30:00.000Z",
+      },
+    };
+
+    const parsed = workOrderSchema.parse(stored);
+
+    expect(parsed.protocolVersion).toBe("1.1.0");
+    expect(effectiveWorkOrderRecordingMode(parsed)).toBe("project-skill");
+    expect(parsed).not.toHaveProperty("projectSkill");
   });
 
   it("snapshots the config recording mode in new work orders", () => {
@@ -80,14 +128,76 @@ describe("exploratory work orders", () => {
         defaultSensitivity: config.evidencePolicy.defaultSensitivity,
       },
       recordingPolicy: config.recordingPolicy,
+      projectSkill,
       startedAt: new Date("2026-07-13T00:00:00.000Z"),
     });
 
     config.recordingPolicy.mode = "local-only";
 
-    expect(workOrder.protocolVersion).toBe("1.1.0");
+    expect(workOrder.protocolVersion).toBe("1.2.0");
     expect(effectiveWorkOrderRecordingMode(workOrder)).toBe("project-skill");
+    expect(workOrder.projectSkill).toEqual(projectSkill);
     expect(Object.isFrozen(workOrder.recordingPolicy)).toBe(true);
+    expect(Object.isFrozen(workOrder.projectSkill)).toBe(true);
+  });
+
+  it("requires a snapshot for new project-skill work orders", () => {
+    const input = exploratoryRunInputSchema.parse({
+      goal: "Verify successful login",
+      acceptanceCriteria: [
+        {
+          id: "authenticated-home-visible",
+          description: "Authenticated home is visible",
+          requiredEvidence: ["post-action-screenshot"],
+        },
+      ],
+      readiness: { platform: "web", status: "ready", checks: [] },
+    });
+    const workOrder = createExploratoryWorkOrder({
+      projectId: "sample-web",
+      runId: "run-local",
+      input,
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(() =>
+      workOrderSchema.parse({
+        ...workOrder,
+        recordingPolicy: { mode: "project-skill" },
+      }),
+    ).toThrow();
+  });
+
+  it("forbids a project Skill snapshot for local-only work orders", () => {
+    const input = exploratoryRunInputSchema.parse({
+      goal: "Verify successful login",
+      acceptanceCriteria: [
+        {
+          id: "authenticated-home-visible",
+          description: "Authenticated home is visible",
+          requiredEvidence: ["post-action-screenshot"],
+        },
+      ],
+      readiness: { platform: "web", status: "ready", checks: [] },
+    });
+    const workOrder = createExploratoryWorkOrder({
+      projectId: "sample-web",
+      runId: "run-local",
+      input,
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt: new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(() =>
+      workOrderSchema.parse({ ...workOrder, projectSkill }),
+    ).toThrow();
   });
 
   it("requires stable criterion IDs and freezes finite defaults", () => {
