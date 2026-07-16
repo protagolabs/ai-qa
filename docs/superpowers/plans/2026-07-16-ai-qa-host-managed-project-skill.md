@@ -605,6 +605,8 @@ Expected: PASS.
 - Modify: `src/services/skill-management/global-skill.ts`
 - Modify: `tests/integration/global-skill.test.ts`
 - Modify: `tests/integration/doctor-cli.test.ts`
+- Modify: `tests/integration/run-journal.test.ts`
+- Modify: `tests/integration/regression-replay.test.ts`
 - Modify: `tests/e2e/web-vertical-slice.test.ts`
 - Modify: `src/schemas/versions.ts`
 
@@ -657,7 +659,7 @@ New runs require the current 1.2 main Skill. Remove recording-mode-dependent acc
 - [ ] **Step 5: Validate packaged Skill**
 
 ```bash
-pnpm vitest run tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/e2e/web-vertical-slice.test.ts
+pnpm vitest run tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/integration/run-journal.test.ts tests/integration/regression-replay.test.ts tests/e2e/web-vertical-slice.test.ts
 pnpm build
 rg -n "aiQaSkillVersion: 1.2.0|aiQaProtocolRange: \^1.2.0|aiQaRecordingReceipt: true" dist/skills/global/SKILL.md
 validator="${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py"
@@ -669,7 +671,7 @@ Expected: tests PASS; packaged metadata matches; optional validator prints `Skil
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/skills/global src/cli/commands/run.ts src/services/skill-management/global-skill.ts src/schemas/versions.ts tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/e2e/web-vertical-slice.test.ts
+git add src/skills/global src/cli/commands/run.ts src/services/skill-management/global-skill.ts src/schemas/versions.ts tests/integration/global-skill.test.ts tests/integration/doctor-cli.test.ts tests/integration/run-journal.test.ts tests/integration/regression-replay.test.ts tests/e2e/web-vertical-slice.test.ts
 git commit -m "feat: teach host-managed project skills"
 ```
 
