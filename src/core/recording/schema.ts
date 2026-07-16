@@ -29,8 +29,7 @@ export const recordingReferenceSchema = z
     }
   });
 
-const receiptFields = {
-  idempotencyKey: recordingIdempotencyKeySchema,
+const receiptPayloadFields = {
   status: z.enum(["recorded", "not_recorded", "unknown"]),
   references: z.array(recordingReferenceSchema).max(20),
 };
@@ -51,17 +50,17 @@ function validateStatusReferences(
       message: "Recorded receipts require at least one reference",
     });
   }
-  if (value.status === "not_recorded" && value.references.length !== 0) {
+  if (value.status !== "recorded" && value.references.length !== 0) {
     context.addIssue({
       code: "custom",
       path: ["references"],
-      message: "Not-recorded receipts require an empty reference list",
+      message: "Non-recorded receipts require an empty reference list",
     });
   }
 }
 
 export const recordingReceiptInputSchema = z
-  .object(receiptFields)
+  .object(receiptPayloadFields)
   .strict()
   .superRefine(validateStatusReferences);
 
@@ -69,7 +68,8 @@ export type RecordingReceiptInput = z.infer<typeof recordingReceiptInputSchema>;
 
 export const recordingEventSchema = z
   .object({
-    ...receiptFields,
+    ...receiptPayloadFields,
+    idempotencyKey: recordingIdempotencyKeySchema,
     schemaVersion: z.literal(1),
     eventId: recordingEventIdSchema,
     runId: runIdSchema,

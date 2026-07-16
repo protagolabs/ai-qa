@@ -75,7 +75,7 @@ function twoEvents(): [RecordingEvent, RecordingEvent] {
       recordedAt: SECOND_RECORDED_AT,
       idempotencyKey: "receipt-2",
       status: "unknown",
-      references: ["opaque-reference-2"],
+      references: [],
     }),
   ];
 }
@@ -239,7 +239,6 @@ describe("recording repository", () => {
     );
 
     const registered = await repository.registerUnlocked({
-      idempotencyKey: "receipt-1",
       status: "recorded",
       references: ["opaque-reference-1"],
     });
@@ -250,7 +249,7 @@ describe("recording repository", () => {
       schemaVersion: 1,
       runId: "run-1",
       recordedAt: FIRST_RECORDED_AT,
-      idempotencyKey: "receipt-1",
+      idempotencyKey: "recording:run-1:v1",
       status: "recorded",
       references: ["opaque-reference-1"],
     });
@@ -286,7 +285,6 @@ describe("recording repository", () => {
       });
       await expect(
         repository.registerUnlocked({
-          idempotencyKey: "symlink-boundary",
           status: "unknown",
           references: [],
         }),
@@ -343,7 +341,6 @@ describe("recording repository", () => {
     }
 
     const retry = await repository.registerUnlocked({
-      idempotencyKey: event.idempotencyKey,
       status: event.status,
       references: event.references,
     });
@@ -677,7 +674,7 @@ describe("recording repository", () => {
     }
   });
 
-  it("replays exact payloads without journal writes and rejects key reuse conflicts", async () => {
+  it("derives receipt identity, replays exact payloads without journal writes, and rejects conflicts", async () => {
     const directory = await createDirectory();
     const repository = new RecordingRepository(
       directory,
@@ -685,11 +682,11 @@ describe("recording repository", () => {
       () => new Date(FIRST_RECORDED_AT),
     );
     const receipt = {
-      idempotencyKey: "stable-key",
       status: "recorded" as const,
       references: ["ref-a", "ref-b"],
     };
     const first = await repository.registerUnlocked(receipt);
+    expect(first.event.idempotencyKey).toBe("recording:run-1:v1");
     const journalPath = join(directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath, "utf8");
     const journalInode = (await stat(journalPath)).ino;
@@ -703,13 +700,13 @@ describe("recording repository", () => {
     expect((await stat(journalPath)).ino).toBe(journalInode);
 
     for (const conflict of [
-      { ...receipt, status: "unknown" as const },
+      { status: "unknown" as const, references: [] },
       { ...receipt, references: ["ref-b", "ref-a"] },
     ]) {
       await expect(repository.registerUnlocked(conflict)).rejects.toMatchObject(
         {
           code: "recording.idempotency_conflict",
-          details: { idempotencyKey: "stable-key" },
+          details: { runId: "run-1" },
         },
       );
       expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
@@ -906,7 +903,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: "local-receipt",
           status: "not_recorded",
           references: [],
         },
@@ -936,7 +932,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: "too-early",
           status: "unknown",
           references: [],
         },
@@ -955,7 +950,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: "before-report",
           status: "not_recorded",
           references: [],
         },
@@ -980,7 +974,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...reportFixture,
         receipt: {
-          idempotencyKey: "after-report-drift",
           status: "unknown",
           references: [],
         },
@@ -1000,7 +993,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...evidenceFixture,
         receipt: {
-          idempotencyKey: "after-evidence-drift",
           status: "unknown",
           references: [],
         },
@@ -1025,7 +1017,7 @@ describe("verified report recording receipt service", () => {
     await expectNoRecordingFiles(storageFixture);
   });
 
-  it("registers every receipt status with retry, conflict, history, latest status, and opaque references", async () => {
+  it("registers a single receipt with retry, conflict, status, and opaque references", async () => {
     const fixture = await receiptFixture();
     const opaqueReferences = [
       "docs/qa-results.md#run-1",
@@ -1033,7 +1025,6 @@ describe("verified report recording receipt service", () => {
       "message:abc",
     ];
     const recordedReceipt = {
-      idempotencyKey: "receipt-recorded",
       status: "recorded" as const,
       references: opaqueReferences,
     };
@@ -1056,50 +1047,21 @@ describe("verified report recording receipt service", () => {
     await expect(
       registerRecordingReceipt({
         ...fixture,
-        receipt: { ...recordedReceipt, status: "unknown" },
+        receipt: { status: "unknown", references: [] },
       }),
-    ).rejects.toMatchObject({ code: "recording.idempotency_conflict" });
-
-    const notRecorded = await registerRecordingReceipt({
-      ...fixture,
-      receipt: {
-        idempotencyKey: "receipt-not-recorded",
-        status: "not_recorded",
-        references: [],
-      },
+    ).rejects.toMatchObject({
+      code: "recording.idempotency_conflict",
+      details: { runId: "run-1" },
     });
-    expect(notRecorded.status.status).toBe("not_recorded");
-    const unknown = await registerRecordingReceipt({
-      ...fixture,
-      now: () => new Date(SECOND_RECORDED_AT),
-      receipt: {
-        idempotencyKey: "receipt-unknown",
-        status: "unknown",
-        references: ["message:abc"],
-      },
-    });
-    const oldReceiptReplay = await registerRecordingReceipt({
-      ...fixture,
-      receipt: recordedReceipt,
-    });
-    expect(oldReceiptReplay).toMatchObject({
-      event: { eventId: first.event.eventId },
-      status: unknown.status,
-      replayed: true,
-    });
-    await expect(readRecordingStatus(fixture)).resolves.toEqual(unknown.status);
+    await expect(readRecordingStatus(fixture)).resolves.toEqual(first.status);
     const artifact = JSON.parse(
       await readFile(join(fixture.directory, "recording.json"), "utf8"),
     ) as RecordingArtifact;
-    expect(artifact.history.map(({ status }) => status)).toEqual([
-      "recorded",
-      "not_recorded",
-      "unknown",
-    ]);
+    expect(artifact.history.map(({ status }) => status)).toEqual(["recorded"]);
     expect(artifact.current).toEqual({
-      eventId: unknown.event.eventId,
-      status: "unknown",
-      references: ["message:abc"],
+      eventId: first.event.eventId,
+      status: "recorded",
+      references: opaqueReferences,
     });
   });
 
@@ -1138,7 +1100,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: "after-project-skill-drift",
           status: "recorded",
           references: ["docs/qa-results.md#run-1"],
         },
@@ -1171,7 +1132,6 @@ describe("verified report recording receipt service", () => {
       registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: "historical-new-receipt",
           status: "recorded",
           references: ["docs/qa-results.md#run-1"],
         },
@@ -1183,15 +1143,23 @@ describe("verified report recording receipt service", () => {
   it("reads and exactly replays an existing receipt for historical 1.1 project-skill runs", async () => {
     const fixture = await receiptFixture({ historicalProjectSkill: true });
     const receipt = {
-      idempotencyKey: "historical-existing-receipt",
       status: "recorded" as const,
       references: ["docs/qa-results.md#run-1"],
     };
-    const seeded = await new RecordingRepository(
+    const historicalEvent = recordingEvent({
+      runId: fixture.runId,
+      idempotencyKey: "historical-caller-owned-key",
+      status: receipt.status,
+      references: receipt.references,
+    });
+    await writeJournal(fixture.directory, [historicalEvent]);
+    await writeArtifact(
       fixture.directory,
-      fixture.runId,
-      fixture.now,
-    ).registerUnlocked(receipt);
+      materializeRecordingArtifact({
+        runId: fixture.runId,
+        events: [historicalEvent],
+      }),
+    );
     const journalPath = join(fixture.directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath);
 
@@ -1199,19 +1167,19 @@ describe("verified report recording receipt service", () => {
       runId: "run-1",
       status: "recorded",
       references: receipt.references,
-      eventId: seeded.event.eventId,
-      recordedAt: seeded.event.recordedAt,
+      eventId: historicalEvent.eventId,
+      recordedAt: historicalEvent.recordedAt,
     });
     await expect(
       registerRecordingReceipt({ ...fixture, receipt }),
     ).resolves.toEqual({
-      event: seeded.event,
+      event: historicalEvent,
       status: {
         runId: "run-1",
         status: "recorded",
         references: receipt.references,
-        eventId: seeded.event.eventId,
-        recordedAt: seeded.event.recordedAt,
+        eventId: historicalEvent.eventId,
+        recordedAt: historicalEvent.recordedAt,
       },
       replayed: true,
     });
@@ -1220,7 +1188,10 @@ describe("verified report recording receipt service", () => {
         ...fixture,
         receipt: { ...receipt, status: "unknown", references: [] },
       }),
-    ).rejects.toMatchObject({ code: "recording.idempotency_conflict" });
+    ).rejects.toMatchObject({
+      code: "recording.idempotency_conflict",
+      details: { runId: "run-1" },
+    });
     expect(await readFile(journalPath)).toEqual(journalBefore);
   });
 
@@ -1252,7 +1223,6 @@ describe("verified report recording receipt service", () => {
     await registerRecordingReceipt({
       ...fixture,
       receipt: {
-        idempotencyKey: "immutable-boundary",
         status: "recorded",
         references: ["docs/qa-results.md#run-1"],
       },
@@ -1279,7 +1249,6 @@ describe("verified report recording receipt service", () => {
     await registerRecordingReceipt({
       ...fixture,
       receipt: {
-        idempotencyKey: "integrity-source",
         status: "recorded",
         references: ["row:42"],
       },
@@ -1334,7 +1303,6 @@ describe("verified report recording receipt service", () => {
     const registered = await registerRecordingReceipt({
       ...fixture,
       receipt: {
-        idempotencyKey: "historical-project-skill",
         status: "recorded",
         references: ["message:abc"],
       },
@@ -1361,7 +1329,6 @@ describe("verified report recording receipt service", () => {
         registerRecordingReceipt({
           ...fixture,
           receipt: {
-            idempotencyKey: legacy ? "legacy" : "historical-local",
             status: "unknown",
             references: [],
           },
@@ -1385,7 +1352,6 @@ describe("report recording receipt CLI", () => {
         stdinReads += 1;
         return Promise.resolve(
           JSON.stringify({
-            idempotencyKey: "cli-receipt",
             status: "recorded",
             references: ["docs/qa-results.md#run-1"],
           }),

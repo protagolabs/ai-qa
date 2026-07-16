@@ -90,7 +90,6 @@ describe("recording repository schemas", () => {
 
   it("accepts 20 references and rejects 21", () => {
     const receipt = {
-      idempotencyKey: "receipt-1",
       status: "recorded",
       references: Array.from({ length: 20 }, (_, index) => `ref-${index}`),
     };
@@ -106,44 +105,62 @@ describe("recording repository schemas", () => {
   it("requires recorded references and forbids not-recorded references", () => {
     expect(
       recordingReceiptInputSchema.safeParse({
-        idempotencyKey: "recorded-empty",
         status: "recorded",
         references: [],
       }).success,
     ).toBe(false);
     expect(
       recordingReceiptInputSchema.safeParse({
-        idempotencyKey: "recorded-present",
         status: "recorded",
         references: ["ref"],
       }).success,
     ).toBe(true);
     expect(
       recordingReceiptInputSchema.safeParse({
-        idempotencyKey: "not-recorded-empty",
         status: "not_recorded",
         references: [],
       }).success,
     ).toBe(true);
     expect(
       recordingReceiptInputSchema.safeParse({
-        idempotencyKey: "not-recorded-present",
         status: "not_recorded",
         references: ["ref"],
       }).success,
     ).toBe(false);
   });
 
-  it("accepts unknown receipts with empty or populated references", () => {
-    for (const references of [[], ["known-reference"]]) {
-      expect(
-        recordingReceiptInputSchema.safeParse({
-          idempotencyKey: "unknown-key",
-          status: "unknown",
-          references,
-        }).success,
-      ).toBe(true);
-    }
+  it("accepts only empty references for unknown receipts", () => {
+    expect(
+      recordingReceiptInputSchema.safeParse({
+        status: "unknown",
+        references: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      recordingReceiptInputSchema.safeParse({
+        status: "unknown",
+        references: ["must-be-empty"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only status and references in public receipt input", () => {
+    expect(
+      recordingReceiptInputSchema.parse({
+        status: "recorded",
+        references: ["docs/qa-results.md#run-sample"],
+      }),
+    ).toEqual({
+      status: "recorded",
+      references: ["docs/qa-results.md#run-sample"],
+    });
+    expect(() =>
+      recordingReceiptInputSchema.parse({
+        idempotencyKey: "caller-owned",
+        status: "recorded",
+        references: ["docs/qa-results.md#run-sample"],
+      }),
+    ).toThrow();
   });
 
   it("applies status/reference rules to persisted events", () => {
@@ -167,7 +184,6 @@ describe("recording repository schemas", () => {
   it("rejects unknown receipt and event object keys", () => {
     expect(
       recordingReceiptInputSchema.safeParse({
-        idempotencyKey: "strict-receipt",
         status: "unknown",
         references: [],
         unexpected: true,

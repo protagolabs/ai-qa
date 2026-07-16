@@ -1,4 +1,3 @@
-import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { RecordingRepository } from "../../core/recording/repository.js";
 import {
@@ -122,31 +121,13 @@ async function replayHistoricalReceipt(input: {
   if (state.state === "missing") {
     throw projectSkillSnapshotMissing(input.runId);
   }
-  const existing = state.events.find(
-    (event) => event.idempotencyKey === receipt.idempotencyKey,
-  );
-  if (existing === undefined) {
-    throw projectSkillSnapshotMissing(input.runId);
-  }
-  if (
-    canonicalJson({
-      idempotencyKey: existing.idempotencyKey,
-      status: existing.status,
-      references: existing.references,
-    }) !== canonicalJson(receipt)
-  ) {
-    throw new AiQaError(
-      "recording.idempotency_conflict",
-      "Recording idempotency key was already used for a different receipt",
-      { idempotencyKey: receipt.idempotencyKey },
-    );
-  }
-  const current = state.events.at(-1);
+  const registered = await input.repository.registerUnlocked(receipt);
+  const current = registered.artifact.history.at(-1);
   if (current === undefined) throw recordingIntegrityError(input.runId);
   return {
-    event: existing,
+    event: registered.event,
     status: statusFromReceipt(input.runId, current),
-    replayed: true,
+    replayed: registered.replayed,
   };
 }
 

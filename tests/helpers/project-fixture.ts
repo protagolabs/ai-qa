@@ -114,12 +114,11 @@ export function projectSetupRequest(input: {
 }
 
 export function projectRecordingReceipt(input: {
-  idempotencyKey: string;
+  idempotencyKey?: string;
   status: RecordingReceiptInput["status"];
   references?: string[];
 }): RecordingReceiptInput {
   return {
-    idempotencyKey: input.idempotencyKey,
     status: input.status,
     references: input.references ?? [],
   };

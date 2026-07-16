@@ -49,10 +49,13 @@ function historyEntry(event: RecordingEvent): RecordingHistoryEntry {
 
 function receiptPayload(event: RecordingEvent): RecordingReceiptInput {
   return {
-    idempotencyKey: event.idempotencyKey,
     status: event.status,
     references: event.references,
   };
+}
+
+function idempotencyKeyForRun(runId: string): string {
+  return `recording:${runId}:v1`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -239,16 +242,10 @@ export class RecordingRepository {
     const events =
       existingState.state === "missing" ? [] : existingState.events;
     const existing = events.find(
-      (event) => event.idempotencyKey === receipt.idempotencyKey,
+      (event) =>
+        canonicalJson(receiptPayload(event)) === canonicalJson(receipt),
     );
     if (existing !== undefined) {
-      if (canonicalJson(receiptPayload(existing)) !== canonicalJson(receipt)) {
-        throw new AiQaError(
-          "recording.idempotency_conflict",
-          "Recording idempotency key was already used for a different receipt",
-          { idempotencyKey: receipt.idempotencyKey },
-        );
-      }
       if (existingState.state === "missing") {
         throw this.integrityError();
       }
@@ -258,12 +255,20 @@ export class RecordingRepository {
         replayed: true,
       };
     }
+    if (events.length !== 0) {
+      throw new AiQaError(
+        "recording.idempotency_conflict",
+        "Recording receipt was already registered with a different payload",
+        { runId: this.runId },
+      );
+    }
 
     const event = recordingEventSchema.parse({
       schemaVersion: 1,
       eventId: createId("recording"),
       runId: this.runId,
       recordedAt: this.now().toISOString(),
+      idempotencyKey: idempotencyKeyForRun(this.runId),
       ...receipt,
     });
     const nextEvents = [...events, event];
