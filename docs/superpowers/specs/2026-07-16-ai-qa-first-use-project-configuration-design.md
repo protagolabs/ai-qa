@@ -134,6 +134,12 @@ The Skill documents the following safe product defaults:
 - empty environments and secret references when the project declares none;
 - `local-only` recording when no existing result-management procedure exists.
 
+Configuration sources have a strict precedence: explicit user decisions,
+unambiguous project-owned instructions, then safe product defaults. A default
+applies only when neither the user nor the project has supplied that decision.
+Conflicting project-owned sources are unresolved and require a user answer;
+Codex must not choose one by preference.
+
 Codex must ask the user when it cannot uniquely determine a Web entry URL or
 startup procedure, authentication and test-data requirements, named
 environments, secret environment-variable references, or the meaning of
