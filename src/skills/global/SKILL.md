@@ -2,7 +2,7 @@
 name: ai-qa
 description: Use when configuring AI QA, manually testing Web behavior, capturing QA evidence, promoting an exploratory run, or replaying a regression case with the ai-qa CLI and platform control tools.
 metadata:
-  aiQaSkillVersion: 1.2.0
+  aiQaSkillVersion: 1.3.0
   aiQaProtocolRange: ^1.2.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
@@ -12,18 +12,27 @@ metadata:
 
 # AI QA Workflow
 
-## Initialize or update a project
+## Codex-managed target prerequisites
 
 1. Resolve the exact target project. Never substitute an ancestor for a named nested project.
 2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Read project files only after trust is recorded.
-3. Before drafting, run the applicable installation doctor and host-visible checks; treat a missing config as `uninitialized`, then discuss startup, targets, environments, authentication/test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording.
-4. Ask how the project already manages QA results or defects without offering a provider list. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
-5. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
-6. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
-7. Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.
-8. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
-9. Run `ai-qa doctor --json` after the host-managed write. Stop and report any installation failure before Web QA.
-10. Permissions, authentication, file writes, and external tools remain host-owned.
+
+Target resolution, repository trust, permissions, and project reads are Codex/host prerequisites, not AI QA configuration settings.
+
+## Initialize or update a project
+
+1. Run the applicable installation doctor and host-visible checks. Treat `requiredAction.kind: configure-project` as a mandatory first-use gate. Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.
+2. Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.
+3. Inspect project-owned instructions and metadata. Derive only unambiguous values, summarize derived values, and ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.
+4. Use this precedence: explicit user decisions, unambiguous project-owned instructions, then the safe product defaults in `references/web-work-protocol.md`. Never choose between conflicting project sources.
+5. Inspect how the project already manages QA results or defects. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
+6. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
+7. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
+8. Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.
+9. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
+10. If the user cancels or defers setup, do not write files, use temporary defaults, or resume QA.
+11. Run `ai-qa doctor --json` after the host-managed write. Resume the original QA request only after the post-write doctor returns `ready`; otherwise surface the failed check and keep QA blocked.
+12. Permissions, authentication, file writes, and external tools remain host-owned.
 
 Read `references/web-work-protocol.md` for the exact host-managed sequence and Project Skill body example.
 

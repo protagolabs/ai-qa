@@ -759,13 +759,13 @@ async function replayActiveCase(input: {
 }
 
 describe("Increment 1 Web vertical slice services", () => {
-  it("packages the 1.2 global skill receipt capability", async () => {
+  it("packages the 1.3 global skill first-use capability", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       "utf8",
     );
 
-    expect(skill).toContain("aiQaSkillVersion: 1.2.0");
+    expect(skill).toContain("aiQaSkillVersion: 1.3.0");
     expect(skill).toContain("aiQaProtocolRange: ^1.2.0");
     expect(skill).toContain("aiQaRecordingReceipt: true");
   });

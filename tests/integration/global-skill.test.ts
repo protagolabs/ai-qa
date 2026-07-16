@@ -540,7 +540,7 @@ describe("syncGlobalSkill", () => {
   });
 });
 
-describe("bundled global skill 1.2", () => {
+describe("bundled global skill 1.3", () => {
   it("teaches the host-managed Project Skill procedure", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
@@ -559,7 +559,7 @@ describe("bundled global skill 1.2", () => {
     );
     const guidance = `${skill}\n${reference}`;
 
-    expect.soft(skill).toContain("  aiQaSkillVersion: 1.2.0");
+    expect.soft(skill).toContain("  aiQaSkillVersion: 1.3.0");
     expect.soft(skill).toContain("  aiQaProtocolRange: ^1.2.0");
     expect.soft(skill).toContain("  aiQaRecordingReceipt: true");
     expect.soft(skill).toContain("  aiQaManagedChecksum: bundled");
@@ -569,7 +569,6 @@ describe("bundled global skill 1.2", () => {
       "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools.",
       "The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.",
       "Run `ai-qa config validate --stdin-json` as a read-only config check.",
-      "Before drafting, run the applicable installation doctor and host-visible checks; treat a missing config as `uninitialized`, then discuss startup, targets, environments, authentication/test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording.",
       "Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.",
       "Only after config validation, scratch Project Skill validation, and all path, symlink, and secret safety checks succeed may Codex request the one confirmation; that confirmation authorizes only the two target writes and four canonical project-local directories, followed by the post-write doctor.",
       "The one confirmation does not authorize the post-write doctor; after the approved writes and directory creation complete, Codex runs doctor as a separate mandatory verification step.",
@@ -577,6 +576,14 @@ describe("bundled global skill 1.2", () => {
       "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
       "Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.",
       "Permissions, authentication, file writes, and external tools remain host-owned.",
+      "Target resolution, repository trust, permissions, and project reads are Codex/host prerequisites, not AI QA configuration settings.",
+      "Treat `requiredAction.kind: configure-project` as a mandatory first-use gate.",
+      "Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.",
+      "Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.",
+      "Configuration source precedence is explicit user decisions, unambiguous project-owned instructions, then safe product defaults.",
+      "Ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.",
+      "If the user cancels or defers setup, do not write files, use temporary defaults, or resume QA.",
+      "Resume the original QA request only after the post-write doctor returns `ready`.",
     ]) {
       expect.soft(guidance).toContain(fact);
     }
@@ -756,7 +763,7 @@ describe("global skill CLI", () => {
     ).toBe(0);
     expect(
       await readFile(join(agentsHome, "skills", "ai-qa", "SKILL.md"), "utf8"),
-    ).toContain("aiQaSkillVersion: 1.2.0");
+    ).toContain("aiQaSkillVersion: 1.3.0");
     expect(await runCli(["skill", "check", "--global"], captured.context)).toBe(
       0,
     );
