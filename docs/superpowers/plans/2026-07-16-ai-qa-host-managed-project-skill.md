@@ -101,7 +101,7 @@ it("rejects stored schema-v1 input for new config validation", async () => {
   });
   expect(await runCli(["config", "validate", "--stdin-json"], captured.context)).toBe(1);
   expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
-    error: { code: "schema.validation_failed" },
+    error: { code: "input.invalid_json" },
   });
 });
 
