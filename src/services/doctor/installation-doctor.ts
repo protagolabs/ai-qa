@@ -272,7 +272,7 @@ async function isReadableWritableDirectory(
         return false;
       }
     }
-    await access(current, constants.R_OK | constants.W_OK);
+    await access(current, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;
   } catch {
     return false;

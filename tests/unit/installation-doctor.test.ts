@@ -237,6 +237,28 @@ describe("runInstallationDoctor", () => {
     }
   });
 
+  it("fails a canonical storage directory without search permission without mutating files", async () => {
+    const { projectRoot, agentsHome } = await fixture();
+    const evidence = join(projectRoot, ".ai-qa", "evidence");
+    const before = await projectFiles(projectRoot);
+    await chmod(evidence, 0o600);
+    try {
+      const result = await runInstallationDoctor({
+        projectRoot,
+        agentsHome,
+        sourcePath: bundledSourcePath(),
+      });
+
+      expect(result.status).toBe("not_ready");
+      const storage = check(result, "project.storage");
+      expect(storage).toMatchObject({ status: "fail" });
+      expect(storage?.message).toContain(".ai-qa/evidence");
+      expect(await projectFiles(projectRoot)).toEqual(before);
+    } finally {
+      await chmod(evidence, 0o700);
+    }
+  });
+
   it("reports a ready installation without mutating any project file", async () => {
     const { projectRoot, agentsHome } = await fixture();
     const before = await projectFiles(projectRoot);
