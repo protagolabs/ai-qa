@@ -12,6 +12,7 @@ import {
   type ExploratoryRunInput,
   type WorkOrder,
 } from "../../core/runs/schema.js";
+import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 
 export async function startExploratoryRun(input: {
@@ -36,6 +37,10 @@ export async function startExploratoryRun(input: {
       "Normal execution requires a ready Web doctor result",
     );
   }
+  const projectSkill =
+    config.recordingPolicy.mode === "project-skill"
+      ? await readProjectSkillSnapshot(trusted.projectRoot)
+      : undefined;
   const workOrder = createExploratoryWorkOrder({
     projectId: config.project.id,
     runId: createId("run"),
@@ -45,6 +50,7 @@ export async function startExploratoryRun(input: {
       defaultSensitivity: config.evidencePolicy.defaultSensitivity,
     },
     recordingPolicy: config.recordingPolicy,
+    ...(projectSkill === undefined ? {} : { projectSkill }),
     startedAt: input.now(),
   });
   await new RunRepository(trusted.projectRoot, input.now).create(workOrder);

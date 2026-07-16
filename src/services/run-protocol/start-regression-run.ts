@@ -23,6 +23,7 @@ import {
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
 import type { WebDoctorResult } from "../doctor/web-doctor.js";
+import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 
 export function calculateRegressionBudget(
@@ -80,6 +81,10 @@ export async function prepareRegressionWorkOrder(
     assertionStrategy: step.assertionStrategy,
     evidenceCheckpoints: step.evidenceCheckpoints,
   }));
+  const projectSkill =
+    config.recordingPolicy.mode === "project-skill"
+      ? await readProjectSkillSnapshot(trusted.projectRoot)
+      : undefined;
   const workOrder = workOrderSchema.parse({
     schemaVersion: WORK_ORDER_SCHEMA_VERSION,
     protocolVersion: WORK_PROTOCOL_VERSION,
@@ -101,6 +106,7 @@ export async function prepareRegressionWorkOrder(
       defaultSensitivity: config.evidencePolicy.defaultSensitivity,
     },
     recordingPolicy: config.recordingPolicy,
+    ...(projectSkill === undefined ? {} : { projectSkill }),
     budget: calculateRegressionBudget(requiredSteps.length, startedAt),
     pinnedCase: {
       caseId: revision.caseId,

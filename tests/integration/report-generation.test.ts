@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   access,
   appendFile,
@@ -52,11 +53,12 @@ function config(
   input: {
     formats?: Array<"markdown" | "json">;
     detail?: "summary" | "full";
+    recordingMode?: "local-only" | "project-skill";
   } = {},
 ): ProjectConfig {
   return {
     schemaVersion: 2,
-    recordingPolicy: { mode: "local-only" },
+    recordingPolicy: { mode: input.recordingMode ?? "local-only" },
     project: { id: "sample-web", name: "Sample Web" },
     targets: { web: { entryUrl: "https://example.com" } },
     environments: {},
@@ -100,10 +102,17 @@ async function completedRun(
     formats?: Array<"markdown" | "json">;
     detail?: "summary" | "full";
     preActionEvidenceLaundering?: boolean;
+    recordingMode?: "local-only" | "project-skill";
     verdictSummary?: string;
   } = {},
 ) {
-  const project = await initializedProject(config(options));
+  const projectConfig = config(options);
+  const project = await initializedProject(projectConfig);
+  const projectSkillPath = ".agents/skills/ai-qa-project/SKILL.md" as const;
+  const projectSkillContent = await readFile(
+    join(project.projectRoot, projectSkillPath),
+    "utf8",
+  );
   const repository = new RunRepository(project.projectRoot, eventNow);
   await repository.create(
     createExploratoryWorkOrder({
@@ -124,6 +133,17 @@ async function completedRun(
         screenshots: "required",
         defaultSensitivity: "internal",
       },
+      recordingPolicy: projectConfig.recordingPolicy,
+      ...(projectConfig.recordingPolicy.mode === "project-skill"
+        ? {
+            projectSkill: {
+              path: projectSkillPath,
+              contentSha256: createHash("sha256")
+                .update(projectSkillContent)
+                .digest("hex"),
+            },
+          }
+        : {}),
       startedAt,
     }),
   );
@@ -1268,6 +1288,36 @@ describe("verified generated report boundary", () => {
     expect(called).toBe(false);
   });
 
+  it("exposes the frozen Project Skill snapshot only after report integrity succeeds inside the lock", async () => {
+    const fixture = await completedRun({ recordingMode: "project-skill" });
+    await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
+    const projectSkillPath = ".agents/skills/ai-qa-project/SKILL.md" as const;
+    const projectSkillContent = await readFile(
+      join(fixture.projectRoot, projectSkillPath),
+      "utf8",
+    );
+
+    await expect(
+      withVerifiedGeneratedRunReport(
+        { ...fixture, runId: "run-1", now: generatedNow },
+        async (verified) => {
+          await expect(
+            lockfile.lock(verified.directory, {
+              realpath: false,
+              retries: 0,
+            }),
+          ).rejects.toMatchObject({ code: "ELOCKED" });
+          return verified.projectSkill;
+        },
+      ),
+    ).resolves.toEqual({
+      path: projectSkillPath,
+      contentSha256: createHash("sha256")
+        .update(projectSkillContent)
+        .digest("hex"),
+    });
+  });
+
   it("holds the lock while exposing canonical storage, current config, and snapshotted recording mode without rewriting bytes", async () => {
     const fixture = await completedRun();
     await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
@@ -1300,6 +1350,7 @@ describe("verified generated report boundary", () => {
         expect(verified.directory).toBe(await realpath(directory));
         expect(verified.config.recordingPolicy.mode).toBe("project-skill");
         expect(verified.recordingMode).toBe("local-only");
+        expect(verified.projectSkill).toBeUndefined();
         expect(verified.report.run.id).toBe("run-1");
         expect(verified.paths).toEqual({
           jsonPath: ".ai-qa/reports/runs/run-1/report.json",

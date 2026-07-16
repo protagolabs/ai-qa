@@ -14,6 +14,7 @@ import {
   type WorkOrder,
 } from "../../core/runs/schema.js";
 import type { DoctorCheck, WebDoctorResult } from "../doctor/web-doctor.js";
+import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
 import { finalizeRun } from "./finalize-run.js";
 import { prepareRegressionWorkOrder } from "./start-regression-run.js";
@@ -84,6 +85,10 @@ export async function createPreflightResultRun(
         "Preflight payload must contain the same not-ready doctor result",
       );
     }
+    const projectSkill =
+      config.recordingPolicy.mode === "project-skill"
+        ? await readProjectSkillSnapshot(trusted.projectRoot)
+        : undefined;
     workOrder = createExploratoryWorkOrder({
       projectId: config.project.id,
       runId: createId("run"),
@@ -93,6 +98,7 @@ export async function createPreflightResultRun(
         defaultSensitivity: config.evidencePolicy.defaultSensitivity,
       },
       recordingPolicy: config.recordingPolicy,
+      ...(projectSkill === undefined ? {} : { projectSkill }),
       startedAt: input.now(),
       preflightResult: true,
     }) as WorkOrder;

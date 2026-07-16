@@ -1,8 +1,18 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stringify } from "yaml";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
+import { CaseRepository } from "../../src/core/cases/repository.js";
 import { RunJournal } from "../../src/core/runs/journal.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -11,11 +21,17 @@ import {
 } from "../../src/core/runs/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
+import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
+import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
-import { initializeTestProject } from "../helpers/project-fixture.js";
+import {
+  initializeTestProject,
+  projectConfigV1,
+  projectSkillSource,
+} from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
   schemaVersion: 2,
@@ -51,6 +67,71 @@ const readyPayload = exploratoryRunInputSchema.parse({
   ],
   readiness: { platform: "web", status: "ready", checks: [] },
 });
+
+const projectSkillRelativePath =
+  ".agents/skills/ai-qa-project/SKILL.md" as const;
+
+function expectedProjectSkillSnapshot() {
+  return {
+    path: projectSkillRelativePath,
+    contentSha256: createHash("sha256")
+      .update(projectSkillSource())
+      .digest("hex"),
+  };
+}
+
+async function installProjectSkillSource(projectRoot: string): Promise<void> {
+  await writeFile(
+    join(projectRoot, projectSkillRelativePath),
+    projectSkillSource(),
+    "utf8",
+  );
+}
+
+async function createActiveRegressionCase(
+  projectRoot: string,
+  now: () => Date,
+): Promise<void> {
+  const cases = new CaseRepository(projectRoot, now);
+  const revision = await cases.createDraft({
+    schemaVersion: 1,
+    caseId: "login-success",
+    title: "Successful login",
+    promotion: { sourceRunId: "run-source", validationIssues: [] },
+    acceptanceCriteria: [
+      {
+        id: "authenticated-home-visible",
+        description: "Authenticated home is visible",
+        requiredEvidence: ["post-action-screenshot"],
+      },
+    ],
+    variants: {
+      web: {
+        steps: [
+          {
+            id: "step-submit-login",
+            sourceActionId: "event-source-login",
+            intent: "Submit valid credentials",
+            tool: "chrome-devtools-mcp",
+            target: {
+              description: "Login button",
+              selector: '[data-testid="login"]',
+              stability: "stable",
+              stabilityRationale: "Unique application-owned data-testid",
+            },
+            expectedState: "Authenticated home is visible",
+            assertionStrategy: "Observe the authenticated home",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+      },
+    },
+  });
+  await cases.activate("login-success", revision.revision, {
+    confirmedBy: "user",
+    confirmedAt: now().toISOString(),
+  });
+}
 
 describe("RunJournal", () => {
   it("maps a missing journal to run.not_found before a locked read", async () => {
@@ -357,6 +438,179 @@ describe("exploratory run start", () => {
         now: () => new Date("2026-07-13T00:00:00.000Z"),
       }),
     ).rejects.toMatchObject({ code: "doctor.not_ready" });
+  });
+
+  it("freezes the Project Skill bytes in exploratory work orders", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: { ...config, recordingPolicy: { mode: "project-skill" } },
+    });
+    await installProjectSkillSource(projectRoot);
+
+    const workOrder = await startExploratoryRun({
+      projectRoot,
+      aiQaHome,
+      payload: readyPayload,
+      now: () => new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
+  });
+
+  it("freezes the Project Skill bytes in regression work orders", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: now(),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: { ...config, recordingPolicy: { mode: "project-skill" } },
+    });
+    await installProjectSkillSource(projectRoot);
+    await createActiveRegressionCase(projectRoot, now);
+
+    const workOrder = await startRegressionRun({
+      projectRoot,
+      aiQaHome,
+      caseId: "login-success",
+      execution: "local",
+      readiness: { platform: "web", status: "ready", checks: [] },
+      now,
+    });
+
+    expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
+  });
+
+  it("freezes the Project Skill bytes in not-ready preflight work orders", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "agent.global_skill" as const,
+          status: "fail" as const,
+          message: "Global skill status: stale",
+        },
+      ],
+    };
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: now(),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: { ...config, recordingPolicy: { mode: "project-skill" } },
+    });
+    await installProjectSkillSource(projectRoot);
+
+    const result = await createPreflightResultRun({
+      projectRoot,
+      aiQaHome,
+      kind: "exploratory",
+      exploratoryPayload: { ...readyPayload, readiness },
+      execution: "local",
+      readiness,
+      now,
+    });
+    const workOrder = await new RunRepository(
+      projectRoot,
+      now,
+    ).readVerifiedWorkOrder(result.runId);
+
+    expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
+  });
+
+  it("blocks project-skill preflight before run creation when the target Skill is missing", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "agent.global_skill" as const,
+          status: "fail" as const,
+          message: "Global skill status: stale",
+        },
+      ],
+    };
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: now(),
+    });
+    await initializeTestProject({
+      projectRoot,
+      aiQaHome,
+      config: { ...config, recordingPolicy: { mode: "project-skill" } },
+    });
+    await rm(join(projectRoot, projectSkillRelativePath));
+
+    await expect(
+      createPreflightResultRun({
+        projectRoot,
+        aiQaHome,
+        kind: "exploratory",
+        exploratoryPayload: { ...readyPayload, readiness },
+        execution: "local",
+        readiness,
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "project_skill.integrity_error" });
+    await expect(readdir(join(projectRoot, ".ai-qa", "runs"))).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("keeps legacy config v1 local-only without requiring a target Skill", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
+    await confirmProjectTrust({
+      projectRoot,
+      aiQaHome,
+      confirmed: true,
+      now: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await writeFile(
+      join(projectRoot, ".ai-qa", "config.yaml"),
+      stringify(projectConfigV1(), { sortMapEntries: true }),
+      "utf8",
+    );
+    await rm(join(projectRoot, projectSkillRelativePath));
+
+    const workOrder = await startExploratoryRun({
+      projectRoot,
+      aiQaHome,
+      payload: readyPayload,
+      now: () => new Date("2026-07-13T00:00:00.000Z"),
+    });
+
+    expect(workOrder.recordingPolicy).toEqual({ mode: "local-only" });
+    expect(workOrder).not.toHaveProperty("projectSkill");
   });
 
   it("uses one config snapshot for compatibility and the immutable work order", async () => {

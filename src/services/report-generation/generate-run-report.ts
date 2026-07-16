@@ -31,6 +31,7 @@ import { RunRepository } from "../../core/runs/repository.js";
 import {
   effectiveWorkOrderRecordingMode,
   runIdSchema,
+  type ProjectSkillSnapshot,
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
@@ -70,6 +71,7 @@ interface VerifiedRunReport {
   projectRoot: string;
   config: EffectiveProjectConfig;
   recordingMode: "local-only" | "project-skill";
+  projectSkill?: ProjectSkillSnapshot;
   report: RunReport;
 }
 
@@ -333,6 +335,9 @@ async function buildVerifiedRunReport(
       });
       return {
         recordingMode: effectiveWorkOrderRecordingMode(workOrder),
+        ...(workOrder.projectSkill === undefined
+          ? {}
+          : { projectSkill: workOrder.projectSkill }),
         report,
       };
     });

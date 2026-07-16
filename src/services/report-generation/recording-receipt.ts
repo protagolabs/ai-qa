@@ -1,9 +1,12 @@
+import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { RecordingRepository } from "../../core/recording/repository.js";
-import type {
-  RecordingEvent,
-  RecordingReceiptInput,
+import {
+  recordingReceiptInputSchema,
+  type RecordingEvent,
+  type RecordingReceiptInput,
 } from "../../core/recording/schema.js";
+import { assertCurrentProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import {
   withVerifiedGeneratedRunReport,
   type ReportOperationInput,
@@ -43,11 +46,23 @@ export async function registerRecordingReceipt(
         { runId: input.runId },
       );
     }
-    const registered = await new RecordingRepository(
+    const repository = new RecordingRepository(
       verified.directory,
       input.runId,
       input.now,
-    ).registerUnlocked(input.receipt);
+    );
+    if (verified.projectSkill === undefined) {
+      return replayHistoricalReceipt({
+        repository,
+        runId: input.runId,
+        receipt: input.receipt,
+      });
+    }
+    await assertCurrentProjectSkillSnapshot({
+      projectRoot: verified.projectRoot,
+      snapshot: verified.projectSkill,
+    });
+    const registered = await repository.registerUnlocked(input.receipt);
     const current = registered.artifact.history.at(-1);
     if (current === undefined) throw recordingIntegrityError(input.runId);
     return {
@@ -69,18 +84,70 @@ export async function readRecordingStatus(
         references: [],
       };
     }
-    const state = await new RecordingRepository(
+    const repository = new RecordingRepository(
       verified.directory,
       input.runId,
       input.now,
-    ).readOrRecoverUnlocked();
+    );
+    if (verified.projectSkill !== undefined) {
+      await assertCurrentProjectSkillSnapshot({
+        projectRoot: verified.projectRoot,
+        snapshot: verified.projectSkill,
+      });
+    }
+    const state = await repository.readOrRecoverUnlocked();
     if (state.state === "missing") {
+      if (verified.projectSkill === undefined) {
+        throw projectSkillSnapshotMissing(input.runId);
+      }
       return { runId: input.runId, status: "pending", references: [] };
     }
     const event = state.events.at(-1);
     if (event === undefined) throw recordingIntegrityError(input.runId);
     return statusFromEvent(event);
   });
+}
+
+async function replayHistoricalReceipt(input: {
+  repository: RecordingRepository;
+  runId: string;
+  receipt: RecordingReceiptInput;
+}): Promise<{
+  event: RecordingEvent;
+  status: RecordingStatusView;
+  replayed: boolean;
+}> {
+  const receipt = recordingReceiptInputSchema.parse(input.receipt);
+  const state = await input.repository.readOrRecoverUnlocked();
+  if (state.state === "missing") {
+    throw projectSkillSnapshotMissing(input.runId);
+  }
+  const existing = state.events.find(
+    (event) => event.idempotencyKey === receipt.idempotencyKey,
+  );
+  if (existing === undefined) {
+    throw projectSkillSnapshotMissing(input.runId);
+  }
+  if (
+    canonicalJson({
+      idempotencyKey: existing.idempotencyKey,
+      status: existing.status,
+      references: existing.references,
+    }) !== canonicalJson(receipt)
+  ) {
+    throw new AiQaError(
+      "recording.idempotency_conflict",
+      "Recording idempotency key was already used for a different receipt",
+      { idempotencyKey: receipt.idempotencyKey },
+    );
+  }
+  const current = state.events.at(-1);
+  if (current === undefined) throw recordingIntegrityError(input.runId);
+  return {
+    event: existing,
+    status: statusFromReceipt(input.runId, current),
+    replayed: true,
+  };
 }
 
 function statusFromReceipt(
@@ -107,6 +174,14 @@ function recordingIntegrityError(runId: string): AiQaError {
   return new AiQaError(
     "recording.integrity_error",
     "Recording journal has no current event",
+    { runId },
+  );
+}
+
+function projectSkillSnapshotMissing(runId: string): AiQaError {
+  return new AiQaError(
+    "project_skill.snapshot_missing",
+    "Historical project-skill run has no frozen Project Skill snapshot",
     { runId },
   );
 }

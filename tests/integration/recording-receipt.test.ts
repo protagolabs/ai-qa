@@ -722,6 +722,8 @@ const RUN_STARTED_AT = new Date("2026-07-15T00:00:00.000Z");
 const RUN_NOW = () => new Date("2026-07-15T00:05:00.000Z");
 const REPORT_NOW = () => new Date("2026-07-15T00:10:00.000Z");
 const RECEIPT_NOW = () => new Date(FIRST_RECORDED_AT);
+const PROJECT_SKILL_RELATIVE_PATH =
+  ".agents/skills/ai-qa-project/SKILL.md" as const;
 
 interface ReceiptFixture extends ReportOperationInput {
   directory: string;
@@ -734,10 +736,20 @@ function withoutRecordingSnapshot(workOrder: WorkOrder): WorkOrder {
   return legacyWorkOrder;
 }
 
+function withoutProjectSkillSnapshot(workOrder: WorkOrder): WorkOrder {
+  const historicalWorkOrder: WorkOrder = {
+    ...workOrder,
+    protocolVersion: "1.1.0",
+  };
+  delete historicalWorkOrder.projectSkill;
+  return historicalWorkOrder;
+}
+
 async function receiptFixture(
   options: {
     mode?: "local-only" | "project-skill";
     legacy?: boolean;
+    historicalProjectSkill?: boolean;
     terminal?: boolean;
     generated?: boolean;
     withEvidence?: boolean;
@@ -757,6 +769,8 @@ async function receiptFixture(
     aiQaHome,
     config: projectConfigV2(mode),
   });
+  const projectSkillPath = join(projectRoot, PROJECT_SKILL_RELATIVE_PATH);
+  const projectSkillContent = await readFile(projectSkillPath, "utf8");
   const repository = new RunRepository(projectRoot, RUN_NOW);
   const currentWorkOrder = createExploratoryWorkOrder({
     projectId: "sample-web",
@@ -777,11 +791,24 @@ async function receiptFixture(
       defaultSensitivity: "internal",
     },
     recordingPolicy: { mode },
+    ...(mode === "project-skill"
+      ? {
+          projectSkill: {
+            path: PROJECT_SKILL_RELATIVE_PATH,
+            contentSha256: createHash("sha256")
+              .update(projectSkillContent)
+              .digest("hex"),
+          },
+        }
+      : {}),
     startedAt: RUN_STARTED_AT,
   });
-  const workOrder = options.legacy
-    ? withoutRecordingSnapshot(currentWorkOrder)
-    : currentWorkOrder;
+  const workOrder =
+    options.legacy === true
+      ? withoutRecordingSnapshot(currentWorkOrder)
+      : options.historicalProjectSkill === true
+        ? withoutProjectSkillSnapshot(currentWorkOrder)
+        : currentWorkOrder;
   await repository.create(workOrder);
 
   let evidencePath: string | undefined;
@@ -868,6 +895,7 @@ function hashBytes(bytes: Buffer): string {
 describe("verified report recording receipt service", () => {
   it("keeps local-only status not applicable without touching recording storage", async () => {
     const fixture = await receiptFixture({ mode: "local-only" });
+    await rm(join(fixture.projectRoot, PROJECT_SKILL_RELATIVE_PATH));
 
     await expect(readRecordingStatus(fixture)).resolves.toEqual({
       runId: "run-1",
@@ -944,6 +972,10 @@ describe("verified report recording receipt service", () => {
     };
     report.verdict.summary = "tampered receipt prerequisite";
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeFile(
+      join(reportFixture.projectRoot, PROJECT_SKILL_RELATIVE_PATH),
+      "changed while the report is also invalid\n",
+    );
     await expect(
       registerRecordingReceipt({
         ...reportFixture,
@@ -1071,64 +1103,125 @@ describe("verified report recording receipt service", () => {
     });
   });
 
-  it("does not require a present, valid, or compatible current Project Skill for neutral receipts", async () => {
-    const mutations: Array<{
-      name: string;
-      apply: (path: string) => Promise<void>;
-      status: "not_recorded" | "unknown";
-    }> = [
-      {
-        name: "missing",
-        apply: (path) => rm(path),
-        status: "not_recorded",
-      },
-      {
-        name: "invalid",
-        apply: (path) => writeFile(path, "not a Project Skill\n"),
-        status: "unknown",
-      },
-      {
-        name: "incompatible",
-        apply: (path) =>
-          writeFile(
-            path,
-            "---\nname: ai-qa-project\nmetadata:\n  aiQaProtocolRange: ^99.0.0\n---\n",
-          ),
-        status: "unknown",
-      },
+  it("rejects Project Skill drift without changing report, journal, verdict, or recording bytes", async () => {
+    const fixture = await receiptFixture();
+    const reportJsonPath = join(fixture.directory, "report.json");
+    const paths = [
+      reportJsonPath,
+      join(fixture.directory, "report.md"),
+      join(fixture.projectRoot, ".ai-qa/runs/run-1/events.jsonl"),
     ];
+    const before = new Map(
+      await Promise.all(
+        paths.map(async (path) => {
+          const bytes = await readFile(path);
+          return [path, { bytes, hash: hashBytes(bytes) }] as const;
+        }),
+      ),
+    );
+    const verdictBefore = JSON.stringify(
+      (
+        JSON.parse(await readFile(reportJsonPath, "utf8")) as {
+          verdict: unknown;
+        }
+      ).verdict,
+    );
+    await writeFile(
+      join(fixture.projectRoot, PROJECT_SKILL_RELATIVE_PATH),
+      "changed Project Skill bytes\n",
+    );
 
-    for (const mutation of mutations) {
-      const fixture = await receiptFixture();
-      const reportBefore = await readFile(
-        join(fixture.directory, "report.json"),
-      );
-      const eventsPath = join(
-        fixture.projectRoot,
-        ".ai-qa/runs/run-1/events.jsonl",
-      );
-      const eventsBefore = await readFile(eventsPath);
-      await mutation.apply(
-        join(fixture.projectRoot, ".agents/skills/ai-qa-project/SKILL.md"),
-      );
-
-      await expect(readRecordingStatus(fixture)).resolves.toMatchObject({
-        status: "pending",
-      });
-      const registered = await registerRecordingReceipt({
+    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
+      code: "project_skill.changed",
+    });
+    await expect(
+      registerRecordingReceipt({
         ...fixture,
         receipt: {
-          idempotencyKey: `neutral-${mutation.name}`,
-          status: mutation.status,
-          references: [],
+          idempotencyKey: "after-project-skill-drift",
+          status: "recorded",
+          references: ["docs/qa-results.md#run-1"],
         },
-      });
-      expect(registered.status.status).toBe(mutation.status);
-      expect(await readFile(join(fixture.directory, "report.json"))).toEqual(
-        reportBefore,
-      );
-      expect(await readFile(eventsPath)).toEqual(eventsBefore);
+      }),
+    ).rejects.toMatchObject({ code: "project_skill.changed" });
+
+    for (const path of paths) {
+      const current = await readFile(path);
+      expect(current).toEqual(before.get(path)?.bytes);
+      expect(hashBytes(current)).toBe(before.get(path)?.hash);
     }
+    const verdictAfter = JSON.stringify(
+      (
+        JSON.parse(await readFile(reportJsonPath, "utf8")) as {
+          verdict: unknown;
+        }
+      ).verdict,
+    );
+    expect(verdictAfter).toBe(verdictBefore);
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("rejects pending status and new receipts for historical 1.1 project-skill runs without a snapshot", async () => {
+    const fixture = await receiptFixture({ historicalProjectSkill: true });
+
+    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
+      code: "project_skill.snapshot_missing",
+    });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: {
+          idempotencyKey: "historical-new-receipt",
+          status: "recorded",
+          references: ["docs/qa-results.md#run-1"],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "project_skill.snapshot_missing" });
+    await expectNoRecordingFiles(fixture);
+  });
+
+  it("reads and exactly replays an existing receipt for historical 1.1 project-skill runs", async () => {
+    const fixture = await receiptFixture({ historicalProjectSkill: true });
+    const receipt = {
+      idempotencyKey: "historical-existing-receipt",
+      status: "recorded" as const,
+      references: ["docs/qa-results.md#run-1"],
+    };
+    const seeded = await new RecordingRepository(
+      fixture.directory,
+      fixture.runId,
+      fixture.now,
+    ).registerUnlocked(receipt);
+    const journalPath = join(fixture.directory, "recording.jsonl");
+    const journalBefore = await readFile(journalPath);
+
+    await expect(readRecordingStatus(fixture)).resolves.toEqual({
+      runId: "run-1",
+      status: "recorded",
+      references: receipt.references,
+      eventId: seeded.event.eventId,
+      recordedAt: seeded.event.recordedAt,
+    });
+    await expect(
+      registerRecordingReceipt({ ...fixture, receipt }),
+    ).resolves.toEqual({
+      event: seeded.event,
+      status: {
+        runId: "run-1",
+        status: "recorded",
+        references: receipt.references,
+        eventId: seeded.event.eventId,
+        recordedAt: seeded.event.recordedAt,
+      },
+      replayed: true,
+    });
+    await expect(
+      registerRecordingReceipt({
+        ...fixture,
+        receipt: { ...receipt, status: "unknown", references: [] },
+      }),
+    ).rejects.toMatchObject({ code: "recording.idempotency_conflict" });
+    expect(await readFile(journalPath)).toEqual(journalBefore);
   });
 
   it("leaves report, run journal, and verdict bytes and hashes unchanged", async () => {
