@@ -39,7 +39,7 @@ type StatusReferences = {
   references: string[];
 };
 
-function validateStatusReferences(
+function validateStoredStatusReferences(
   value: StatusReferences,
   context: z.core.$RefinementCtx,
 ): void {
@@ -50,11 +50,25 @@ function validateStatusReferences(
       message: "Recorded receipts require at least one reference",
     });
   }
-  if (value.status !== "recorded" && value.references.length !== 0) {
+  if (value.status === "not_recorded" && value.references.length !== 0) {
     context.addIssue({
       code: "custom",
       path: ["references"],
-      message: "Non-recorded receipts require an empty reference list",
+      message: "Not-recorded receipts require an empty reference list",
+    });
+  }
+}
+
+function validatePublicStatusReferences(
+  value: StatusReferences,
+  context: z.core.$RefinementCtx,
+): void {
+  validateStoredStatusReferences(value, context);
+  if (value.status === "unknown" && value.references.length !== 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["references"],
+      message: "Unknown receipts require an empty reference list",
     });
   }
 }
@@ -62,7 +76,7 @@ function validateStatusReferences(
 export const recordingReceiptInputSchema = z
   .object(receiptPayloadFields)
   .strict()
-  .superRefine(validateStatusReferences);
+  .superRefine(validatePublicStatusReferences);
 
 export type RecordingReceiptInput = z.infer<typeof recordingReceiptInputSchema>;
 
@@ -76,7 +90,7 @@ export const recordingEventSchema = z
     recordedAt: z.string().datetime(),
   })
   .strict()
-  .superRefine(validateStatusReferences);
+  .superRefine(validateStoredStatusReferences);
 
 export type RecordingEvent = z.infer<typeof recordingEventSchema>;
 

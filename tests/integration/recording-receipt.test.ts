@@ -75,7 +75,7 @@ function twoEvents(): [RecordingEvent, RecordingEvent] {
       recordedAt: SECOND_RECORDED_AT,
       idempotencyKey: "receipt-2",
       status: "unknown",
-      references: [],
+      references: ["opaque-reference-2"],
     }),
   ];
 }
@@ -355,6 +355,56 @@ describe("recording repository", () => {
     expect(nowCalls).toBe(0);
     expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
     expect((await stat(journalPath)).ino).toBe(journalStatBefore.ino);
+  });
+
+  it("reads and recovers a legacy unknown event with references", async () => {
+    const directory = await createDirectory();
+    const event: RecordingEvent = {
+      schemaVersion: 1,
+      eventId: "recording-00000000-0000-0000-0000-000000000003",
+      runId: "run-1",
+      recordedAt: FIRST_RECORDED_AT,
+      idempotencyKey: "legacy-unknown-receipt",
+      status: "unknown",
+      references: ["legacy-opaque-reference"],
+    };
+    await writeJournal(directory, [event]);
+    const journalPath = join(directory, "recording.jsonl");
+    const journalBefore = await readFile(journalPath, "utf8");
+    const repository = new RecordingRepository(
+      directory,
+      "run-1",
+      () => new Date(SECOND_RECORDED_AT),
+    );
+    const expectedArtifact: RecordingArtifact = {
+      schemaVersion: 1,
+      runId: "run-1",
+      current: {
+        eventId: event.eventId,
+        status: event.status,
+        references: event.references,
+      },
+      history: [
+        {
+          eventId: event.eventId,
+          recordedAt: event.recordedAt,
+          idempotencyKey: event.idempotencyKey,
+          status: event.status,
+          references: event.references,
+        },
+      ],
+      materializedAt: event.recordedAt,
+    };
+
+    await expect(repository.readOrRecoverUnlocked()).resolves.toEqual({
+      state: "present",
+      events: [event],
+      artifact: expectedArtifact,
+    });
+    expect(
+      JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
+    ).toEqual(expectedArtifact);
+    expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
   });
 
   it("recovers a one-event-lagging materialized view without rewriting the journal", async () => {

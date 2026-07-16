@@ -179,6 +179,13 @@ describe("recording repository schemas", () => {
         references: ["unexpected"],
       }).success,
     ).toBe(false);
+    expect(
+      recordingEventSchema.safeParse({
+        ...validEvent,
+        status: "unknown",
+        references: ["legacy-reference"],
+      }).success,
+    ).toBe(true);
   });
 
   it("rejects unknown receipt and event object keys", () => {
