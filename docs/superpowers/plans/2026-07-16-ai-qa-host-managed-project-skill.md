@@ -68,10 +68,6 @@ src/services/skill-management/project-skill.ts
 - Modify: `src/cli/commands/skill.ts`
 - Modify: `tests/helpers/project-fixture.ts`
 - Delete: `src/cli/commands/init.ts`
-- Delete: `src/services/initialization/initialize-project.ts`
-- Delete: `src/services/initialization/project-file-transaction.ts`
-- Delete: `src/services/initialization/project-setup.ts`
-- Delete: `src/services/skill-management/project-skill.ts`
 - Delete: `tests/integration/init.test.ts`
 - Delete: `tests/integration/project-skill.test.ts`
 - Delete: `tests/unit/project-skill.test.ts`
@@ -170,10 +166,10 @@ Make `--global` required on all three commands. Preserve `--confirm-managed-repl
 
 - [ ] **Step 5: Replace test setup with direct host-owned files**
 
-Rewrite `tests/helpers/project-fixture.ts` so `projectSkillSource()` is a normal Skill:
+Add `hostManagedProjectSkillSource()` to `tests/helpers/project-fixture.ts` as the normal Skill fixture:
 
 ```ts
-export function projectSkillSource(
+export function hostManagedProjectSkillSource(
   recordingProcedure = "Show the verified local report paths and stop.",
 ): string {
   return `---
@@ -190,17 +186,17 @@ ${recordingProcedure}
 }
 ```
 
-`initializeTestProject()` must create `.ai-qa/config.yaml`, the four canonical directories, and `.agents/skills/ai-qa-project/SKILL.md` directly with `mkdir()`/`writeFile()` and YAML `stringify()`. It must not call a product initialization service.
+`initializeTestProject()` must create `.ai-qa/config.yaml`, the four canonical directories, and `.agents/skills/ai-qa-project/SKILL.md` directly with `mkdir()`/`writeFile()` and YAML `stringify()`. It must not call a product initialization service. Keep the old managed `projectSkillSource()` and `projectSetupRequest()` test helpers temporarily because unchanged global-Skill/E2E tests still compile against them; Task 7 removes them after those tests are rewritten.
 
-- [ ] **Step 6: Delete the superseded mutation implementation and tests**
+- [ ] **Step 6: Delete superseded public tests and prove the CLI no longer calls mutation services**
 
-Delete the files listed above, then prove no production reference remains:
+Delete the test files listed above. Keep the now-unreachable setup services until Task 7 so unchanged global-Skill/E2E tests remain green between task commits. Prove no CLI command imports them:
 
 ```bash
-rg -n "InitializationRequest|previewProjectSetup|applyProjectSetup|projectSkillRequestSchema|prepareProjectSkill|applyProjectFileTransaction" src tests
+rg -n "previewProjectSetup|applyProjectSetup|projectSkillRequestSchema|prepareProjectSkill|applyProjectFileTransaction" src/cli
 ```
 
-Expected: no matches outside historical documentation.
+Expected: no matches.
 
 - [ ] **Step 7: Run the task gate**
 
@@ -678,6 +674,11 @@ git commit -m "feat: teach host-managed project skills"
 - Modify: `docs/validation/web-live-acceptance.md`
 - Modify: `docs/validation/project-recording-skill-eval.md`
 - Modify: `docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md`
+- Modify: `tests/helpers/project-fixture.ts`
+- Delete: `src/services/initialization/initialize-project.ts`
+- Delete: `src/services/initialization/project-file-transaction.ts`
+- Delete: `src/services/initialization/project-setup.ts`
+- Delete: `src/services/skill-management/project-skill.ts`
 
 **Interfaces:**
 - Consumes: all prior tasks.
@@ -686,6 +687,8 @@ git commit -m "feat: teach host-managed project skills"
 - [ ] **Step 1: Rewrite E2E setup as a host-managed change**
 
 Tests create config and a normal Project Skill through the host fixture, run `config validate`, then run report/recording commands. They must not call removed init/project Skill mutation commands or inspect embedded metadata.
+
+After rewriting all remaining callers, rename `hostManagedProjectSkillSource()` to `projectSkillSource()`, remove `projectSetupRequest()`, and delete the four unreachable superseded service files listed for this task. Run `rg` to prove no source/test import remains before deletion.
 
 Local-only E2E proves:
 
