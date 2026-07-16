@@ -424,6 +424,7 @@ Expected: PASS.
 **Files:**
 - Modify: `src/core/recording/schema.ts`
 - Modify: `src/core/recording/repository.ts`
+- Modify: `src/services/report-generation/recording-receipt.ts`
 - Modify: `src/cli/commands/report.ts`
 - Modify: `tests/helpers/project-fixture.ts`
 - Modify: `tests/unit/recording-schema.test.ts`
@@ -489,6 +490,8 @@ function idempotencyKeyForRun(runId: string): string {
 
 If any existing event is present, compare its `{status, references}` to the incoming payload. Return the existing event for an exact retry; otherwise throw `recording.idempotency_conflict` with `{ runId }`. This also makes historical events with caller-provided keys readable and replayable without asking the caller to know the old key.
 
+Update the Task 3 historical-1.1 replay branch in `recording-receipt.ts` to use the same neutral payload comparison without reading a caller key. It must still check that a historical event exists before delegating registration so a missing record remains `project_skill.snapshot_missing` and can never create a new receipt.
+
 - [ ] **Step 5: Update CLI and integration tests**
 
 The only accepted receipt stdin is:
@@ -504,7 +507,7 @@ Prove exact retry writes no journal bytes, a different payload conflicts, and cr
 ```bash
 pnpm vitest run tests/unit/recording-schema.test.ts tests/integration/recording-receipt.test.ts
 pnpm typecheck
-git add src/core/recording src/cli/commands/report.ts tests/helpers/project-fixture.ts tests/unit/recording-schema.test.ts tests/integration/recording-receipt.test.ts
+git add src/core/recording src/services/report-generation/recording-receipt.ts src/cli/commands/report.ts tests/helpers/project-fixture.ts tests/unit/recording-schema.test.ts tests/integration/recording-receipt.test.ts
 git commit -m "refactor: derive recording receipt identity"
 ```
 
