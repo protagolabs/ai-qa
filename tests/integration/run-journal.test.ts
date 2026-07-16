@@ -65,7 +65,32 @@ const readyPayload = exploratoryRunInputSchema.parse({
       requiredEvidence: ["post-action-screenshot"],
     },
   ],
-  readiness: { platform: "web", status: "ready", checks: [] },
+  readiness: {
+    platform: "web",
+    status: "ready",
+    checks: [
+      {
+        code: "runtime.node",
+        status: "pass",
+        message: "Node runtime is supported",
+      },
+      {
+        code: "project.config",
+        status: "pass",
+        message: "Configuration .ai-qa/config.yaml is readable",
+      },
+      {
+        code: "agent.project_skill",
+        status: "pass",
+        message: "Project Skill is a regular file",
+      },
+      {
+        code: "project.storage",
+        status: "pass",
+        message: "Canonical project storage is writable",
+      },
+    ],
+  },
 });
 
 const projectSkillRelativePath =

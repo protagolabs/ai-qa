@@ -1,11 +1,14 @@
+import { lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 import { readProjectConfig } from "../../core/config/repository.js";
+import { AiQaError } from "../../core/errors.js";
+import { runInstallationDoctor } from "../../services/doctor/installation-doctor.js";
 import { runWebDoctor } from "../../services/doctor/web-doctor.js";
+import { resolveProjectRoot } from "../../services/project-root/resolve-project-root.js";
 import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
-import { checkGlobalSkillForProject } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -46,35 +49,92 @@ export function registerDoctorCommand(
   const doctorCommand = program
     .command("doctor")
     .description("check read-only target readiness")
-    .requiredOption("--platform <platform>", "target platform")
+    .option("--platform <platform>", "target platform")
     .requiredOption("--json", "emit structured JSON")
-    .requiredOption("--stdin-json", "read agent observations from stdin");
+    .option("--stdin-json", "read agent observations from stdin");
 
-  doctorCommand.action(async (options: { platform: string }) => {
-    z.literal("web").parse(options.platform);
-    const project = explicitProject(doctorCommand);
-    const resolved = await resolveTrustedProject({
-      cwd: context.cwd,
-      aiQaHome: aiQaHome(context),
-      ...(project === undefined ? {} : { explicitProject: project }),
-    });
-    const config = await readProjectConfig(resolved.projectRoot);
-    const input = await readJsonInput(context, doctorInputSchema);
-    const globalSkill = await checkGlobalSkillForProject({
-      agentsHome: agentsHome(context),
-      sourcePath: bundledSourcePath(),
-      recordingMode: config.recordingPolicy.mode,
-    });
-    const result = await runWebDoctor({
-      entryUrl: config.targets.web.entryUrl,
-      ...(config.targets.web.readinessUrl === undefined
-        ? {}
-        : { readinessUrl: config.targets.web.readinessUrl }),
-      ...(input.entryPage === undefined ? {} : { entryPage: input.entryPage }),
-      chromeDevtoolsMcp: input.chromeDevtoolsMcp,
-      globalSkillStatus: globalSkill.status,
-      fetchImpl: context.fetchImpl,
-    });
-    writeJson(context, result);
-  });
+  doctorCommand.action(
+    async (options: { platform?: string; stdinJson?: boolean }) => {
+      const hasPlatform = options.platform !== undefined;
+      const hasStdin = options.stdinJson === true;
+      if (hasPlatform !== hasStdin) {
+        throw new AiQaError(
+          "doctor.options_pair_required",
+          "--platform and --stdin-json must be supplied together",
+        );
+      }
+      if (hasPlatform) z.literal("web").parse(options.platform);
+
+      const project = explicitProject(doctorCommand);
+      const home = aiQaHome(context);
+      const root = await resolveProjectRoot({
+        command: "init",
+        cwd: context.cwd,
+        ...(project === undefined ? {} : { explicitProject: project }),
+      });
+      const installationInput = {
+        projectRoot: root.root,
+        agentsHome: agentsHome(context),
+        sourcePath: bundledSourcePath(),
+      };
+      if (!(await storedConfigExists(root.root))) {
+        writeJson(context, await runInstallationDoctor(installationInput));
+        return;
+      }
+
+      const resolved = await resolveTrustedProject({
+        cwd: root.root,
+        explicitProject: root.root,
+        aiQaHome: home,
+      });
+      const installation = await runInstallationDoctor({
+        ...installationInput,
+        projectRoot: resolved.projectRoot,
+      });
+      if (!hasPlatform || installation.status === "uninitialized") {
+        writeJson(context, installation);
+        return;
+      }
+      const configCheck = installation.checks.find(
+        (check) => check.code === "project.config",
+      );
+      if (configCheck?.status !== "pass") {
+        writeJson(context, installation);
+        return;
+      }
+
+      const config = await readProjectConfig(resolved.projectRoot);
+      const input = await readJsonInput(context, doctorInputSchema);
+      const result = await runWebDoctor({
+        installationChecks: installation.checks,
+        entryUrl: config.targets.web.entryUrl,
+        ...(config.targets.web.readinessUrl === undefined
+          ? {}
+          : { readinessUrl: config.targets.web.readinessUrl }),
+        ...(input.entryPage === undefined
+          ? {}
+          : { entryPage: input.entryPage }),
+        chromeDevtoolsMcp: input.chromeDevtoolsMcp,
+        fetchImpl: context.fetchImpl,
+      });
+      writeJson(context, result);
+    },
+  );
+}
+
+async function storedConfigExists(projectRoot: string): Promise<boolean> {
+  try {
+    await lstat(join(projectRoot, ".ai-qa", "config.yaml"));
+    return true;
+  } catch (error: unknown) {
+    return !isNodeError(error, "ENOENT");
+  }
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }

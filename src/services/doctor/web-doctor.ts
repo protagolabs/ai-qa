@@ -1,3 +1,5 @@
+import type { InstallationCheck } from "./installation-doctor.js";
+
 export interface AgentCapabilityObservation {
   status: "ready" | "missing" | "unknown";
   observedAt: string;
@@ -6,6 +8,10 @@ export interface AgentCapabilityObservation {
 
 export interface DoctorCheck {
   code:
+    | "runtime.node"
+    | "project.config"
+    | "agent.project_skill"
+    | "project.storage"
     | "web.entry_url"
     | "web.entry_page"
     | "web.readiness_url"
@@ -22,11 +28,11 @@ export interface WebDoctorResult {
 }
 
 export interface WebDoctorInput {
+  installationChecks: readonly InstallationCheck[];
   entryUrl: string;
   readinessUrl?: string;
   entryPage?: AgentCapabilityObservation;
   chromeDevtoolsMcp: AgentCapabilityObservation;
-  globalSkillStatus: "compatible" | "missing" | "stale" | "conflict";
   fetchImpl: typeof fetch;
 }
 
@@ -34,6 +40,14 @@ export async function runWebDoctor(
   input: WebDoctorInput,
 ): Promise<WebDoctorResult> {
   const checks: DoctorCheck[] = [
+    ...input.installationChecks.map((check) => ({
+      code: check.code,
+      status:
+        check.status === "pass" || check.status === "advisory"
+          ? ("pass" as const)
+          : ("fail" as const),
+      message: check.message,
+    })),
     {
       code: "web.entry_url",
       status: "pass",
@@ -84,11 +98,6 @@ export async function runWebDoctor(
           ? "fail"
           : "agent_confirmation_required",
     message: input.chromeDevtoolsMcp.evidence,
-  });
-  checks.push({
-    code: "agent.global_skill",
-    status: input.globalSkillStatus === "compatible" ? "pass" : "fail",
-    message: `Global skill status: ${input.globalSkillStatus}`,
   });
   return {
     platform: "web",

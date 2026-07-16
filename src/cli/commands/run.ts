@@ -38,6 +38,10 @@ const startOptionsSchema = z.discriminatedUnion("kind", [
 const doctorCheckSchema = z
   .object({
     code: z.enum([
+      "runtime.node",
+      "project.config",
+      "agent.project_skill",
+      "project.storage",
       "web.entry_url",
       "web.entry_page",
       "web.readiness_url",
