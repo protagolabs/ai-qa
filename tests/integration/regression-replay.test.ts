@@ -22,7 +22,6 @@ import { startRegressionRun } from "../../src/services/run-protocol/start-regres
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
@@ -1276,7 +1275,12 @@ describe("pinned regression replay", () => {
   it("uses the gated config snapshot for a ready regression CLI run", async () => {
     const fixture = await createActiveCase();
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-agents-"));
-    await installReleasedLegacyGlobalSkill(agentsHome);
+    const skillInstall = createCapturedCli({
+      env: { AI_QA_AGENTS_HOME: agentsHome },
+    });
+    expect(
+      await runCli(["skill", "install", "--global"], skillInstall.context),
+    ).toBe(0);
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
       env: {

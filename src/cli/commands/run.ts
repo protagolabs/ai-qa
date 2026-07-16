@@ -16,7 +16,7 @@ import {
 } from "../../services/run-protocol/run-lifecycle.js";
 import { startExploratoryRun } from "../../services/run-protocol/start-exploratory-run.js";
 import { startRegressionRun } from "../../services/run-protocol/start-regression-run.js";
-import { checkGlobalSkillForProject } from "../../services/skill-management/global-skill.js";
+import { checkGlobalSkill } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -122,10 +122,9 @@ export function registerRunCommands(
         parsedOptions.kind === "exploratory"
           ? webReadinessSchema.parse(suppliedExploratory!.readiness)
           : suppliedRegression!;
-      const globalSkill = await checkGlobalSkillForProject({
+      const globalSkill = await checkGlobalSkill({
         agentsHome: agentsHome(context),
         sourcePath: bundledSourcePath(),
-        recordingMode: config.recordingPolicy.mode,
       });
       const checks = [
         ...readiness.checks.filter(

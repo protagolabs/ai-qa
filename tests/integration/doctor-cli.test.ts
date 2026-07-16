@@ -270,62 +270,67 @@ describe("web doctor CLI", () => {
     );
   });
 
-  it("rejects a legacy global skill for project-skill recording", async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
-    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({
-      projectRoot,
-      aiQaHome,
-      config: {
-        ...config,
-        recordingPolicy: { mode: "project-skill" },
-      },
-    });
-    await installReleasedLegacyGlobalSkill(agentsHome);
+  it.each(["local-only", "project-skill"] as const)(
+    "rejects a legacy global skill for $recordingMode recording",
+    async (recordingMode) => {
+      const projectRoot = await mkdtemp(
+        join(tmpdir(), "ai-qa-doctor-project-"),
+      );
+      const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
+      const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
+      await confirmProjectTrust({
+        projectRoot,
+        aiQaHome,
+        confirmed: true,
+        now: new Date("2026-07-13T00:00:00.000Z"),
+      });
+      await initializeTestProject({
+        projectRoot,
+        aiQaHome,
+        config: {
+          ...config,
+          recordingPolicy: { mode: recordingMode },
+        },
+      });
+      await installReleasedLegacyGlobalSkill(agentsHome);
 
-    const captured = createCapturedCli({
-      cwd: projectRoot,
-      env: {
-        AI_QA_HOME: aiQaHome,
-        AI_QA_AGENTS_HOME: agentsHome,
-      },
-      fetchImpl: vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(new Response(null, { status: 204 })),
-      readStdin: () =>
-        Promise.resolve(
-          JSON.stringify({
-            chromeDevtoolsMcp: {
-              status: "ready",
-              observedAt: "2026-07-13T00:00:00.000Z",
-              evidence: "Chrome DevTools MCP listed the target page",
-            },
-          }),
+      const captured = createCapturedCli({
+        cwd: projectRoot,
+        env: {
+          AI_QA_HOME: aiQaHome,
+          AI_QA_AGENTS_HOME: agentsHome,
+        },
+        fetchImpl: vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response(null, { status: 204 })),
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({
+              chromeDevtoolsMcp: {
+                status: "ready",
+                observedAt: "2026-07-13T00:00:00.000Z",
+                evidence: "Chrome DevTools MCP listed the target page",
+              },
+            }),
+          ),
+      });
+
+      expect(
+        await runCli(
+          ["doctor", "--platform", "web", "--json", "--stdin-json"],
+          captured.context,
         ),
-    });
-
-    expect(
-      await runCli(
-        ["doctor", "--platform", "web", "--json", "--stdin-json"],
-        captured.context,
-      ),
-    ).toBe(0);
-    const output = JSON.parse(captured.stdout.join("")) as {
-      status: unknown;
-      checks: unknown[];
-    };
-    expect(output.status).toBe("not_ready");
-    expect(output.checks).toContainEqual({
-      code: "agent.global_skill",
-      status: "fail",
-      message: "Global main Skill status: stale",
-    });
-  });
+      ).toBe(0);
+      const output = JSON.parse(captured.stdout.join("")) as {
+        status: unknown;
+        checks: unknown[];
+      };
+      expect(output.status).toBe("not_ready");
+      expect(output.checks).toContainEqual({
+        code: "agent.global_skill",
+        status: "fail",
+        message: "Global main Skill status: stale",
+      });
+    },
+  );
 });

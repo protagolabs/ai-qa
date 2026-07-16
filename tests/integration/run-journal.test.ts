@@ -660,7 +660,12 @@ describe("exploratory run start", () => {
         return JSON.stringify(readyPayload);
       },
     });
-    await installReleasedLegacyGlobalSkill(agentsHome);
+    const skillInstall = createCapturedCli({
+      env: { AI_QA_AGENTS_HOME: agentsHome },
+    });
+    expect(
+      await runCli(["skill", "install", "--global"], skillInstall.context),
+    ).toBe(0);
 
     const exitCode = await runCli(
       [

@@ -11,24 +11,12 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import {
-  applyProjectSetup,
-  initializationRequestSchema,
-  previewProjectSetup,
-} from "../../src/services/initialization/project-setup.js";
-import {
   checkGlobalSkill,
   checkGlobalSkillForProject,
   previewGlobalSkillSync,
   syncGlobalSkill,
 } from "../../src/services/skill-management/global-skill.js";
-import {
-  inspectManagedSkill,
-  mergeManagedSkill,
-} from "../../src/services/skill-management/managed-skill.js";
-import {
-  inspectProjectSkill,
-  prepareProjectSkill,
-} from "../../src/services/skill-management/project-skill.js";
+import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   copyReleasedLegacyGlobalSkill,
@@ -36,14 +24,13 @@ import {
   installedGlobalSkillReference,
   readReleasedLegacyGlobalSkill,
 } from "../helpers/global-skill-fixture.js";
-import { projectSetupRequest } from "../helpers/project-fixture.js";
 
 const canonicalSkill = `---
 name: ai-qa
 description: QA
 metadata:
-  aiQaSkillVersion: 1.1.0
-  aiQaProtocolRange: ^1.1.0
+  aiQaSkillVersion: 1.2.0
+  aiQaProtocolRange: ^1.2.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
 ---
@@ -90,28 +77,28 @@ describe("syncGlobalSkill", () => {
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.1.0\n",
+        "  aiQaSkillVersion: 1.2.0\n",
         "",
       ),
     },
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.1.0",
+        "  aiQaProtocolRange: ^1.2.0",
         "  aiQaProtocolRange: 1",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.1.0\n",
+        "  aiQaSkillVersion: 1.2.0\n",
         "",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.1.0",
+        "  aiQaProtocolRange: ^1.2.0",
         "  aiQaProtocolRange: 1",
       ),
     },
@@ -168,7 +155,7 @@ describe("syncGlobalSkill", () => {
     });
     const destination = join(agentsHome, "skills", "ai-qa", "SKILL.md");
     expect(await readFile(destination, "utf8")).toContain(
-      "aiQaSkillVersion: 1.1.0",
+      "aiQaSkillVersion: 1.2.0",
     );
     expect(
       await readFile(
@@ -386,7 +373,7 @@ describe("syncGlobalSkill", () => {
     );
   });
 
-  it("keeps a valid 1.0 skill runtime-compatible only for local-only recording", async () => {
+  it("rejects a valid 1.0 skill for every current recording mode", async () => {
     const fixture = await createSkillFixture();
     await installReleasedLegacyGlobalSkill(fixture.agentsHome);
 
@@ -398,7 +385,7 @@ describe("syncGlobalSkill", () => {
         ...fixture,
         recordingMode: "local-only",
       }),
-    ).resolves.toMatchObject({ status: "compatible" });
+    ).resolves.toMatchObject({ status: "stale" });
     await expect(
       checkGlobalSkillForProject({
         ...fixture,
@@ -411,7 +398,7 @@ describe("syncGlobalSkill", () => {
     { condition: "missing", expected: "stale" },
     { condition: "tampered", expected: "conflict" },
   ] as const)(
-    "rejects a current 1.1 skill when its managed reference is $condition",
+    "rejects the current 1.2 skill when its managed reference is $condition",
     async ({ condition, expected }) => {
       const fixture = await createSkillFixture();
       await syncGlobalSkill({
@@ -437,7 +424,7 @@ describe("syncGlobalSkill", () => {
     },
   );
 
-  it("rejects a checksum-self-consistent impostor claiming current 1.1", async () => {
+  it("rejects a checksum-self-consistent impostor claiming current 1.2", async () => {
     const fixture = await createSkillFixture();
     await syncGlobalSkill({
       ...fixture,
@@ -459,7 +446,7 @@ describe("syncGlobalSkill", () => {
     }
   });
 
-  it("keeps the current 1.1 user region outside managed checksum pinning", async () => {
+  it("keeps the current 1.2 user region outside managed checksum pinning", async () => {
     const fixture = await createSkillFixture();
     await syncGlobalSkill({
       ...fixture,
@@ -480,12 +467,9 @@ describe("syncGlobalSkill", () => {
     }
   });
 
-  it.each([
-    { condition: "missing", localStatus: "stale" },
-    { condition: "tampered", localStatus: "conflict" },
-  ] as const)(
+  it.each([{ condition: "missing" }, { condition: "tampered" }] as const)(
     "rejects a released legacy 1.0 skill when its pinned reference is $condition",
-    async ({ condition, localStatus }) => {
+    async ({ condition }) => {
       const fixture = await createSkillFixture();
       await installReleasedLegacyGlobalSkill(fixture.agentsHome);
       const installedReference = installedGlobalSkillReference(
@@ -502,7 +486,7 @@ describe("syncGlobalSkill", () => {
           ...fixture,
           recordingMode: "local-only",
         }),
-      ).resolves.toMatchObject({ status: localStatus });
+      ).resolves.toMatchObject({ status: "stale" });
       await expect(
         checkGlobalSkillForProject({
           ...fixture,
@@ -556,53 +540,51 @@ describe("syncGlobalSkill", () => {
   });
 });
 
-describe("bundled global skill 1.1", () => {
-  it("declares receipt capability and the neutral recording workflow", async () => {
-    const content = await readFile(
+describe("bundled global skill 1.2", () => {
+  it("teaches the host-managed Project Skill procedure", async () => {
+    const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       "utf8",
     );
+    const reference = await readFile(
+      join(
+        process.cwd(),
+        "src",
+        "skills",
+        "global",
+        "references",
+        "web-work-protocol.md",
+      ),
+      "utf8",
+    );
+    const guidance = `${skill}\n${reference}`;
 
-    expect(content).toContain("  aiQaSkillVersion: 1.1.0");
-    expect(content).toContain("  aiQaProtocolRange: ^1.1.0");
-    expect(content).toContain("  aiQaRecordingReceipt: true");
-    expect(content).toContain(
-      "Ask how the project currently manages QA results or defects without offering a provider list.",
-    );
-    expect(content).toContain(
-      "When there is no existing process, default to `recordingPolicy.mode: local-only`.",
-    );
-    expect(content).toContain(
-      "Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.",
-    );
-    expect(content).toContain(
-      "The host owns permissions and authentication for every external tool.",
-    );
-    expect(content).toContain(
-      "Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.",
-    );
-    expect(content).toContain(
-      "For `local-only`, show the verified local report paths and end.",
-    );
-    expect(content).toContain(
-      "For `project-skill`, load the trusted canonical Project Skill before recording.",
-    );
-    expect(content).toContain(
-      "Register only the neutral receipt `status` and `references` returned by the host-owned procedure.",
-    );
-    expect(content).toContain(
-      "If an external recording operation has an uncertain result, register `unknown` without retrying it.",
-    );
-    expect(content).toContain(
-      "The recording outcome never changes the QA verdict.",
-    );
-    expect(content).toContain(
-      "Treat `report.not_generated` as a prerequisite: generate the report before querying recording status again.",
-    );
-    expect(content).toContain(
-      "Stop on lifecycle, evidence, report, recording, or storage integrity errors; never report them as `pending` and never submit a receipt before the verified-report boundary succeeds.",
-    );
-    expect(content).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
+    expect.soft(skill).toContain("  aiQaSkillVersion: 1.2.0");
+    expect.soft(skill).toContain("  aiQaProtocolRange: ^1.2.0");
+    expect.soft(skill).toContain("  aiQaRecordingReceipt: true");
+    expect.soft(skill).toContain("  aiQaManagedChecksum: bundled");
+    for (const fact of [
+      "Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.",
+      "Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.",
+      "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools.",
+      "The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.",
+      "Run `ai-qa config validate --stdin-json` as a read-only config check.",
+      "Run `ai-qa doctor --json` after the host-managed write.",
+      "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
+      "Permissions, authentication, file writes, and external tools remain host-owned.",
+    ]) {
+      expect.soft(guidance).toContain(fact);
+    }
+    expect.soft(guidance).not.toContain("InitializationRequest");
+    expect.soft(guidance).not.toContain("initializationRequestSchema");
+    expect.soft(guidance).not.toContain("projectSkill.content");
+    expect.soft(guidance).not.toMatch(/(?:managed-)?checksum algorithm/i);
+    expect.soft(guidance).not.toContain("createHash");
+    expect.soft(guidance).not.toContain("SHA-256");
+    expect.soft(guidance).not.toContain("--confirm-checksum");
+    expect.soft(guidance).not.toMatch(/\bskill generate\b/i);
+    expect.soft(guidance).not.toMatch(/\bproject skill sync\b/i);
+    expect.soft(guidance).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
   });
 
   it("ships the exact trust confirmation stdin accepted by the CLI", async () => {
@@ -665,7 +647,7 @@ describe("bundled global skill 1.1", () => {
     ).resolves.toBe(0);
   });
 
-  it("provides a canonical Project Skill wire example accepted by initialization", async () => {
+  it("labels the local Project Skill body example as arbitrary and unmanaged", async () => {
     const reference = await readFile(
       join(
         process.cwd(),
@@ -678,266 +660,17 @@ describe("bundled global skill 1.1", () => {
       "utf8",
     );
     const match =
-      /<!-- canonical-project-skill:start -->\s*```markdown\r?\n([\s\S]*?)\r?\n```\s*<!-- canonical-project-skill:end -->/.exec(
+      /### Arbitrary local Project Skill body example[\s\S]*?```markdown\r?\n([\s\S]*?)\r?\n```/.exec(
         reference,
       );
-    expect(match?.[1], "canonical Project Skill example").toBeDefined();
-    const source = `${match![1]}\n`;
-    const placeholderPattern =
-      /\b(?:TODO|TBD|placeholder)\b|aiQaManagedChecksum:\s*generated|<[A-Za-z][^>\n]*>/i;
-    expect(source).not.toMatch(placeholderPattern);
 
-    const fixture = projectSetupRequest({ mode: "local-only" });
-    const request = initializationRequestSchema.parse({
-      ...fixture,
-      projectSkill: {
-        reason: "Canonical provider-neutral Sample Web project procedures",
-        content: source,
-      },
-    });
-    expect(JSON.stringify(request)).not.toMatch(placeholderPattern);
-    const inspection = inspectProjectSkill({
-      projectRoot: "/workspace/sample-web",
-      content: request.projectSkill.content,
-      secretReferences: request.config.secretReferences,
-    });
-    expect(inspection.status).toBe("compatible");
-
-    const prepared = prepareProjectSkill({
-      source: request.projectSkill.content,
-      secretReferences: request.config.secretReferences,
-    });
-    expect(prepared.managedChecksum).toMatch(/^[a-f0-9]{64}$/);
-    expect(prepared.content).not.toMatch(placeholderPattern);
-  });
-
-  it("uses an invariant description for every schema-valid project name", async () => {
-    const skill = await readFile(
-      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
-      "utf8",
-    );
-    expect(skill).toContain(
-      "Use the invariant description `Use when performing Web AI QA.` exactly; do not substitute project data or add a suffix.",
-    );
-    expect(skill).toContain(
-      "Run the complete request through production `initializationRequestSchema` and `prepareProjectSkill()` before presenting it.",
-    );
-
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
-    );
-    const templateMatch =
-      /<!-- canonical-project-skill-description:start -->\s*```text\r?\n([^\r\n]+)\r?\n```\s*<!-- canonical-project-skill-description:end -->/.exec(
-        reference,
-      );
-    expect(
-      templateMatch?.[1],
-      "canonical generated Project Skill description",
-    ).toBeDefined();
-    const template = templateMatch?.[1];
-    if (template === undefined) {
-      throw new Error("Canonical Project Skill description is missing");
-    }
-    expect(template).toBe("Use when performing Web AI QA.");
-    expect(reference).toContain(
-      "Use this constant unchanged for every generated Project Skill; do not substitute project data or add a suffix.",
-    );
-    expect(reference).toContain(
-      "`Use when performing Sample Web AI QA, including reports, or reruns.` is valid",
-    );
-    expect(reference).toContain(
-      "`Use when performing Sample Web AI QA, including reports or reruns.` is invalid",
-    );
-    expect(reference).toContain(
-      "Validate the complete initialization request with production `initializationRequestSchema`, then pass its `projectSkill.content` through production `prepareProjectSkill()` before presenting it.",
-    );
-
-    const description = template;
-    const request = projectSetupRequest({ mode: "project-skill" });
-    request.config = {
-      ...request.config,
-      project: {
-        id: "research-development",
-        name: "Research and Development",
-      },
-    };
-    request.projectSkill.content = request.projectSkill.content.replace(
-      /^description: .+$/m,
-      `description: ${description}`,
-    );
-    const parsed = initializationRequestSchema.parse(request);
-    expect(parsed.config.project.name).toBe("Research and Development");
-    const prepared = prepareProjectSkill({
-      source: parsed.projectSkill.content,
-      secretReferences: parsed.config.secretReferences,
-    });
-    expect(prepared.content).toContain(`description: ${description}`);
-    expect(
-      inspectProjectSkill({
-        projectRoot: "/workspace/research-development",
-        content: prepared.content,
-        secretReferences: parsed.config.secretReferences,
-      }).status,
-    ).toBe("compatible");
-
-    const existingValid = request.projectSkill.content.replace(
-      `description: ${description}`,
-      "description: Use when performing Sample Web AI QA, including reports, or reruns.",
-    );
-    expect(() =>
-      prepareProjectSkill({
-        source: existingValid,
-        secretReferences: parsed.config.secretReferences,
-      }),
-    ).not.toThrow();
-
-    const invalid = request.projectSkill.content.replace(
-      `description: ${description}`,
-      "description: Use when performing Sample Web AI QA, including reports or reruns.",
-    );
-    expect(() =>
-      prepareProjectSkill({
-        source: invalid,
-        secretReferences: parsed.config.secretReferences,
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "skill.invalid_project_skill" }),
-    );
-  });
-
-  it("requires mechanical checksum verification before presenting a candidate", async () => {
-    const skill = await readFile(
-      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
-      "utf8",
-    );
-    expect(skill).toContain(
-      "Before presenting the request, actually execute the managed-checksum algorithm over its final bytes and verify the embedded value; never claim an unverified checksum.",
-    );
-
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
-    );
-    expect(reference).toContain(
-      "actually execute the checksum algorithm over its final candidate bytes",
-    );
-    expect(reference).toContain(
-      "verify that the embedded and recomputed checksums are equal",
-    );
-
-    const submittedChecksum =
-      "8ddd5396728ac03de4c170dd5307eecd2442cd514667164fc65c7bd62e7f05dd";
-    const request = projectSetupRequest({ mode: "project-skill" });
-    request.projectSkill.content = request.projectSkill.content.replace(
-      "aiQaManagedChecksum: generated",
-      `aiQaManagedChecksum: ${submittedChecksum}`,
-    );
-    expect(
-      inspectProjectSkill({
-        projectRoot: "/work/sample-web",
-        content: request.projectSkill.content,
-        secretReferences: request.config.secretReferences,
-      }).status,
-    ).toBe("conflict");
-
-    const prepared = prepareProjectSkill({
-      source: request.projectSkill.content,
-      secretReferences: request.config.secretReferences,
-    });
-    expect(prepared.managedChecksum).not.toBe(submittedChecksum);
-    expect(prepared.content).toContain(
-      `aiQaManagedChecksum: ${prepared.managedChecksum}`,
-    );
-    expect(
-      inspectProjectSkill({
-        projectRoot: "/work/sample-web",
-        content: prepared.content,
-        secretReferences: request.config.secretReferences,
-      }).status,
-    ).toBe("compatible");
-  });
-
-  it("derives later procedure revision only from applied canonical metadata", async () => {
-    const skill = await readFile(
-      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
-      "utf8",
-    );
-    expect(skill).toContain(
-      "derive the procedure revision only from its installed `metadata.aiQaManagedChecksum`, never from submitted candidate bytes.",
-    );
-
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
-    );
-    expect(reference).toContain(
-      "read `metadata.aiQaManagedChecksum` from those installed bytes and use that value as the procedure revision",
-    );
-    expect(reference).toContain(
-      "not the candidate's submitted checksum or the preview's top-level setup checksum",
-    );
-
-    const submittedChecksum =
-      "8ddd5396728ac03de4c170dd5307eecd2442cd514667164fc65c7bd62e7f05dd";
-    const request = projectSetupRequest({ mode: "project-skill" });
-    request.projectSkill.content = request.projectSkill.content.replace(
-      "aiQaManagedChecksum: generated",
-      `aiQaManagedChecksum: ${submittedChecksum}`,
-    );
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-project-"));
-    const preview = await previewProjectSetup({
-      operation: "init",
-      projectRoot,
-      request,
-    });
-    await applyProjectSetup({
-      operation: "init",
-      projectRoot,
-      request,
-      confirmChecksum: preview.checksum,
-    });
-
-    const installed = await readFile(
-      join(projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md"),
-      "utf8",
-    );
-    expect(installed).toBe(preview.projectSkill.content);
-    expect(
-      inspectProjectSkill({
-        projectRoot,
-        content: installed,
-        secretReferences: request.config.secretReferences,
-      }).status,
-    ).toBe("compatible");
-    const installedInspection = inspectManagedSkill(installed);
-    const procedureRevision = installedInspection.metadata.aiQaManagedChecksum;
-    expect(procedureRevision).toBe(installedInspection.managedChecksum);
-    expect(procedureRevision).not.toBe(submittedChecksum);
-    expect(`recording:run-1:${String(procedureRevision)}`).toBe(
-      `recording:run-1:${installedInspection.managedChecksum}`,
-    );
+    expect(match?.[1], "arbitrary local Project Skill body").toBeDefined();
+    expect(match?.[1]).toContain("# Sample Web Project Procedures");
+    expect(match?.[1]).toContain("without creating an external record");
+    expect(match?.[1]).not.toContain("---");
+    expect(match?.[1]).not.toContain("metadata:");
+    expect(match?.[1]).not.toContain("ai-qa:managed");
+    expect(reference).toContain("It is not a provider contract.");
   });
 });
 
@@ -986,7 +719,7 @@ describe("global skill CLI", () => {
     ).toBe(0);
     expect(
       await readFile(join(agentsHome, "skills", "ai-qa", "SKILL.md"), "utf8"),
-    ).toContain("aiQaSkillVersion: 1.1.0");
+    ).toContain("aiQaSkillVersion: 1.2.0");
     expect(await runCli(["skill", "check", "--global"], captured.context)).toBe(
       0,
     );

@@ -2,8 +2,8 @@
 name: ai-qa
 description: Use when configuring AI QA, manually testing Web behavior, capturing QA evidence, promoting an exploratory run, or replaying a regression case with the ai-qa CLI and platform control tools.
 metadata:
-  aiQaSkillVersion: 1.1.0
-  aiQaProtocolRange: ^1.1.0
+  aiQaSkillVersion: 1.2.0
+  aiQaProtocolRange: ^1.2.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
 ---
@@ -12,40 +12,36 @@ metadata:
 
 # AI QA Workflow
 
-## Initialize or reconfigure
+## Initialize or update a project
 
-1. Resolve the exact target project. Never assume an ancestor project when the user names a nested project.
-2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Only then read `.ai-qa/config.yaml`, the canonical Project Skill, or project instructions.
-3. Ask how the project currently manages QA results or defects without offering a provider list.
-4. When there is no existing process, default to `recordingPolicy.mode: local-only`. When there is an existing procedure, use `project-skill` and encode that procedure exactly in the Project Skill, including its match and rerun rules.
-5. Discuss targets, environment, evidence, report, storage, Git, and secret-reference policy. Generate the complete config and Project Skill together, preview the complete change, then apply the resubmitted payload with its confirmed checksum.
-6. Use the invariant description `Use when performing Web AI QA.` exactly; do not substitute project data or add a suffix. Build the rest of `projectSkill.content` with the canonical Project Skill wire format in the reference, including compatible metadata, managed and user markers, and a computed managed checksum; prose-only Skill content is not an initialization payload. Before presenting the request, actually execute the managed-checksum algorithm over its final bytes and verify the embedded value; never claim an unverified checksum. Run the complete request through production `initializationRequestSchema` and `prepareProjectSkill()` before presenting it.
-7. The host owns permissions and authentication for every external tool. The CLI and this Skill neither acquire credentials nor bypass host approval.
-8. Treat the confirmed Project Skill as the reusable project rule for matching later runs; tool approvals remain with the host.
+1. Resolve the exact target project. Never substitute an ancestor for a named nested project.
+2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Read project files only after trust is recorded.
+3. Ask how the project already manages QA results or defects without offering a provider list. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
+4. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
+5. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
+6. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
+7. Run `ai-qa doctor --json` after the host-managed write. Stop and report any installation failure before Web QA.
+8. Permissions, authentication, file writes, and external tools remain host-owned.
 
-Read `references/web-work-protocol.md` for the complete initialization payload and preview/apply commands.
+Read `references/web-work-protocol.md` for the exact host-managed sequence and Project Skill body example.
 
 ## Execute Web QA
 
-1. Use Chrome DevTools MCP read-only to observe capability and entry-page readiness, then pipe those observations to `ai-qa doctor --platform web --json --stdin-json`. The CLI does not control the browser.
-2. Before an exploratory run, confirm a goal and stable acceptance criteria with required evidence. Accept stored work orders with protocol version `1.0.0` or `1.1.0`; new work orders use `1.1.0`.
-3. Before every Chrome DevTools MCP invocation, including read-only observation and screenshot capture, call `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json` with `tool: "chrome-devtools-mcp"`; after the browser call, use `ai-qa action complete <action-id> --run <run-id> --stdin-json` to record `completed` or `unknown`. Never relabel another controller's output as Chrome DevTools evidence.
-4. After an interaction, record its terminal result, then a fresh observation action and observation, then a completed evidence-capture action and `evidence add`, and only then a satisfied assertion. Carry the interaction's returned `payload.stepId` through the observation and capture action plans and `assertion record --step`; every evidence payload uses `sourceTool: "chrome-devtools-mcp"` and cites its completed capture action and fresh observation.
-5. Never use a pre-action, stale, or differently sourced screenshot to support `pass`, case promotion, or a verified report claim. A successful tool response alone is insufficient; cite criterion, assertion, observation, and evidence IDs.
-6. Retrying an identical initial `verdict set` payload is safe and returns the original event. To cancel, use only `ai-qa run cancel <run-id> --reason <reason>`; never submit `not_verified/cancelled` through `verdict set` or `verdict revise`, and never attach criterion results to cancellation.
-7. Promote only complete exploratory runs. Review the generated draft with the user before activation.
-8. During regression, follow the pinned work order in order. Recovery actions must reference the affected required step and remain inside the frozen budget.
+1. Run the doctor with host-observed readiness data. The CLI reports readiness; it does not control the browser.
+2. Before an exploratory run, confirm a goal and stable acceptance criteria with required evidence. Historical work orders may use protocol `1.0.0` or `1.1.0`; new work orders use `1.2.0`.
+3. Before every controller invocation, including observation and screenshot capture, call `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json`; after the controller call, use `ai-qa action complete <action-id> --run <run-id> --stdin-json` to record `completed` or `unknown`.
+4. After an interaction, record its terminal result, a fresh step-linked observation, a completed evidence-capture action, and the evidence before recording a satisfied assertion. Cite the criterion, assertion, observation, and evidence IDs.
+5. Never use pre-action, stale, or differently sourced evidence to support `pass`, case promotion, or a verified report.
+6. Cancel only with `ai-qa run cancel <run-id> --reason <reason>`. Promote only complete exploratory runs after user review. During regression, follow the pinned work order in order and keep recovery within its budget.
 
 ## Complete and record
 
-1. Finish the run, generate the configured local report, and verify that report before any recording-status or receipt work.
-2. Treat `report.not_generated` as a prerequisite: generate the report before querying recording status again.
-3. Stop on lifecycle, evidence, report, recording, or storage integrity errors; never report them as `pending` and never submit a receipt before the verified-report boundary succeeds.
-4. For `local-only`, show the verified local report paths and end.
-5. For `project-skill`, load the trusted canonical Project Skill before recording. After apply, derive the procedure revision only from its installed `metadata.aiQaManagedChecksum`, never from submitted candidate bytes.
-6. Let the host execute that Project Skill procedure with host-owned permissions and approvals. Register only the neutral receipt `status` and `references` returned by the host-owned procedure.
-7. If an external recording operation has an uncertain result, register `unknown` without retrying it.
-8. The recording outcome never changes the QA verdict.
+1. Finish the run, generate the configured local report, and verify it before recording-status or receipt work.
+2. Treat `report.not_generated` as a prerequisite. Stop on lifecycle, evidence, report, recording, or storage integrity errors; do not call them `pending` or submit a receipt.
+3. For `local-only`, show the verified local report paths and end.
+4. For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.
+5. Let the host perform that procedure with its own permissions and approvals. Register `unknown` without retrying an external operation whose result is uncertain.
+6. Never change the QA verdict because of the recording outcome.
 
 Read `references/web-work-protocol.md` before the first Web run in a project.
 <!-- ai-qa:managed:end -->

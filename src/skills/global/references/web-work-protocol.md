@@ -1,10 +1,11 @@
 # Web Work Protocol
 
-## Initialization contract
+## Host-managed project setup
 
-Ask how the project already manages QA results or defects. If no process exists, choose `recordingPolicy.mode: local-only`. If one exists, choose `project-skill` and put the exact procedure in `projectSkill.content`; do not replace it with a different workflow.
+Use one host-owned workflow for `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md`:
 
-Before any project read, record the user's trust confirmation with this exact single-field stdin object:
+1. Resolve the exact target project and obtain explicit trust confirmation before reading project content.
+2. Record trust with the exact single-field stdin object below. The schema accepts literal `true` and no additional fields.
 
 <!-- canonical-trust-confirm:start -->
 
@@ -18,217 +19,96 @@ Before any project read, record the user's trust confirmation with this exact si
 printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdin-json
 ```
 
-The trust input schema is strict: `confirmed` must be literal `true`, and no other stdin fields are accepted.
+3. Inspect the existing config, Project Skill, and project instructions. Ask how QA results or defects are already managed without suggesting providers. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Use `project-skill` only for an existing procedure, copied exactly with its match and rerun rules.
+4. Draft the complete schema-v2 config as JSON in scratch space. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
+5. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and secret environment-variable references in its body, never literal secrets or provider assumptions.
+6. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
+7. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
+8. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
+9. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.
 
-### Project Skill wire contract
+Permissions, authentication, file writes, and external tools remain host-owned.
 
-`projectSkill.content` is a complete managed Skill source, not a prose-only Skill body. For every generated Project Skill, copy this invariant description exactly:
+### Arbitrary local Project Skill body example
 
-<!-- canonical-project-skill-description:start -->
-
-```text
-Use when performing Web AI QA.
-```
-
-<!-- canonical-project-skill-description:end -->
-
-Use this constant unchanged for every generated Project Skill; do not substitute project data or add a suffix. Existing descriptions still require an `-ing` primary trigger. For existing-description validation only, `Use when performing Sample Web AI QA, including reports, or reruns.` is valid; `Use when performing Sample Web AI QA, including reports or reruns.` is invalid. Put commands in the body, never in the description.
-
-Generate the remaining content in this order:
-
-1. Use the fixed `name: ai-qa-project`. Include metadata `aiQaProjectSkillVersion: 1.0.0`, an `aiQaProtocolRange` containing `1.1.0`, and `aiQaManagedChecksum`.
-2. Put each marker below exactly once, after frontmatter, in managed-start, managed-end, user-start, user-end order. Put generated project procedures inside the managed region. Start with an empty user region; sync preserves an installed user region byte-for-byte.
-3. Keep the combined managed and user body at or below 500 lines and 5,000 words. Use only configured environment-variable names for secret references and never put a literal secret in the Skill.
-4. Compute the managed checksum after the other frontmatter and managed content are final. Parse frontmatter as a YAML mapping, remove only `metadata.aiQaManagedChecksum`, serialize the full mapping with sorted map entries, normalize managed-region CRLF to LF, and SHA-256 `normalizedFrontmatter + "\n" + normalizedManagedRegion`. In JavaScript, the checksum operation is:
-
-```js
-import { createHash } from "node:crypto";
-import { stringify } from "yaml";
-
-const metadata = { ...frontmatter.metadata };
-delete metadata.aiQaManagedChecksum;
-const normalizedFrontmatter = stringify(
-  { ...frontmatter, metadata },
-  { sortMapEntries: true },
-);
-const managedLf = managedRegion.replace(/\r\n/g, "\n");
-const checksum = createHash("sha256")
-  .update(`${normalizedFrontmatter}\n${managedLf}`)
-  .digest("hex");
-```
-
-Before presenting an initialization request, actually execute the checksum algorithm over its final candidate bytes, replace the embedded value with the result, and verify that the embedded and recomputed checksums are equal. Validate the complete initialization request with production `initializationRequestSchema`, then pass its `projectSkill.content` through production `prepareProjectSkill()` before presenting it. Do not claim an unverified or rejected value. The preview path repeats the checksum calculation and returns canonical `projectSkill.content` with the computed managed checksum. A submitted managed checksum is not trusted. After any source change, recalculate it and preview the complete request. The preview's top-level setup checksum is separate: apply by resubmitting the original request unchanged with that setup checksum; do not replace the apply request with preview-normalized content.
-
-This provider-neutral example is a complete CLI-valid wire artifact:
-
-<!-- canonical-project-skill:start -->
+The following Markdown is only an example body for a project that chose local-only recording. It is not a provider contract. Supply appropriate `skill-creator` frontmatter and replace every sample value with confirmed project facts.
 
 ```markdown
----
-name: ai-qa-project
-description: Use when performing Web AI QA.
-metadata:
-  aiQaProjectSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.1.0
-  aiQaManagedChecksum: 3c17555d3aa7a210a234c5337394cba46341b525e3dde3e0ed2c42f794ec6c52
----
-
-<!-- ai-qa:managed:start -->
-
 # Sample Web Project Procedures
 
 ## Match
 
-Apply only to the trusted project root `/workspace/sample-web` with project ID `sample-web`.
-
-## Web target
-
-Use the confirmed entry URL `http://127.0.0.1:3000` and `chrome-devtools-mcp`.
+Apply only to the trusted project root and Web target identified in this project.
 
 ## Evidence and reports
 
-Require internal screenshots, retain them for 30 days, and generate full Markdown and JSON engineering reports in project-local storage.
+Capture the evidence required by the project config and generate its configured local report formats.
 
 ## Result recording
 
-Use local-only recording. After the local report is generated and verified, show its paths and end without creating an external record or receipt.
+After the local report is generated and verified, show its project-local paths and end without creating an external record.
 
 ## Reruns
 
 Match this exact project and target. Create fresh observations, evidence, and reports for every rerun.
-<!-- ai-qa:managed:end -->
-<!-- ai-qa:user:start -->
-<!-- ai-qa:user:end -->
 ```
-
-<!-- canonical-project-skill:end -->
-
-Build one complete request with these top-level fields:
-
-```json
-{
-  "config": {
-    "schemaVersion": 2,
-    "recordingPolicy": { "mode": "local-only" },
-    "project": { "id": "<stable-id>", "name": "<name>" },
-    "targets": { "web": { "entryUrl": "<confirmed-url>" } },
-    "environments": {},
-    "tools": { "web": { "controller": "chrome-devtools-mcp" } },
-    "evidencePolicy": {
-      "screenshots": "required",
-      "defaultSensitivity": "internal",
-      "retentionDays": 30
-    },
-    "reportPolicy": {
-      "formats": ["markdown", "json"],
-      "audience": "engineering",
-      "detail": "full"
-    },
-    "storagePolicy": { "adapter": "project-local" },
-    "gitPolicy": { "config": "track", "artifacts": "ignore" },
-    "ciPolicy": { "nonPassExit": "failure" },
-    "secretReferences": {}
-  },
-  "projectSkill": {
-    "reason": "<why these project procedures are canonical>",
-    "content": "<complete ai-qa-project Skill; include the exact result-recording procedure when mode is project-skill>"
-  }
-}
-```
-
-Use confirmed project-specific values rather than copying example defaults blindly. Preview and apply the same complete request:
-
-```text
-ai-qa init --project <path> --stdin-json --preview
-ai-qa init --project <path> --stdin-json --confirm-checksum <preview-checksum>
-```
-
-For an existing setup, use the equivalent `ai-qa configure` preview/apply pair. The approval decision contains the chosen recording mode, full config, complete Project Skill, preview/apply commands, and the statement that permissions, authentication, and tool approvals stay with the host. Present the diff and checksum for confirmation before applying. The confirmed canonical Project Skill is the reusable rule for later matching runs.
 
 ## Controller provenance
 
-- Every Web `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json` body uses `tool: "chrome-devtools-mcp"`.
-- Every `ai-qa evidence add --run <run-id> --file <path> --stdin-json` body uses `sourceTool: "chrome-devtools-mcp"`, matching its completed `evidence-capture` action.
-- Do not relabel output from another controller as Chrome DevTools evidence. HTTP checks, generic browser tools, Playwright, modeled events, and stale screenshots do not satisfy this provenance contract.
+- Every Web `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json` body names the configured controller.
+- Every `ai-qa evidence add --run <run-id> --file <path> --stdin-json` body names that controller as `sourceTool` and cites its completed evidence-capture action.
+- Never relabel output from another controller. HTTP checks, modeled events, or stale screenshots do not satisfy controller provenance.
 
 ## Post-action evidence
 
-For an exploratory interaction, retain the returned `payload.stepId`. For a regression interaction, use the required step ID from the pinned work order. Then keep this exact order on that one step:
+For an exploratory interaction, retain the returned `payload.stepId`. For regression, use the required step ID from the pinned work order. Keep this order on that step:
 
-1. Plan the interaction with `action plan`, invoke Chrome DevTools MCP, and record its terminal result with `ai-qa action complete <action-id> --run <run-id> --stdin-json`.
-2. Plan a new observation action with `action plan --step <step-id>`, invoke Chrome DevTools MCP, record its completed terminal result, then write the fresh state with `ai-qa observation add --run <run-id> --stdin-json`.
-3. Plan an `evidence-capture` action with `action plan --step <step-id>`, invoke Chrome DevTools MCP, record its completed terminal result, then register the raw file with `evidence add`. The evidence payload cites that capture action and the fresh observation ID; `evidence add` has no `--step` option.
+1. Plan the interaction, invoke the configured controller, and record its terminal result with `ai-qa action complete <action-id> --run <run-id> --stdin-json`.
+2. Plan a new observation action on the same step, invoke the controller, record completion, then write the fresh state with `ai-qa observation add --run <run-id> --stdin-json`.
+3. Plan an evidence-capture action on the same step, invoke the controller, record completion, then register the raw file with `evidence add`. Cite the capture action and fresh observation ID.
 4. Record the satisfied assertion with `ai-qa assertion record --run <run-id> --step <step-id> --stdin-json`, citing the same fresh observation and evidence IDs.
 
-Evidence captured before the asserted interaction, before its terminal result, or before the fresh post-action observation cannot support a `pass`, case promotion, or a verified report claim. An unresolved `unknown` action must follow the recovery protocol and cannot satisfy this chain.
+Evidence captured before the interaction result or fresh observation cannot support `pass`, case promotion, or a verified report. An unresolved `unknown` action must follow recovery and cannot satisfy this chain.
 
-## Exploratory
+## Exploratory and promotion
 
-1. Discuss goal, criterion IDs, descriptions, and required evidence.
+1. Confirm the goal, criterion IDs, descriptions, and required evidence.
 2. Start with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
-3. Capture initial browser state with Chrome DevTools MCP and register it.
-4. For each browser operation: plan action, invoke MCP, complete or mark unknown, observe, assert, and register evidence.
-5. Set one evidence-backed verdict and finish the run.
-
-## Promotion
-
-1. Build the draft payload only from recorded action, observation, assertion, and evidence IDs.
-2. Run `ai-qa case draft --from-run <run-id> --stdin-json` with the reviewed payload on stdin.
-3. Validate and activate the immutable revision after user review.
+3. Capture and register initial state, then apply the post-action evidence sequence for each interaction.
+4. Set one evidence-backed verdict and finish the run.
+5. Build a case draft only from recorded IDs. Run `ai-qa case draft --from-run <run-id> --stdin-json`, review it with the user, then validate and activate the immutable revision.
 
 ## Regression
 
-1. Start the active case on Web and retain the returned work order.
-2. Execute required steps in order. Use only step-linked bounded recovery.
+1. Start the active Web case and retain its work order.
+2. Execute required steps in order with only step-linked bounded recovery.
 3. Finish only after every criterion cites assertion and evidence IDs.
-4. Complete the verified-report and recording procedure below.
+4. Complete verified report and recording handling below.
 
 ## Verified report and recording
 
-At regression completion:
-
-```text
-generate verified local report
-├── recordingPolicy.mode = local-only     -> show local paths and end
-└── recordingPolicy.mode = project-skill  -> load trusted Project Skill
-                                             -> host executes procedure
-                                             -> register neutral receipt
-```
-
-1. Run `ai-qa report generate <run-id>` and retain its local paths.
-2. Run `ai-qa report recording-status <run-id>` only after generation. If it returns `report.not_generated`, generate the report before retrying the status query.
-3. If lifecycle, evidence, report, recording, or storage integrity validation fails, stop and surface that error. It is not `pending`, and receipt submission is forbidden until report verification succeeds.
-4. For `local-only`, show the local paths and end.
-5. For `project-skill`, after the successful apply, load the trusted canonical `.agents/skills/ai-qa-project/SKILL.md`, inspect it as compatible, then read `metadata.aiQaManagedChecksum` from those installed bytes and use that value as the procedure revision. The host executes the installed exact procedure with host-owned permissions, authentication, and approvals.
-6. Register only protocol metadata plus the neutral outcome through `ai-qa report receipt <run-id> --stdin-json`:
+1. Run `ai-qa report generate <run-id>` and retain its project-local paths.
+2. Run `ai-qa report recording-status <run-id>` only after report generation. On `report.not_generated`, generate the report before querying status again.
+3. Stop on lifecycle, evidence, report, recording, Project Skill snapshot, or storage integrity failure. Such failures are not `pending`, and receipt submission is forbidden.
+4. For `local-only`, show local paths and end.
+5. For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references. Execute the current Project Skill only if it still matches the run-start snapshot; otherwise stop and surface the integrity error.
+6. Submit the neutral outcome through `ai-qa report receipt <run-id> --stdin-json`:
 
 ```json
 {
-  "idempotencyKey": "recording:<run-id>:<procedure-revision>",
   "status": "recorded",
   "references": ["<stable project reference>"]
 }
 ```
 
-Use `not_recorded` with an empty reference list when the host confirms no record was made. Use `unknown` with an empty reference list when a submitted external operation returns no certain result; do not retry that operation. The receipt contains no provider payload, and its outcome never revises the QA verdict.
+Use `not_recorded` with an empty reference list when no record was made. Use `unknown` with an empty reference list when an external operation returns no certain result, and do not retry it. Never revise the QA verdict from a recording outcome.
 
-The installed canonical `metadata.aiQaManagedChecksum` is the sole source for `<procedure-revision>`, not the candidate's submitted checksum or the preview's top-level setup checksum. Reload it from the installed Project Skill before forming a later receipt idempotency key.
+## Verdict and safety
 
-## Verdict taxonomy
-
-- `pass`: every required criterion is supported by recorded assertions, observations, and evidence IDs. A successful tool response alone is insufficient.
-- `fail`: observed product behavior contradicts a criterion. Cite the contradicting observation, assertion, and evidence; never invent IDs.
-- `blocked`: a concrete tool, permission, environment, data, or evidence-capture blocker prevents required coverage. Record the blocker separately; it is not a product failure, and the run must not be finished as failed.
-- `not_verified`: required coverage is missing without a concrete external blocker. Do not promote or claim `pass`.
-
-## Cancellation and retries
-
-- Retrying an identical initial `ai-qa verdict set --run <run-id> --stdin-json` payload is safe and returns the original verdict event. A different correction uses `verdict revise --supersedes <verdict-id>` before finish.
-- Cancel only with `ai-qa run cancel <run-id> --reason <reason>`. Never submit `classification: "not_verified", reasonCode: "cancelled"` through `verdict set` or `verdict revise`.
-- Cancellation is lifecycle-owned. The CLI creates its canonical `not_verified/cancelled` verdict with `criterionResults: []`; do not attach partial, failed, or synthetic criterion results.
-
-## Safety
-
-- Do not retry destructive or externally visible operations after an unknown result until a fresh observation resolves whether the action applied.
-- Never convert a tool, permission, environment, data, or evidence-capture blocker into product `fail`.
-- Never convert missing coverage into `pass` or invent assertion, observation, or evidence IDs.
+- `pass`: every required criterion cites recorded assertions, observations, and evidence IDs.
+- `fail`: observed product behavior contradicts a criterion; cite the contradicting records.
+- `blocked`: a concrete tool, permission, environment, data, or evidence-capture blocker prevents coverage.
+- `not_verified`: coverage is missing without a concrete external blocker. Do not promote or claim `pass`.
+- Retry an initial verdict only with the identical payload. Use `verdict revise --supersedes <verdict-id>` for a correction.
+- Cancel only with `ai-qa run cancel <run-id> --reason <reason>`.
+- Do not retry an externally visible operation after an unknown result until a fresh observation resolves whether it applied.
