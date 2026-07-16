@@ -26,6 +26,18 @@ printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdi
 7. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and supported secret environment-variable references in its body, never literal secrets or provider assumptions.
 8. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
 9. Before displaying diffs or requesting confirmation, verify that `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` are within the exact target project root. Reject either target, or an existing parent below the root, when it is a symlink. Reject literal secrets and secret handling other than config-declared environment-variable references; stop when the requested handling is unsupported.
+   Only after config validation, scratch Project Skill validation, and all path, symlink, and secret safety checks succeed may Codex request the one confirmation; that confirmation authorizes only the two target writes and four canonical project-local directories, followed by the post-write doctor.
+   The one confirmation does not authorize the post-write doctor; after the approved writes and directory creation complete, Codex runs doctor as a separate mandatory verification step.
+
+## Required pre-confirmation attestation
+
+Immediately before the approval question, include all four lines:
+
+- Complete config validation: MUST PASS BEFORE CONFIRMATION.
+- Scratch Project Skill validation with `skill-creator`: MUST PASS BEFORE CONFIRMATION.
+- Exact-root and target/parent symlink safety: MUST PASS BEFORE CONFIRMATION.
+- Literal-secret and unsupported-secret-handling safety: MUST PASS BEFORE CONFIRMATION.
+
 10. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Include this required method line in the approval package: Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
 11. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
 12. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.

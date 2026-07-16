@@ -571,6 +571,8 @@ describe("bundled global skill 1.2", () => {
       "Run `ai-qa config validate --stdin-json` as a read-only config check.",
       "Before drafting, run the applicable installation doctor and host-visible checks; treat a missing config as `uninitialized`, then discuss startup, targets, environments, authentication/test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording.",
       "Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.",
+      "Only after config validation, scratch Project Skill validation, and all path, symlink, and secret safety checks succeed may Codex request the one confirmation; that confirmation authorizes only the two target writes and four canonical project-local directories, followed by the post-write doctor.",
+      "The one confirmation does not authorize the post-write doctor; after the approved writes and directory creation complete, Codex runs doctor as a separate mandatory verification step.",
       "Run `ai-qa doctor --json` after the host-managed write.",
       "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
       "Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.",
@@ -602,6 +604,14 @@ describe("bundled global skill 1.2", () => {
       .toContain(
         "Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.",
       );
+    expect.soft(reference).toContain(`## Required pre-confirmation attestation
+
+Immediately before the approval question, include all four lines:
+
+- Complete config validation: MUST PASS BEFORE CONFIRMATION.
+- Scratch Project Skill validation with \`skill-creator\`: MUST PASS BEFORE CONFIRMATION.
+- Exact-root and target/parent symlink safety: MUST PASS BEFORE CONFIRMATION.
+- Literal-secret and unsupported-secret-handling safety: MUST PASS BEFORE CONFIRMATION.`);
     expect.soft(guidance).not.toContain("InitializationRequest");
     expect.soft(guidance).not.toContain("initializationRequestSchema");
     expect.soft(guidance).not.toContain("projectSkill.content");
