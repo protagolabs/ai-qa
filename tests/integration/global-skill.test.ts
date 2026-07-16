@@ -569,8 +569,11 @@ describe("bundled global skill 1.2", () => {
       "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools.",
       "The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.",
       "Run `ai-qa config validate --stdin-json` as a read-only config check.",
+      "Before drafting, run the applicable installation doctor and host-visible checks; treat a missing config as `uninitialized`, then discuss startup, targets, environments, authentication/test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording.",
+      "Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.",
       "Run `ai-qa doctor --json` after the host-managed write.",
       "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
+      "Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.",
       "Permissions, authentication, file writes, and external tools remain host-owned.",
     ]) {
       expect.soft(guidance).toContain(fact);
@@ -582,8 +585,8 @@ describe("bundled global skill 1.2", () => {
     expect.soft(guidance).not.toContain("createHash");
     expect.soft(guidance).not.toContain("SHA-256");
     expect.soft(guidance).not.toContain("--confirm-checksum");
-    expect.soft(guidance).not.toMatch(/\bskill generate\b/i);
-    expect.soft(guidance).not.toMatch(/\bproject skill sync\b/i);
+    expect.soft(guidance).not.toContain("ai-qa skill generate --project");
+    expect.soft(guidance).not.toContain("ai-qa skill sync --project");
     expect.soft(guidance).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
   });
 

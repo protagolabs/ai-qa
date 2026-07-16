@@ -16,12 +16,14 @@ metadata:
 
 1. Resolve the exact target project. Never substitute an ancestor for a named nested project.
 2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Read project files only after trust is recorded.
-3. Ask how the project already manages QA results or defects without offering a provider list. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
-4. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
-5. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
-6. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
-7. Run `ai-qa doctor --json` after the host-managed write. Stop and report any installation failure before Web QA.
-8. Permissions, authentication, file writes, and external tools remain host-owned.
+3. Before drafting, run the applicable installation doctor and host-visible checks; treat a missing config as `uninitialized`, then discuss startup, targets, environments, authentication/test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording.
+4. Ask how the project already manages QA results or defects without offering a provider list. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
+5. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
+6. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
+7. Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.
+8. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
+9. Run `ai-qa doctor --json` after the host-managed write. Stop and report any installation failure before Web QA.
+10. Permissions, authentication, file writes, and external tools remain host-owned.
 
 Read `references/web-work-protocol.md` for the exact host-managed sequence and Project Skill body example.
 
@@ -40,7 +42,7 @@ Read `references/web-work-protocol.md` for the exact host-managed sequence and P
 2. Treat `report.not_generated` as a prerequisite. Stop on lifecycle, evidence, report, recording, or storage integrity errors; do not call them `pending` or submit a receipt.
 3. For `local-only`, show the verified local report paths and end.
 4. For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.
-5. Let the host perform that procedure with its own permissions and approvals. Register `unknown` without retrying an external operation whose result is uncertain.
+5. Let the host perform that procedure with its own permissions and approvals. Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.
 6. Never change the QA verdict because of the recording outcome.
 
 Read `references/web-work-protocol.md` before the first Web run in a project.

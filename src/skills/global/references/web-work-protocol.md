@@ -19,13 +19,15 @@ Use one host-owned workflow for `.ai-qa/config.yaml` and `.agents/skills/ai-qa-p
 printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdin-json
 ```
 
-3. Inspect the existing config, Project Skill, and project instructions. Ask how QA results or defects are already managed without suggesting providers. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Use `project-skill` only for an existing procedure, copied exactly with its match and rerun rules.
-4. Draft the complete schema-v2 config as JSON in scratch space. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
-5. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and secret environment-variable references in its body, never literal secrets or provider assumptions.
-6. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
-7. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
-8. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
-9. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.
+3. Before drafting, run `ai-qa doctor --json` and any applicable host-visible readiness checks. Treat a missing config as the expected `uninitialized` state. Discuss and resolve startup, targets, environments, authentication and test data, evidence, retention, reports, reruns, Git, CI, secrets, and result recording before choosing configuration values.
+4. Inspect the existing config, Project Skill, and project instructions. Ask how QA results or defects are already managed without suggesting providers. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Use `project-skill` only for an existing procedure, copied exactly with its match and rerun rules.
+5. Draft the complete schema-v2 config as JSON in scratch space. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
+6. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and supported secret environment-variable references in its body, never literal secrets or provider assumptions.
+7. Pipe the complete config JSON to the CLI. Run `ai-qa config validate --stdin-json` as a read-only config check. Use the returned config only after validation succeeds, and validate the scratch Project Skill with `skill-creator`.
+8. Before displaying diffs or requesting confirmation, verify that `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` are within the exact target project root. Reject either target, or an existing parent below the root, when it is a symlink. Reject literal secrets and secret handling other than config-declared environment-variable references; stop when the requested handling is unsupported.
+9. Render the validated config as `.ai-qa/config.yaml`. Compute complete diffs for that file and the validated Project Skill. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.
+10. On initialization, create the project-local directories `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`. Do not replace unsafe paths or symlinks.
+11. Run `ai-qa doctor --json` after the host-managed write. If installation is not ready, surface the failed check and stop before Web QA.
 
 Permissions, authentication, file writes, and external tools remain host-owned.
 
@@ -101,7 +103,7 @@ Evidence captured before the interaction result or fresh observation cannot supp
 }
 ```
 
-Use `not_recorded` with an empty reference list when no record was made. Use `unknown` with an empty reference list when an external operation returns no certain result, and do not retry it. Never revise the QA verdict from a recording outcome.
+Use `not_recorded` with an empty reference list when no record was made. Use `unknown` with an empty reference list when an external result-recording operation returns no certain result, and never retry that operation. Never revise the QA verdict from a recording outcome.
 
 ## Verdict and safety
 
@@ -111,4 +113,4 @@ Use `not_recorded` with an empty reference list when no record was made. Use `un
 - `not_verified`: coverage is missing without a concrete external blocker. Do not promote or claim `pass`.
 - Retry an initial verdict only with the identical payload. Use `verdict revise --supersedes <verdict-id>` for a correction.
 - Cancel only with `ai-qa run cancel <run-id> --reason <reason>`.
-- Do not retry an externally visible operation after an unknown result until a fresh observation resolves whether it applied.
+- For a non-recording Web action with an unknown result, do not retry until a fresh observation resolves whether it applied.
