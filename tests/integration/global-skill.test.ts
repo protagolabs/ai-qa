@@ -699,6 +699,7 @@ describe("bundled global skill 1.1", () => {
     const inspection = inspectProjectSkill({
       projectRoot: "/workspace/sample-web",
       content: request.projectSkill.content,
+      secretReferences: request.config.secretReferences,
     });
     expect(inspection.status).toBe("compatible");
 
@@ -783,6 +784,7 @@ describe("bundled global skill 1.1", () => {
       inspectProjectSkill({
         projectRoot: "/workspace/research-development",
         content: prepared.content,
+        secretReferences: parsed.config.secretReferences,
       }).status,
     ).toBe("compatible");
 
@@ -849,6 +851,7 @@ describe("bundled global skill 1.1", () => {
       inspectProjectSkill({
         projectRoot: "/work/sample-web",
         content: request.projectSkill.content,
+        secretReferences: request.config.secretReferences,
       }).status,
     ).toBe("conflict");
 
@@ -864,6 +867,7 @@ describe("bundled global skill 1.1", () => {
       inspectProjectSkill({
         projectRoot: "/work/sample-web",
         content: prepared.content,
+        secretReferences: request.config.secretReferences,
       }).status,
     ).toBe("compatible");
   });
@@ -921,7 +925,11 @@ describe("bundled global skill 1.1", () => {
     );
     expect(installed).toBe(preview.projectSkill.content);
     expect(
-      inspectProjectSkill({ projectRoot, content: installed }).status,
+      inspectProjectSkill({
+        projectRoot,
+        content: installed,
+        secretReferences: request.config.secretReferences,
+      }).status,
     ).toBe("compatible");
     const installedInspection = inspectManagedSkill(installed);
     const procedureRevision = installedInspection.metadata.aiQaManagedChecksum;
