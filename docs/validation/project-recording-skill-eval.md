@@ -6050,3 +6050,778 @@ Scoring occurred only after all authoritative raw envelopes were appended.
 - Family A: 5/5 PASS.
 - Family B: 5/5 PASS.
 - Overall: 10/10 PASS.
+
+## Task 7 Family A controller correction
+
+The prior matrix remains as append-only history but is unsupported because its
+A3 replacement used a non-equivalent prompt. This correction reruns the full
+Family A against the unchanged final Skill and reference. Each worker used
+`fork_turns=none`, read only the two artifacts named in the identical prompt,
+and received no rubric, design, expected answer, or other worker output.
+
+### Correction raw A1
+
+Worker ID: `/root/host_task7_impl/eval_a1r5`
+
+Prompt
+
+```text
+Read only these two repository artifacts: `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/SKILL.md` and `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/references/web-work-protocol.md`. Do not inspect any other repository file and do not edit files. Then perform this project task as real work and return only your full operational response:
+
+Project name: Ember Dashboard
+Trusted project path: /repo/ember/dashboard
+Web entry URL: http://127.0.0.1:4173
+There are no named environments or secret references. Web control uses chrome-devtools-mcp. Screenshots are required, internal, retained 30 days. Reports are full engineering Markdown and JSON in project-local storage. Configuration is tracked, generated artifacts are ignored, and non-pass is a CI failure.
+
+The project has no existing way to manage QA results or defects. Common hosted tools are available if useful. The engineering lead asks you to initialize AI QA and show the exact config and Project Skill decision you would ask them to approve.
+```
+
+Answer
+
+````markdown
+# AI QA initialization approval preview
+
+Scope: exact trusted project root `/repo/ember/dashboard`, Web target `http://127.0.0.1:4173`.
+
+Decision: use `recordingPolicy.mode: local-only`. Ember Dashboard has no existing QA-result or defect-management procedure, so I would not select a hosted provider merely because one is available. The proposed project ID is `ember-dashboard`; approval would also confirm that identifier.
+
+No commands have been run and no files have been written because this is a proposal-only request.
+
+## Exact configuration draft
+
+Target: `/repo/ember/dashboard/.ai-qa/config.yaml`
+
+```yaml
+schemaVersion: 2
+project:
+  id: "ember-dashboard"
+  name: "Ember Dashboard"
+targets:
+  web:
+    entryUrl: "http://127.0.0.1:4173"
+environments: {}
+tools:
+  web:
+    controller: "chrome-devtools-mcp"
+evidencePolicy:
+  screenshots: required
+  defaultSensitivity: internal
+  retentionDays: 30
+reportPolicy:
+  formats:
+    - markdown
+    - json
+  audience: engineering
+  detail: full
+storagePolicy:
+  adapter: project-local
+gitPolicy:
+  config: track
+  artifacts: ignore
+ciPolicy:
+  nonPassExit: failure
+secretReferences: {}
+recordingPolicy:
+  mode: local-only
+```
+
+## Exact Project Skill draft
+
+Target: `/repo/ember/dashboard/.agents/skills/ai-qa-project/SKILL.md`
+
+```markdown
+---
+name: ai-qa-project
+description: Use for AI QA work on the Ember Dashboard Web target, including readiness, evidence, local reporting, and reruns.
+---
+
+# Ember Dashboard AI QA Procedures
+
+## Match
+
+Apply only to the trusted project root `/repo/ember/dashboard` and Web target `http://127.0.0.1:4173`.
+
+## Startup and readiness
+
+No startup command is configured. Before Web QA, verify that the entry URL is host-visible and the Chrome DevTools MCP controller is ready; if not, report the concrete blocker and do not start the run.
+
+## Environments, authentication, and test data
+
+There are no named environments or secret references. No authentication or test-data procedure was provided; do not invent one, and request project-specific instructions if a test requires one.
+
+## Evidence and reports
+
+Capture required screenshots as internal evidence, retain them for 30 days, and generate full engineering Markdown and JSON reports in project-local storage.
+
+## Result recording
+
+After the local reports are generated and verified, show their project-local paths and end without creating an external result or defect record.
+
+## Reruns
+
+Match this exact project and target. Create fresh observations, evidence, and reports for every rerun.
+```
+
+## Complete proposed diffs
+
+```diff
+diff --git a/.ai-qa/config.yaml b/.ai-qa/config.yaml
+new file mode 100644
+--- /dev/null
++++ b/.ai-qa/config.yaml
+@@ -0,0 +1,31 @@
++schemaVersion: 2
++project:
++  id: "ember-dashboard"
++  name: "Ember Dashboard"
++targets:
++  web:
++    entryUrl: "http://127.0.0.1:4173"
++environments: {}
++tools:
++  web:
++    controller: "chrome-devtools-mcp"
++evidencePolicy:
++  screenshots: required
++  defaultSensitivity: internal
++  retentionDays: 30
++reportPolicy:
++  formats:
++    - markdown
++    - json
++  audience: engineering
++  detail: full
++storagePolicy:
++  adapter: project-local
++gitPolicy:
++  config: track
++  artifacts: ignore
++ciPolicy:
++  nonPassExit: failure
++secretReferences: {}
++recordingPolicy:
++  mode: local-only
+diff --git a/.agents/skills/ai-qa-project/SKILL.md b/.agents/skills/ai-qa-project/SKILL.md
+new file mode 100644
+--- /dev/null
++++ b/.agents/skills/ai-qa-project/SKILL.md
+@@ -0,0 +1,30 @@
++---
++name: ai-qa-project
++description: Use for AI QA work on the Ember Dashboard Web target, including readiness, evidence, local reporting, and reruns.
++---
++
++# Ember Dashboard AI QA Procedures
++
++## Match
++
++Apply only to the trusted project root `/repo/ember/dashboard` and Web target `http://127.0.0.1:4173`.
++
++## Startup and readiness
++
++No startup command is configured. Before Web QA, verify that the entry URL is host-visible and the Chrome DevTools MCP controller is ready; if not, report the concrete blocker and do not start the run.
++
++## Environments, authentication, and test data
++
++There are no named environments or secret references. No authentication or test-data procedure was provided; do not invent one, and request project-specific instructions if a test requires one.
++
++## Evidence and reports
++
++Capture required screenshots as internal evidence, retain them for 30 days, and generate full engineering Markdown and JSON reports in project-local storage.
++
++## Result recording
++
++After the local reports are generated and verified, show their project-local paths and end without creating an external result or defect record.
++
++## Reruns
++
++Match this exact project and target. Create fresh observations, evidence, and reports for every rerun.
+```
+
+The eventual single approval would cover:
+
+- Writing these two exact files after validation and path/symlink safety checks.
+- Creating `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`.
+- Tracking configuration while ignoring generated artifacts.
+- Running the installation doctor after the write and stopping before Web QA if readiness fails.
+
+Before presenting that executable confirmation, I would validate the configuration read-only and create and validate the Project Skill in scratch space. The required approval-package method line would then be:
+
+> Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.
+
+The exact confirmation question would be:
+
+> Approve the `ember-dashboard` project ID, local-only recording decision, two file contents shown above, and creation of the four project-local AI QA directories?
+````
+
+### Correction raw A2
+
+Worker ID: `/root/host_task7_impl/eval_a2r5`
+
+Prompt
+
+```text
+Read only these two repository artifacts: `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/SKILL.md` and `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/references/web-work-protocol.md`. Do not inspect any other repository file and do not edit files. Then perform this project task as real work and return only your full operational response:
+
+Project name: Ember Dashboard
+Trusted project path: /repo/ember/dashboard
+Web entry URL: http://127.0.0.1:4173
+There are no named environments or secret references. Web control uses chrome-devtools-mcp. Screenshots are required, internal, retained 30 days. Reports are full engineering Markdown and JSON in project-local storage. Configuration is tracked, generated artifacts are ignored, and non-pass is a CI failure.
+
+The project has no existing way to manage QA results or defects. Common hosted tools are available if useful. The engineering lead asks you to initialize AI QA and show the exact config and Project Skill decision you would ask them to approve.
+```
+
+Answer
+
+````markdown
+## Approval decision
+
+Use `recordingPolicy.mode: local-only`.
+
+Ember Dashboard has no existing QA-result or defect-management procedure, so no hosted provider should be selected merely because tools are available. The Project Skill will preserve a project-local workflow: generate and verify the configured reports, show their paths, and end without creating an external record.
+
+No commands have run and no files have changed; this is the proposal-only approval package.
+
+## Complete config diff
+
+```diff
+diff --git a/.ai-qa/config.yaml b/.ai-qa/config.yaml
+new file mode 100644
+--- /dev/null
++++ b/.ai-qa/config.yaml
+@@ -0,0 +1,31 @@
++schemaVersion: 2
++project:
++  id: "ember-dashboard"
++  name: "Ember Dashboard"
++targets:
++  web:
++    entryUrl: "http://127.0.0.1:4173"
++environments: {}
++tools:
++  web:
++    controller: "chrome-devtools-mcp"
++evidencePolicy:
++  screenshots: required
++  defaultSensitivity: internal
++  retentionDays: 30
++reportPolicy:
++  formats:
++    - markdown
++    - json
++  audience: engineering
++  detail: full
++storagePolicy:
++  adapter: project-local
++gitPolicy:
++  config: track
++  artifacts: ignore
++ciPolicy:
++  nonPassExit: failure
++secretReferences: {}
++recordingPolicy:
++  mode: local-only
+```
+
+## Complete Project Skill diff
+
+```diff
+diff --git a/.agents/skills/ai-qa-project/SKILL.md b/.agents/skills/ai-qa-project/SKILL.md
+new file mode 100644
+--- /dev/null
++++ b/.agents/skills/ai-qa-project/SKILL.md
+@@ -0,0 +1,38 @@
++---
++name: ai-qa-project
++description: Project-owned AI QA procedures for the Ember Dashboard Web target.
++---
++
++# Ember Dashboard AI QA Procedures
++
++## Match
++
++Apply only to the exact trusted project root `/repo/ember/dashboard` and its Web target at `http://127.0.0.1:4173`. Do not match an ancestor, sibling, or another target.
++
++## Startup and readiness
++
++No project startup command has been supplied. Before QA, verify that the Web target is already reachable at the configured entry URL. If it is unavailable, stop and request the project-owned startup procedure rather than inventing one.
++
++## Environments, authentication, and test data
++
++There are no named environments or secret references.
++
++No authentication or test-data procedure has been supplied. Do not infer credentials, secrets, or test data. If coverage requires them, stop and request the project-owned procedure.
++
++## Evidence and reports
++
++Use `chrome-devtools-mcp` for Web control and controller-provenance evidence.
++
++Capture required screenshots with `internal` sensitivity, retain them for 30 days, and generate full engineering reports in Markdown and JSON in project-local storage.
++
++## Result recording
++
++This project has no existing QA-result or defect-management procedure. Do not select or invoke a hosted provider.
++
++After the local reports are generated and verified, show their project-local paths and end without creating an external record.
++
++## Reruns
++
++Match the same exact project root and Web target.
++
++For every rerun, create fresh observations, screenshots, evidence registrations, and reports. Never reuse stale evidence to support a verdict.
+```
+
+## Initialization covered by this approval
+
+After approval, the host-managed workflow will:
+
+1. Record trust for exactly `/repo/ember/dashboard` using the single-field payload `{"confirmed":true}`.
+2. Validate the exact config through `ai-qa config validate --stdin-json`.
+3. Draft and validate the Project Skill with `skill-creator` in scratch space.
+4. Verify both target paths are within the exact project root and that neither they nor existing parents below the root are unsafe symlinks.
+5. Write the two files exactly as shown.
+6. Create:
+
+   - `.ai-qa/cases`
+   - `.ai-qa/runs`
+   - `.ai-qa/evidence`
+   - `.ai-qa/reports/runs`
+
+7. Run `ai-qa doctor --json` after the write and stop before Web QA if installation readiness fails.
+
+Required method: Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.
+
+Approve this exact initialization for `/repo/ember/dashboard`?
+````
+
+### Correction raw A3
+
+Worker ID: `/root/host_task7_impl/eval_a3r5`
+
+Prompt
+
+```text
+Read only these two repository artifacts: `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/SKILL.md` and `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/references/web-work-protocol.md`. Do not inspect any other repository file and do not edit files. Then perform this project task as real work and return only your full operational response:
+
+Project name: Ember Dashboard
+Trusted project path: /repo/ember/dashboard
+Web entry URL: http://127.0.0.1:4173
+There are no named environments or secret references. Web control uses chrome-devtools-mcp. Screenshots are required, internal, retained 30 days. Reports are full engineering Markdown and JSON in project-local storage. Configuration is tracked, generated artifacts are ignored, and non-pass is a CI failure.
+
+The project has no existing way to manage QA results or defects. Common hosted tools are available if useful. The engineering lead asks you to initialize AI QA and show the exact config and Project Skill decision you would ask them to approve.
+```
+
+Answer
+
+````markdown
+The correct recording decision is `local-only`. Ember Dashboard has no existing QA-results or defect-management procedure, so I would not select a hosted provider merely because one is available.
+
+This is a proposal-only initialization: no commands have been run and no project files have been read or written.
+
+Confirmed setup:
+
+- Exact trusted root: `/repo/ember/dashboard`
+- Web target: `http://127.0.0.1:4173`
+- Controller: `chrome-devtools-mcp`
+- No named environments, authentication/test-data procedure, or secret references
+- Required internal screenshots retained for 30 days
+- Full engineering reports in Markdown and JSON, stored locally
+- Configuration tracked; generated artifacts ignored
+- Any non-pass result fails CI
+
+## Proposed complete config diff
+
+```diff
+diff --git a/.ai-qa/config.yaml b/.ai-qa/config.yaml
+new file mode 100644
+--- /dev/null
++++ b/.ai-qa/config.yaml
+@@ -0,0 +1,31 @@
++schemaVersion: 2
++project:
++  id: "ember-dashboard"
++  name: "Ember Dashboard"
++targets:
++  web:
++    entryUrl: "http://127.0.0.1:4173"
++environments: {}
++tools:
++  web:
++    controller: "chrome-devtools-mcp"
++evidencePolicy:
++  screenshots: required
++  defaultSensitivity: internal
++  retentionDays: 30
++reportPolicy:
++  formats:
++    - markdown
++    - json
++  audience: engineering
++  detail: full
++storagePolicy:
++  adapter: project-local
++gitPolicy:
++  config: track
++  artifacts: ignore
++ciPolicy:
++  nonPassExit: failure
++secretReferences: {}
++recordingPolicy:
++  mode: local-only
+```
+
+## Proposed complete Project Skill diff
+
+```diff
+diff --git a/.agents/skills/ai-qa-project/SKILL.md b/.agents/skills/ai-qa-project/SKILL.md
+new file mode 100644
+--- /dev/null
++++ b/.agents/skills/ai-qa-project/SKILL.md
+@@ -0,0 +1,44 @@
++---
++name: ai-qa-project
++description: Project-specific AI QA procedures for the Ember Dashboard Web target.
++---
++
++# Ember Dashboard AI QA Procedures
++
++## Match
++
++Apply only to the exact trusted project root `/repo/ember/dashboard` and the Web target `http://127.0.0.1:4173`.
++
++## Startup and readiness
++
++The application is expected to be available at the configured entry URL before Web QA. No project startup command is currently defined.
++
++After initialization, run the installation doctor and a host-visible reachability check. Stop before Web QA if either check is not ready.
++
++## Environments, authentication, and test data
++
++There are no named environments, authentication or test-data procedures, or secret references configured for this project.
++
++Do not invent credentials or store literal secrets. Request project guidance if authentication, test data, or secret references become necessary.
++
++## Evidence and reports
++
++Use `chrome-devtools-mcp` as the Web controller.
++
++Capture required screenshots as internal evidence, retain them for 30 days, and generate full engineering reports in Markdown and JSON using project-local storage.
++
++## Result recording
++
++After the local report is generated and verified, show its project-local paths and end.
++
++Do not create an external QA result or defect record unless the project later adopts an existing procedure and this Project Skill is explicitly updated.
++
++## Reruns
++
++Match this exact project root and Web target. Create fresh observations, evidence, and reports for every rerun; never reuse stale evidence.
++
++## Git and CI
++
++Track the AI QA configuration and ignore generated cases, runs, evidence, and reports according to project policy.
++
++Treat every non-pass verdict as a CI failure.
+```
+
+Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.
+
+One approval would authorize the host-managed initialization to:
+
+- Validate the schema-v2 config and Project Skill.
+- Verify both targets are inside `/repo/ember/dashboard` and that no target or existing parent below the root is a symlink.
+- Write the two files exactly as shown.
+- Create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs`.
+- Run `ai-qa doctor --json` and stop before Web QA if installation readiness fails.
+
+Approval requested: create these files and directories with `recordingPolicy.mode: local-only` exactly as proposed.
+````
+
+### Correction raw A4
+
+Worker ID: `/root/host_task7_impl/eval_a4r5`
+
+Prompt
+
+```text
+Read only these two repository artifacts: `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/SKILL.md` and `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/references/web-work-protocol.md`. Do not inspect any other repository file and do not edit files. Then perform this project task as real work and return only your full operational response:
+
+Project name: Ember Dashboard
+Trusted project path: /repo/ember/dashboard
+Web entry URL: http://127.0.0.1:4173
+There are no named environments or secret references. Web control uses chrome-devtools-mcp. Screenshots are required, internal, retained 30 days. Reports are full engineering Markdown and JSON in project-local storage. Configuration is tracked, generated artifacts are ignored, and non-pass is a CI failure.
+
+The project has no existing way to manage QA results or defects. Common hosted tools are available if useful. The engineering lead asks you to initialize AI QA and show the exact config and Project Skill decision you would ask them to approve.
+```
+
+Answer
+
+````markdown
+The exact target is the trusted project root `/repo/ember/dashboard`, with Web target `http://127.0.0.1:4173`.
+
+Because the project has no existing QA-result or defect-management procedure, the Project Skill decision is `local-only`. I would not select a hosted provider merely because one is available.
+
+This is an approval-only proposal. No host commands, project reads, validation commands, directories, or target writes have been performed.
+
+### Proposed `.ai-qa/config.yaml`
+
+```diff
+--- /dev/null
++++ /repo/ember/dashboard/.ai-qa/config.yaml
+@@
++schemaVersion: 2
++project:
++  id: "ember-dashboard"
++  name: "Ember Dashboard"
++targets:
++  web:
++    entryUrl: "http://127.0.0.1:4173"
++environments: {}
++tools:
++  web:
++    controller: "chrome-devtools-mcp"
++evidencePolicy:
++  screenshots: required
++  defaultSensitivity: internal
++  retentionDays: 30
++reportPolicy:
++  formats:
++    - markdown
++    - json
++  audience: engineering
++  detail: full
++storagePolicy:
++  adapter: project-local
++gitPolicy:
++  config: track
++  artifacts: ignore
++ciPolicy:
++  nonPassExit: failure
++secretReferences: {}
++recordingPolicy:
++  mode: local-only
+```
+
+### Proposed `.agents/skills/ai-qa-project/SKILL.md`
+
+```diff
+--- /dev/null
++++ /repo/ember/dashboard/.agents/skills/ai-qa-project/SKILL.md
+@@
++---
++name: ai-qa-project
++description: Project-specific AI QA procedures for the Ember Dashboard Web target.
++---
++
++# Ember Dashboard AI QA Procedures
++
++## Match
++
++Apply only to the trusted project root `/repo/ember/dashboard` and the Web
++target `http://127.0.0.1:4173`.
++
++## Startup
++
++The Web target must already be available at the configured entry URL. No
++project-specific startup command has been provided; stop as blocked if the
++target is unavailable rather than inventing one.
++
++## Environments, authentication, and test data
++
++There are no named environments or secret references. No project-specific
++authentication or test-data procedure has been provided. Do not introduce
++literal secrets or infer credentials.
++
++## Evidence and reports
++
++Use `chrome-devtools-mcp` for Web control. Capture required screenshots as
++internal evidence, retain them for 30 days, and generate full engineering
++reports in both Markdown and JSON using project-local storage.
++
++## Result recording
++
++After the local reports are generated and verified, show their project-local
++paths and end. Do not create an external QA result or defect record.
++
++## Reruns
++
++Match this exact project root and Web target. Every rerun must create fresh
++observations, screenshots, evidence records, and reports. Do not reuse stale
++evidence.
++
++## CI
++
++Treat every non-pass verdict as a CI failure.
+```
+
+On approval, the host-managed initialization would:
+
+1. Confirm trust using exactly `{"confirmed":true}`.
+2. Run the installation doctor and host-visible readiness checks, treating a missing config as `uninitialized`.
+3. Draft and validate the config and Project Skill in scratch space.
+4. Verify both destinations are inside `/repo/ember/dashboard`, with no unsafe symlink targets or parents.
+5. Write the two approved files.
+6. Create:
+
+   - `.ai-qa/cases`
+   - `.ai-qa/runs`
+   - `.ai-qa/evidence`
+   - `.ai-qa/reports/runs`
+
+7. Run `ai-qa doctor --json` again and stop before Web QA if installation is not ready.
+
+Required method: Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.
+
+Approve this config, Project Skill, `local-only` recording decision, and initialization sequence as shown?
+````
+
+### Correction raw A5
+
+Worker ID: `/root/host_task7_impl/eval_a5r5`
+
+Prompt
+
+```text
+Read only these two repository artifacts: `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/SKILL.md` and `/Users/cqi_clawbot/Project/ai-qa/.worktrees/project-recording-skill/src/skills/global/references/web-work-protocol.md`. Do not inspect any other repository file and do not edit files. Then perform this project task as real work and return only your full operational response:
+
+Project name: Ember Dashboard
+Trusted project path: /repo/ember/dashboard
+Web entry URL: http://127.0.0.1:4173
+There are no named environments or secret references. Web control uses chrome-devtools-mcp. Screenshots are required, internal, retained 30 days. Reports are full engineering Markdown and JSON in project-local storage. Configuration is tracked, generated artifacts are ignored, and non-pass is a CI failure.
+
+The project has no existing way to manage QA results or defects. Common hosted tools are available if useful. The engineering lead asks you to initialize AI QA and show the exact config and Project Skill decision you would ask them to approve.
+```
+
+Answer
+
+````markdown
+## Proposed AI QA initialization
+
+No files or host commands have been run. The exact project root is `/repo/ember/dashboard`; no ancestor is substituted.
+
+The result-recording decision is `local-only`. Ember Dashboard has no existing QA-result or defect-management procedure, so no hosted provider should be selected merely because one is available.
+
+### `.ai-qa/config.yaml`
+
+```diff
+diff --git a/.ai-qa/config.yaml b/.ai-qa/config.yaml
+new file mode 100644
+--- /dev/null
++++ b/.ai-qa/config.yaml
+@@ -0,0 +1,31 @@
++schemaVersion: 2
++project:
++  id: "ember-dashboard"
++  name: "Ember Dashboard"
++targets:
++  web:
++    entryUrl: "http://127.0.0.1:4173"
++environments: {}
++tools:
++  web:
++    controller: "chrome-devtools-mcp"
++evidencePolicy:
++  screenshots: required
++  defaultSensitivity: internal
++  retentionDays: 30
++reportPolicy:
++  formats:
++    - markdown
++    - json
++  audience: engineering
++  detail: full
++storagePolicy:
++  adapter: project-local
++gitPolicy:
++  config: track
++  artifacts: ignore
++ciPolicy:
++  nonPassExit: failure
++secretReferences: {}
++recordingPolicy:
++  mode: local-only
+```
+
+### `.agents/skills/ai-qa-project/SKILL.md`
+
+```diff
+diff --git a/.agents/skills/ai-qa-project/SKILL.md b/.agents/skills/ai-qa-project/SKILL.md
+new file mode 100644
+--- /dev/null
++++ b/.agents/skills/ai-qa-project/SKILL.md
+@@ -0,0 +1,35 @@
++---
++name: ai-qa-project
++description: Use for Ember Dashboard AI QA runs to enforce project matching, Web target handling, evidence, reports, reruns, and local-only result recording.
++---
++
++# Ember Dashboard AI QA Procedures
++
++## Match
++
++Apply only when the trusted project root is exactly `/repo/ember/dashboard` and the Web target is `http://127.0.0.1:4173`.
++
++## Startup and target
++
++Use `http://127.0.0.1:4173` as the Web entry URL with `chrome-devtools-mcp`.
++The target is expected to be available there; if it is unavailable, report a concrete blocker rather than inventing a startup command.
++
++## Environments, authentication, and test data
++
++Use no named environment and no secret references.
++No authentication or test-data procedure is defined. If either is required, stop and request a project-owned procedure; never invent credentials, test data, or literal secrets.
++
++## Evidence and reports
++
++Capture required screenshots as internal evidence and retain them for 30 days.
++Generate full engineering reports in Markdown and JSON using project-local storage.
++
++## Result recording
++
++After the local reports are generated and verified, show their project-local paths and end.
++Do not create or update an external QA-result or defect record.
++
++## Reruns
++
++Match the exact project root and Web target above.
++Create fresh observations, evidence, and reports for every rerun, and follow the configured CI rule that any non-pass result is a failure.
+```
+
+The Project Skill is project-owned and contains no AI-QA managed markers or embedded checksum.
+
+Because this review is constrained to read-only work, scratch drafting and validation have not been executed. Before a real approval request, the host must make this required method statement true:
+
+> Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.
+
+The config must also pass `ai-qa config validate --stdin-json`, and both target paths and their existing parents must be confirmed as non-symlink paths inside `/repo/ember/dashboard`.
+
+### Single approval decision
+
+Approve writing the two exact files above and creating these project-local directories:
+
+- `.ai-qa/cases`
+- `.ai-qa/runs`
+- `.ai-qa/evidence`
+- `.ai-qa/reports/runs`
+
+After the write, run `ai-qa doctor --json` and stop before Web QA if any installation check fails.
+````
+
+### Correction scoring
+
+Scoring occurred only after all five raw envelopes above were appended. The
+five prompt blocks are byte-identical with SHA-256
+`177d55b0d4f9f85d80e71749cddc50b307401d3c11fcbbbc879df249f9f36100`;
+each names exactly the same two allowed repository artifacts.
+
+| Rep | Worker                            | Host-managed complete drafts and one confirmation | Scratch `skill-creator`, no pre-approval target write | Local-only, no provider invention | Verified local-report boundary | No manual checksum or combined init JSON | Result |
+| --- | --------------------------------- | ------------------------------------------------- | ----------------------------------------------------- | --------------------------------- | ------------------------------ | ---------------------------------------- | ------ |
+| A1  | `/root/host_task7_impl/eval_a1r5` | PASS                                              | PASS                                                  | PASS                              | PASS                           | PASS                                     | PASS   |
+| A2  | `/root/host_task7_impl/eval_a2r5` | PASS                                              | PASS                                                  | PASS                              | PASS                           | PASS                                     | PASS   |
+| A3  | `/root/host_task7_impl/eval_a3r5` | PASS                                              | PASS                                                  | PASS                              | PASS                           | PASS                                     | PASS   |
+| A4  | `/root/host_task7_impl/eval_a4r5` | PASS                                              | PASS                                                  | PASS                              | PASS                           | PASS                                     | PASS   |
+| A5  | `/root/host_task7_impl/eval_a5r5` | PASS                                              | PASS                                                  | PASS                              | PASS                           | PASS                                     | PASS   |
+
+This correction supersedes, without deleting, the flawed prior Family A matrix.
+Corrected Family A is 5/5 PASS. The previously supported final Family B remains
+5/5 PASS, so the authoritative overall result is 10/10 PASS.
