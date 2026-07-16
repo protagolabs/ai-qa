@@ -758,7 +758,7 @@ Any failure invalidates the full affected five-repetition family. Preserve faile
 pnpm vitest run tests/e2e/project-recording-flow.test.ts tests/e2e/cli-web-vertical-slice.test.ts
 pnpm format:check
 git diff --check
-git add tests/e2e README.md docs/validation docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md
+git add tests/e2e tests/helpers/project-fixture.ts README.md docs/validation docs/superpowers/specs/2026-07-15-ai-qa-project-recording-skill-design.md src/services/initialization src/services/skill-management/project-skill.ts
 git commit -m "docs: explain host-managed project recording"
 ```
 
