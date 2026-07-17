@@ -91,6 +91,7 @@ function requireMemberIdentity(
 ): void {
   const pinned = workOrder.pinnedCase;
   if (
+    canonicalJson(workOrder) !== canonicalJson(member.workOrder) ||
     workOrder.kind !== "regression" ||
     workOrder.runId !== member.runId ||
     workOrder.runGroupId !== manifest.id ||

@@ -91,6 +91,12 @@ describe("ai-qa CLI shell", () => {
       await runCli(["run-group", "cancel", "--help"], captured.context),
     ).toBe(0);
     expect(captured.stdout.join("")).toContain("--reason <reason>");
+
+    captured.stdout.length = 0;
+    expect(
+      await runCli(["run-group", "resume", "--help"], captured.context),
+    ).toBe(0);
+    expect(captured.stdout.join("")).toContain("<group-id>");
   });
 
   it("preserves the caller context identity in program output closures", async () => {

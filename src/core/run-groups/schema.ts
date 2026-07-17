@@ -1,7 +1,12 @@
 import { z } from "zod";
+import { canonicalJson } from "../canonical-json.js";
 import { caseIdSchema } from "../cases/schema.js";
-import { eventIdSchema, runIdSchema } from "../runs/schema.js";
 import { platformSchema } from "../platforms/schema.js";
+import {
+  eventIdSchema,
+  runIdSchema,
+  workOrderSchema,
+} from "../runs/schema.js";
 
 export const runGroupIdSchema = z
   .string()
@@ -31,6 +36,7 @@ export const runGroupMemberSchema = z
     platform: platformSchema,
     platformVariantHash: z.string().trim().min(1),
     budget: immutableBudgetSchema,
+    workOrder: workOrderSchema,
   })
   .strict();
 
@@ -103,6 +109,72 @@ export const runGroupManifestSchema = z
         message: "Every run-group cell must use a selected platform",
       });
     }
+    const caseCells = new Map<
+      string,
+      Array<
+        | (typeof manifest.members)[number]
+        | (typeof manifest.exclusions)[number]
+      >
+    >();
+    for (const cell of [...manifest.members, ...manifest.exclusions]) {
+      const entries = caseCells.get(cell.caseId) ?? [];
+      entries.push(cell);
+      caseCells.set(cell.caseId, entries);
+    }
+    for (const [caseId, entries] of caseCells) {
+      const representedPlatforms = entries.map((entry) => entry.platform);
+      if (
+        manifest.selectedPlatforms.some(
+          (platform) => !representedPlatforms.includes(platform),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["members"],
+          message: `Case ${caseId} must represent every selected platform`,
+        });
+      }
+      const [identity] = entries;
+      if (
+        identity !== undefined &&
+        entries.some(
+          (entry) =>
+            entry.revision !== identity.revision ||
+            entry.caseContentHash !== identity.caseContentHash,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["members"],
+          message: `Case ${caseId} cells must share one immutable identity`,
+        });
+      }
+    }
+    for (const [index, member] of manifest.members.entries()) {
+      const workOrder = member.workOrder;
+      const pinned = workOrder.pinnedCase;
+      if (
+        workOrder.kind !== "regression" ||
+        workOrder.runId !== member.runId ||
+        workOrder.runGroupId !== manifest.id ||
+        workOrder.projectId !== manifest.projectId ||
+        workOrder.execution !== manifest.execution ||
+        workOrder.platform !== member.platform ||
+        pinned === undefined ||
+        pinned.caseId !== member.caseId ||
+        pinned.revision !== member.revision ||
+        pinned.caseContentHash !== member.caseContentHash ||
+        pinned.platformVariantHash !== member.platformVariantHash ||
+        canonicalJson(workOrder.budget) !== canonicalJson(member.budget)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["members", index, "workOrder"],
+          message:
+            "Frozen member work order must match every duplicated manifest field",
+        });
+      }
+    }
     const expectedMaximum = manifest.members.reduce(
       (total, member) => ({
         maxToolCalls: total.maxToolCalls + member.budget.maxToolCalls,
@@ -139,6 +211,10 @@ const completedGroupPayloadSchema = z
   .object({ phase: z.literal("completed") })
   .strict();
 
+const materializedGroupPayloadSchema = z
+  .object({ phase: z.literal("materialized") })
+  .strict();
+
 const cancelledGroupPayloadSchema = z
   .object({
     phase: z.literal("cancelled"),
@@ -148,6 +224,7 @@ const cancelledGroupPayloadSchema = z
 
 export const runGroupEventPayloadSchema = z.discriminatedUnion("phase", [
   startedGroupPayloadSchema,
+  materializedGroupPayloadSchema,
   completedGroupPayloadSchema,
   cancelledGroupPayloadSchema,
 ]);

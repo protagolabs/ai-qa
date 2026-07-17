@@ -5,6 +5,7 @@ import { resolveProject } from "../project-root/resolve-project.js";
 import { readRunState } from "../run-protocol/read-run-state.js";
 import { cancelRun } from "../run-protocol/run-lifecycle.js";
 import { readVerifiedRunGroupMemberStates } from "./finish-run-group.js";
+import { materializeRunGroup } from "./materialize-run-group.js";
 
 export async function cancelRunGroup(input: {
   projectRoot: string;
@@ -28,6 +29,11 @@ export async function cancelRunGroup(input: {
   const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
+  });
+  await materializeRunGroup({
+    projectRoot: project.projectRoot,
+    runGroupId,
+    now: input.now,
   });
   const repository = new RunGroupRepository(project.projectRoot, input.now);
   const result = await repository.transition(runGroupId, "cancelled", {

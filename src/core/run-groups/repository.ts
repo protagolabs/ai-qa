@@ -137,6 +137,17 @@ export class RunGroupRepository {
           { runGroupId },
         );
       }
+      if (
+        !snapshot.events.some(
+          (event) => event.payload.phase === "materialized",
+        )
+      ) {
+        throw new AiQaError(
+          "run_group.not_materialized",
+          "Run group must be fully materialized before becoming terminal",
+          { runGroupId },
+        );
+      }
       const reason = options.reason?.trim();
       if (
         phase === "cancelled" &&
@@ -161,6 +172,64 @@ export class RunGroupRepository {
           phase === "completed"
             ? { phase }
             : { phase, reason: reason as string },
+        relatedIds: snapshot.manifest.members.map((member) => member.runId),
+      });
+      await writeJsonLines(paths.events, [...snapshot.events, event]);
+      return { event, manifest: snapshot.manifest };
+    } finally {
+      await release();
+    }
+  }
+
+  async materialize(
+    runGroupIdInput: string,
+    beforeAppend: (
+      manifest: RunGroupManifest,
+      allowCreate: boolean,
+    ) => Promise<void>,
+  ): Promise<RunGroupTransitionResult> {
+    const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
+    const paths = resolveRunGroupPaths(this.projectRoot, runGroupId);
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "run-groups",
+      runGroupId,
+      "events.jsonl",
+    ]);
+    const release = await lockfile.lock(paths.events, {
+      realpath: false,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+    });
+    try {
+      const snapshot = await this.readVerifiedSnapshot(runGroupId);
+      const latest = snapshot.events.at(-1);
+      const allowCreate =
+        latest?.payload.phase !== "completed" &&
+        latest?.payload.phase !== "cancelled";
+      await beforeAppend(snapshot.manifest, allowCreate);
+      const existing = snapshot.events.find(
+        (event) => event.payload.phase === "materialized",
+      );
+      if (existing !== undefined) {
+        return { event: existing, manifest: snapshot.manifest };
+      }
+      if (latest?.payload.phase !== "started") {
+        throw new AiQaError(
+          "run_group.terminal",
+          "Terminal run groups cannot be materialized",
+          { runGroupId },
+        );
+      }
+      const event = runGroupEventSchema.parse({
+        schemaVersion: 1,
+        id: createId("event"),
+        runGroupId,
+        sequence: snapshot.events.length + 1,
+        timestamp: this.now().toISOString(),
+        actor: "ai-qa",
+        tool: "ai-qa",
+        idempotencyKey: `materialized:${runGroupId}`,
+        payload: { phase: "materialized" },
         relatedIds: snapshot.manifest.members.map((member) => member.runId),
       });
       await writeJsonLines(paths.events, [...snapshot.events, event]);
@@ -230,27 +299,40 @@ function validateSnapshot(
     if (event.runGroupId !== runGroupId || event.sequence !== index + 1) {
       throw new Error("run-group event sequence mismatch");
     }
-    if (index === 0) {
-      if (
-        event.payload.phase !== "started" ||
-        event.idempotencyKey !== `start:${runGroupId}` ||
-        event.payload.manifestHash !== sha256Canonical(rawManifest) ||
-        canonicalJson(event.relatedIds) !==
-          canonicalJson(manifest.members.map((member) => member.runId))
-      ) {
-        throw new Error("run-group start anchor mismatch");
-      }
-      continue;
-    }
     if (
-      index !== events.length - 1 ||
-      event.payload.phase === "started" ||
-      event.idempotencyKey !== `${event.payload.phase}:${runGroupId}` ||
       canonicalJson(event.relatedIds) !==
         canonicalJson(manifest.members.map((member) => member.runId))
     ) {
-      throw new Error("run-group lifecycle mismatch");
+      throw new Error("run-group member links mismatch");
     }
+  }
+  const started = events[0];
+  if (
+    started?.payload.phase !== "started" ||
+    started.idempotencyKey !== `start:${runGroupId}` ||
+    started.payload.manifestHash !== sha256Canonical(rawManifest)
+  ) {
+    throw new Error("run-group start anchor mismatch");
+  }
+  const materialized = events[1];
+  if (
+    materialized !== undefined &&
+    (materialized.payload.phase !== "materialized" ||
+      materialized.idempotencyKey !== `materialized:${runGroupId}`)
+  ) {
+    throw new Error("run-group materialization mismatch");
+  }
+  const terminal = events[2];
+  if (
+    terminal !== undefined &&
+    (terminal.payload.phase === "started" ||
+      terminal.payload.phase === "materialized" ||
+      terminal.idempotencyKey !== `${terminal.payload.phase}:${runGroupId}`)
+  ) {
+    throw new Error("run-group terminal lifecycle mismatch");
+  }
+  if (events.length > 3) {
+    throw new Error("run-group lifecycle contains extra events");
   }
 }
 

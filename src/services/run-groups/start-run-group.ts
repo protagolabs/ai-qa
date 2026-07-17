@@ -21,10 +21,10 @@ import {
   type RunGroupManifest,
   type RunGroupMember,
 } from "../../core/run-groups/schema.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { prepareRegressionWorkOrder } from "../run-protocol/start-regression-run.js";
+import { materializeRunGroup } from "./materialize-run-group.js";
 
 const selectionSchema = z.discriminatedUnion("mode", [
   z
@@ -167,6 +167,7 @@ export async function startRunGroup(
         platform,
         platformVariantHash: pinned.platformVariantHash,
         budget: { ...prepared.workOrder.budget },
+        workOrder: prepared.workOrder,
       });
     }
   }
@@ -195,9 +196,24 @@ export async function startRunGroup(
     project.projectRoot,
     input.now,
   ).create(manifest);
-  const runRepository = new RunRepository(project.projectRoot, input.now);
-  for (const workOrder of workOrders) {
-    await runRepository.create(workOrder);
+  try {
+    await materializeRunGroup({
+      projectRoot: project.projectRoot,
+      runGroupId,
+      now: input.now,
+    });
+  } catch (error: unknown) {
+    throw new AiQaError(
+      "run_group.materialization_failed",
+      "Run-group manifest is persisted but child materialization is incomplete; resume the frozen group",
+      {
+        runGroupId,
+        causeCode:
+          error instanceof AiQaError
+            ? error.code
+            : "internal.unexpected_error",
+      },
+    );
   }
   return { manifest: storedManifest, workOrders };
 }

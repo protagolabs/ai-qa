@@ -235,6 +235,8 @@ export class CaseRepository {
     caseId: string,
     revision: number,
   ): Promise<CaseRevision> {
+    caseId = caseIdSchema.parse(caseId);
+    revision = z.number().int().positive().parse(revision);
     try {
       const value = await this.readRevision(caseId, revision);
       const actualHash = calculateCaseContentHash(value);
@@ -242,6 +244,45 @@ export class CaseRepository {
         throw new Error("content hash mismatch");
       }
       const index = await this.readIndex(caseId);
+      const indexed = index.revisions.find(
+        (entry) => entry.revision === revision,
+      );
+      if (indexed === undefined || indexed.contentHash !== value.contentHash) {
+        throw new AiQaError(
+          "case.index_integrity_error",
+          "Case index does not match its immutable revision",
+          { caseId, revision },
+        );
+      }
+      return value;
+    } catch (error: unknown) {
+      if (
+        error instanceof AiQaError &&
+        (error.code === "case.revision_not_found" ||
+          error.code === "case.index_integrity_error" ||
+          error.code === "storage.integrity_error")
+      ) {
+        throw error;
+      }
+      throw new AiQaError(
+        "case.content_hash_mismatch",
+        "Case revision content hash verification failed",
+        { caseId, revision },
+      );
+    }
+  }
+
+  private async validateRevisionAgainstIndex(
+    caseId: string,
+    revision: number,
+    index: CaseIndex,
+  ): Promise<CaseRevision> {
+    try {
+      const value = await this.readRevision(caseId, revision);
+      const actualHash = calculateCaseContentHash(value);
+      if (actualHash !== value.contentHash) {
+        throw new Error("content hash mismatch");
+      }
       const indexed = index.revisions.find(
         (entry) => entry.revision === revision,
       );
@@ -343,7 +384,11 @@ export class CaseRepository {
         { caseId },
       );
     }
-    const revision = await this.validateRevision(caseId, index.activeRevision);
+    const revision = await this.validateRevisionAgainstIndex(
+      caseId,
+      index.activeRevision,
+      index,
+    );
     const active = index.revisions.find(
       (entry) => entry.revision === index.activeRevision,
     );
@@ -374,7 +419,25 @@ export class CaseRepository {
     for (const caseId of caseIds) {
       const index = await this.readIndex(caseId);
       if (index.activeRevision !== undefined) {
-        active.push(await this.readActive(caseId));
+        const revision = await this.validateRevisionAgainstIndex(
+          caseId,
+          index.activeRevision,
+          index,
+        );
+        const entry = index.revisions.find(
+          (candidate) => candidate.revision === index.activeRevision,
+        );
+        if (
+          entry?.status !== "active" ||
+          entry.contentHash !== revision.contentHash
+        ) {
+          throw new AiQaError(
+            "case.index_integrity_error",
+            "Active case index entry does not match its immutable revision",
+            { caseId, revision: index.activeRevision },
+          );
+        }
+        active.push(revision);
       }
     }
     return active;

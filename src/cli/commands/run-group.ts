@@ -9,6 +9,9 @@ import {
 } from "../../core/readiness/schema.js";
 import { cancelRunGroup } from "../../services/run-groups/cancel-run-group.js";
 import { finishRunGroup } from "../../services/run-groups/finish-run-group.js";
+import {
+  materializeRunGroup,
+} from "../../services/run-groups/materialize-run-group.js";
 import { startRunGroup } from "../../services/run-groups/start-run-group.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
 import type { CliContext } from "../context.js";
@@ -122,6 +125,20 @@ export function registerRunGroupCommands(
       context,
       await finishRunGroup({
         ...(await resolveTarget(finish, context)),
+        runGroupId,
+        now: context.now,
+      }),
+    );
+  });
+
+  const resume = group
+    .command("resume <group-id>")
+    .description("materialize missing children from the frozen group manifest");
+  resume.action(async (runGroupId: string) => {
+    writeJson(
+      context,
+      await materializeRunGroup({
+        ...(await resolveTarget(resume, context)),
         runGroupId,
         now: context.now,
       }),

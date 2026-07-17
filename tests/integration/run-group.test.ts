@@ -1,18 +1,37 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runCli } from "../../src/cli/program.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import { resolveRunGroupPaths } from "../../src/core/run-groups/paths.js";
 import { RunGroupRepository } from "../../src/core/run-groups/repository.js";
+import { runGroupManifestSchema } from "../../src/core/run-groups/schema.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
+import { RunRepository } from "../../src/core/runs/repository.js";
+import {
+  workOrderSchema,
+  type WorkOrder,
+} from "../../src/core/runs/schema.js";
 import { cancelRunGroup } from "../../src/services/run-groups/cancel-run-group.js";
 import { finishRunGroup } from "../../src/services/run-groups/finish-run-group.js";
+import {
+  materializeRunGroup,
+} from "../../src/services/run-groups/materialize-run-group.js";
 import { startRunGroup } from "../../src/services/run-groups/start-run-group.js";
 import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
+import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
   projectConfig,
@@ -25,6 +44,10 @@ const allPlatforms = [
   "ios-simulator",
   "android-emulator",
 ] as const;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function readiness(platform: Platform): PlatformReadiness {
   return {
@@ -198,6 +221,28 @@ describe("immutable run groups", () => {
     expect(
       started.manifest.members.map((member) => member.caseId).sort(),
     ).toEqual(["login", "logout"]);
+  });
+
+  it("uses each all-active index pointer snapshot without a second readActive", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const readActive = vi
+      .spyOn(CaseRepository.prototype, "readActive")
+      .mockRejectedValue(new Error("second active-pointer read"));
+
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "all-active" },
+        platforms: ["web"],
+        execution: "local",
+        readiness: readinessByPlatform(["web"]),
+        now,
+      }),
+    ).resolves.toMatchObject({
+      manifest: { selectionMode: "all-active" },
+    });
+    expect(readActive).not.toHaveBeenCalled();
   });
 
   it("rejects an unconfigured selected platform before persisting a group", async () => {
@@ -405,5 +450,390 @@ describe("immutable run groups", () => {
     expect(
       events.filter((event) => event.payload.phase === "cancelled"),
     ).toHaveLength(1);
+  });
+
+  it("resumes a prefix-failed materialization without replacing existing children", async () => {
+    const { projectRoot, cases } = await fixture();
+    await createActiveCase({
+      cases,
+      caseId: "matrix",
+      platforms: allPlatforms,
+    });
+    const originalCreate = RunRepository.prototype.create;
+    let createCount = 0;
+    const create = vi
+      .spyOn(RunRepository.prototype, "create")
+      .mockImplementation(async function (
+        this: RunRepository,
+        workOrder: WorkOrder,
+      ) {
+        createCount += 1;
+        if (createCount === 2) throw new Error("injected child failure");
+        return originalCreate.call(this, workOrder);
+      });
+
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["matrix"] },
+        platforms: [...allPlatforms],
+        execution: "local",
+        readiness: readinessByPlatform(allPlatforms),
+        now,
+      }),
+    ).rejects.toMatchObject({
+      code: "run_group.materialization_failed",
+      details: {
+        runGroupId: expect.stringMatching(/^run-group-/),
+        causeCode: "internal.unexpected_error",
+      },
+    });
+    create.mockRestore();
+
+    const [runGroupId] = await readdir(
+      join(projectRoot, ".ai-qa", "run-groups"),
+    );
+    expect(runGroupId).toBeDefined();
+    const repository = new RunGroupRepository(projectRoot, now);
+    const manifest = await repository.readManifest(runGroupId!);
+    expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toHaveLength(1);
+    await expect(
+      finishRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
+    ).rejects.toMatchObject({ code: "run_group.not_materialized" });
+
+    const first = await materializeRunGroup({
+      projectRoot,
+      runGroupId: runGroupId!,
+      now,
+    });
+    const second = await materializeRunGroup({
+      projectRoot,
+      runGroupId: runGroupId!,
+      now,
+    });
+
+    expect(first).toEqual(second);
+    expect(first.status).toBe("materialized");
+    for (const member of manifest.members) {
+      await expect(
+        new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+      ).resolves.toEqual(member.workOrder);
+    }
+    const events = await repository.readEvents(runGroupId!);
+    expect(
+      events.filter((event) => event.payload.phase === "materialized"),
+    ).toHaveLength(1);
+  });
+
+  it("materializes missing children before cancelling a prefix-failed group", async () => {
+    const { projectRoot, cases } = await fixture(["web", "ios-simulator"]);
+    await createActiveCase({
+      cases,
+      caseId: "matrix",
+      platforms: ["web", "ios-simulator"],
+    });
+    const originalCreate = RunRepository.prototype.create;
+    let createCount = 0;
+    const create = vi
+      .spyOn(RunRepository.prototype, "create")
+      .mockImplementation(async function (
+        this: RunRepository,
+        workOrder: WorkOrder,
+      ) {
+        createCount += 1;
+        if (createCount === 2) throw new Error("injected child failure");
+        return originalCreate.call(this, workOrder);
+      });
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["matrix"] },
+        platforms: ["web", "ios-simulator"],
+        execution: "local",
+        readiness: readinessByPlatform(["web", "ios-simulator"]),
+        now,
+      }),
+    ).rejects.toMatchObject({
+      code: "run_group.materialization_failed",
+      details: { runGroupId: expect.stringMatching(/^run-group-/) },
+    });
+    create.mockRestore();
+    const [runGroupId] = await readdir(
+      join(projectRoot, ".ai-qa", "run-groups"),
+    );
+
+    await expect(
+      cancelRunGroup({
+        projectRoot,
+        runGroupId: runGroupId!,
+        reason: "cancel partial group",
+        now,
+      }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    const manifest = await new RunGroupRepository(
+      projectRoot,
+      now,
+    ).readManifest(runGroupId!);
+    for (const member of manifest.members) {
+      await expect(
+        readRunState({ projectRoot, runId: member.runId, now }),
+      ).resolves.toMatchObject({ status: "cancelled" });
+    }
+    expect(
+      (
+        await new RunGroupRepository(projectRoot, now).readEvents(runGroupId!)
+      ).map((event) => event.payload.phase),
+    ).toEqual(["started", "materialized", "cancelled"]);
+  });
+
+  it.each(["revision", "caseContentHash"] as const)(
+    "rejects a manifest with mixed case %s identity",
+    async (field) => {
+      const { projectRoot, cases } = await fixture(["web", "ios-simulator"]);
+      await createActiveCase({
+        cases,
+        caseId: "login",
+        platforms: ["web", "ios-simulator"],
+      });
+      const started = await startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["login"] },
+        platforms: ["web", "ios-simulator"],
+        execution: "local",
+        readiness: readinessByPlatform(["web", "ios-simulator"]),
+        now,
+      });
+      const candidate = structuredClone(started.manifest);
+      const member = candidate.members[1]!;
+      if (field === "revision") {
+        member.revision += 1;
+        member.workOrder.pinnedCase!.revision += 1;
+      } else {
+        member.caseContentHash = "sha256:mixed";
+        member.workOrder.pinnedCase!.caseContentHash = "sha256:mixed";
+      }
+
+      expect(runGroupManifestSchema.safeParse(candidate).success).toBe(false);
+    },
+  );
+
+  it("rejects a manifest that omits a selected case/platform cell", async () => {
+    const { projectRoot, cases } = await fixture(["web", "ios-simulator"]);
+    await createActiveCase({
+      cases,
+      caseId: "login",
+      platforms: ["web", "ios-simulator"],
+    });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web", "ios-simulator"],
+      execution: "local",
+      readiness: readinessByPlatform(["web", "ios-simulator"]),
+      now,
+    });
+    const candidate = structuredClone(started.manifest);
+    candidate.members.pop();
+    candidate.maximumBudget = candidate.members.reduce(
+      (total, member) => ({
+        maxToolCalls: total.maxToolCalls + member.budget.maxToolCalls,
+        maxRecoveryActions:
+          total.maxRecoveryActions + member.budget.maxRecoveryActions,
+      }),
+      { maxToolCalls: 0, maxRecoveryActions: 0 },
+    );
+
+    expect(runGroupManifestSchema.safeParse(candidate).success).toBe(false);
+  });
+
+  it("rejects a corrupted manifest hash anchor", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const paths = resolveRunGroupPaths(projectRoot, started.manifest.id);
+    const events = (await new RunGroupRepository(projectRoot, now).readEvents(
+      started.manifest.id,
+    )) as unknown as Array<Record<string, unknown>>;
+    const payload = events[0]!.payload as Record<string, unknown>;
+    payload.manifestHash = `sha256:${"0".repeat(64)}`;
+    await writeFile(
+      paths.events,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(
+      new RunGroupRepository(projectRoot, now).readManifest(started.manifest.id),
+    ).rejects.toMatchObject({ code: "run_group.integrity_error" });
+  });
+
+  it("never replaces a child whose immutable case pin mismatches the manifest", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const member = started.manifest.members[0]!;
+    await rm(join(projectRoot, ".ai-qa", "runs", member.runId), {
+      recursive: true,
+    });
+    const mismatched = workOrderSchema.parse({
+      ...member.workOrder,
+      pinnedCase: {
+        ...member.workOrder.pinnedCase!,
+        revision: member.revision + 1,
+      },
+    });
+    await new RunRepository(projectRoot, now).create(mismatched);
+
+    await expect(
+      materializeRunGroup({
+        projectRoot,
+        runGroupId: started.manifest.id,
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_group.member_integrity_error" });
+    await expect(
+      new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+    ).resolves.toEqual(mismatched);
+  });
+
+  it("rejects symlinked group roots and group files without touching outside state", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-group-outside-"));
+    const groupsRoot = join(projectRoot, ".ai-qa", "run-groups");
+    await rm(groupsRoot, { recursive: true });
+    await symlink(outside, groupsRoot);
+
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["login"] },
+        platforms: ["web"],
+        execution: "local",
+        readiness: readinessByPlatform(["web"]),
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    expect(await readdir(outside)).toEqual([]);
+
+    await rm(groupsRoot);
+    await mkdir(groupsRoot);
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const manifestPath = resolveRunGroupPaths(
+      projectRoot,
+      started.manifest.id,
+    ).manifest;
+    const outsideManifest = join(outside, "group.json");
+    await writeFile(outsideManifest, await readFile(manifestPath, "utf8"));
+    await rm(manifestPath);
+    await symlink(outsideManifest, manifestPath);
+    await expect(
+      new RunGroupRepository(projectRoot, now).readManifest(
+        started.manifest.id,
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
+  it("exposes start, resume, cancel, and finish through the public CLI", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const readyInput = JSON.stringify({ web: readiness("web") });
+    const startCli = createCapturedCli({
+      cwd: projectRoot,
+      now,
+      readStdin: () => Promise.resolve(readyInput),
+    });
+    expect(
+      await runCli(
+        [
+          "run-group",
+          "start",
+          "--case",
+          "login",
+          "--platform",
+          "web",
+          "--execution",
+          "local",
+          "--stdin-json",
+        ],
+        startCli.context,
+      ),
+    ).toBe(0);
+    const started = JSON.parse(startCli.stdout.join("")) as {
+      manifest: { id: string; members: Array<{ runId: string }> };
+    };
+
+    const resumeCli = createCapturedCli({ cwd: projectRoot, now });
+    expect(
+      await runCli(
+        ["run-group", "resume", started.manifest.id],
+        resumeCli.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(resumeCli.stdout.join(""))).toMatchObject({
+      status: "materialized",
+    });
+
+    const cancelCli = createCapturedCli({ cwd: projectRoot, now });
+    expect(
+      await runCli(
+        [
+          "run-group",
+          "cancel",
+          started.manifest.id,
+          "--reason",
+          "stop matrix",
+        ],
+        cancelCli.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(cancelCli.stdout.join(""))).toMatchObject({
+      status: "cancelled",
+    });
+
+    const finishStarted = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    await cancelRun({
+      projectRoot,
+      runId: finishStarted.manifest.members[0]!.runId,
+      reason: "terminal fixture",
+      now,
+    });
+    const finishCli = createCapturedCli({ cwd: projectRoot, now });
+    expect(
+      await runCli(
+        ["run-group", "finish", finishStarted.manifest.id],
+        finishCli.context,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(finishCli.stdout.join(""))).toMatchObject({
+      status: "completed",
+    });
   });
 });
