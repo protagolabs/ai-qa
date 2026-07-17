@@ -11,7 +11,7 @@ import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixtur
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   recordingPolicy: { mode: "local-only" },
   project: { id: "doctor-web", name: "Doctor Web" },
   targets: {
@@ -66,7 +66,7 @@ async function installCurrentGlobalSkill(agentsHome: string): Promise<void> {
   });
 }
 
-describe("web doctor CLI", () => {
+describe("platform doctor CLI", () => {
   it("reports an uninitialized explicit non-Git target without trust or Web checks", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-empty-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
@@ -134,6 +134,63 @@ describe("web doctor CLI", () => {
     },
   );
 
+  it("keeps doctor installation-only when no platform is supplied", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
+    await initializeTestProject({ projectRoot, config });
+    await installCurrentGlobalSkill(agentsHome);
+    const readStdin = vi.fn(() => Promise.reject(new Error("stdin read")));
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_AGENTS_HOME: agentsHome },
+      readStdin,
+    });
+
+    expect(await runCli(["doctor", "--json"], captured.context)).toBe(0);
+    expect(readStdin).not.toHaveBeenCalled();
+    const output = JSON.parse(captured.stdout.join("")) as {
+      status: string;
+      checks: Array<{ code: string }>;
+    };
+    expect(output.status).toBe("ready");
+    expect(output.checks.every((check) => !check.code.startsWith("web."))).toBe(
+      true,
+    );
+  });
+
+  it("rejects an unconfigured platform before consuming observations", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
+    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
+    await initializeTestProject({ projectRoot, config });
+    await installCurrentGlobalSkill(agentsHome);
+    const readStdin = vi.fn(() => Promise.reject(new Error("stdin read")));
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      env: { AI_QA_AGENTS_HOME: agentsHome },
+      readStdin,
+    });
+
+    expect(
+      await runCli(
+        [
+          "doctor",
+          "--platform",
+          "ios-simulator",
+          "--json",
+          "--stdin-json",
+        ],
+        captured.context,
+      ),
+    ).toBe(1);
+    expect(readStdin).not.toHaveBeenCalled();
+    expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
+      error: {
+        code: "platform.unconfigured",
+        details: { platform: "ios-simulator" },
+      },
+    });
+  });
+
   it("reports readiness without mutating project state", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
@@ -197,6 +254,7 @@ describe("web doctor CLI", () => {
       code: "web.chrome_devtools_mcp",
       message: "Chrome DevTools MCP listed the target page",
       status: "pass",
+      category: "tool",
     });
     expect(JSON.stringify(output)).not.toContain(projectRoot);
     expect(JSON.stringify(output)).not.toContain(agentsHome);
@@ -254,11 +312,13 @@ describe("web doctor CLI", () => {
           code: "web.entry_page",
           status: "pass",
           message: "Host observed the configured entry page",
+          category: "environment",
         },
         {
           code: "web.chrome_devtools_mcp",
           status: "pass",
           message: "Host observed Chrome DevTools MCP",
+          category: "tool",
         },
       ]),
     );
@@ -317,6 +377,7 @@ describe("web doctor CLI", () => {
         code: "agent.global_skill",
         status: "fail",
         message: "Global main Skill status: stale",
+        category: "installation",
       });
     },
   );

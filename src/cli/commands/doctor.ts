@@ -4,23 +4,21 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 import { readProjectConfig } from "../../core/config/repository.js";
+import {
+  configuredPlatforms,
+  type ProjectConfigV3,
+} from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import { platformSchema, type Platform } from "../../core/platforms/schema.js";
+import {
+  platformDoctorInputSchema,
+  type PlatformDoctorObservationInput,
+} from "../../core/readiness/schema.js";
 import { runInstallationDoctor } from "../../services/doctor/installation-doctor.js";
-import { runWebDoctor } from "../../services/doctor/web-doctor.js";
+import { runPlatformDoctor } from "../../services/doctor/platform-doctor.js";
 import { resolveProjectRoot } from "../../services/project-root/resolve-project-root.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
-
-const agentCapabilityObservationSchema = z.object({
-  status: z.enum(["ready", "missing", "unknown"]),
-  observedAt: z.string().datetime(),
-  evidence: z.string().min(1),
-});
-
-const doctorInputSchema = z.object({
-  entryPage: agentCapabilityObservationSchema.optional(),
-  chromeDevtoolsMcp: agentCapabilityObservationSchema,
-});
 
 function agentsHome(context: CliContext): string {
   return context.env.AI_QA_AGENTS_HOME ?? join(context.homeDir, ".agents");
@@ -58,7 +56,9 @@ export function registerDoctorCommand(
           "--platform and --stdin-json must be supplied together",
         );
       }
-      if (hasPlatform) z.literal("web").parse(options.platform);
+      const platform = hasPlatform
+        ? platformSchema.parse(options.platform)
+        : undefined;
 
       const project = explicitProject(doctorCommand);
       const root = await resolveProjectRoot({
@@ -90,21 +90,108 @@ export function registerDoctorCommand(
       }
 
       const config = await readProjectConfig(root.root);
-      const input = await readJsonInput(context, doctorInputSchema);
-      const result = await runWebDoctor({
+      if (
+        platform === undefined ||
+        !configuredPlatforms(config).includes(platform) ||
+        config.targets[platform] === undefined ||
+        config.tools[platform] === undefined
+      ) {
+        throw new AiQaError(
+          "platform.unconfigured",
+          `Platform ${String(platform)} is not configured`,
+          {
+            platform,
+            configuredPlatforms: configuredPlatforms(config),
+          },
+        );
+      }
+
+      const input = await readPlatformObservations(context, platform);
+      const result = await runConfiguredPlatformDoctor({
+        platform,
+        config,
+        input,
         installationChecks: installation.checks,
-        entryUrl: config.targets.web.entryUrl,
-        ...(config.targets.web.readinessUrl === undefined
-          ? {}
-          : { readinessUrl: config.targets.web.readinessUrl }),
-        ...(input.entryPage === undefined
-          ? {}
-          : { entryPage: input.entryPage }),
-        chromeDevtoolsMcp: input.chromeDevtoolsMcp,
         fetchImpl: context.fetchImpl,
       });
       writeJson(context, { ...result, requiredAction: null });
     },
+  );
+}
+
+async function readPlatformObservations(
+  context: CliContext,
+  platform: Platform,
+): Promise<PlatformDoctorObservationInput> {
+  const observations = await readJsonInput(
+    context,
+    z.record(z.string(), z.unknown()),
+  );
+  return platformDoctorInputSchema.parse({ ...observations, platform });
+}
+
+async function runConfiguredPlatformDoctor(input: {
+  platform: Platform;
+  config: ProjectConfigV3;
+  input: PlatformDoctorObservationInput;
+  installationChecks: Awaited<
+    ReturnType<typeof runInstallationDoctor>
+  >["checks"];
+  fetchImpl: typeof fetch;
+}) {
+  switch (input.platform) {
+    case "web": {
+      if (input.input.platform !== input.platform) return mismatchedPlatform();
+      return runPlatformDoctor({
+        platform: input.platform,
+        target: input.config.targets.web!,
+        installationChecks: input.installationChecks,
+        observations: {
+          ...(input.input.entryPage === undefined
+            ? {}
+            : { entryPage: input.input.entryPage }),
+          chromeDevtoolsMcp: input.input.chromeDevtoolsMcp,
+        },
+        fetchImpl: input.fetchImpl,
+      });
+    }
+    case "ios-simulator": {
+      if (input.input.platform !== input.platform) return mismatchedPlatform();
+      return runPlatformDoctor({
+        platform: input.platform,
+        target: input.config.targets["ios-simulator"]!,
+        installationChecks: input.installationChecks,
+        observations: {
+          simulator: input.input.simulator,
+          app: input.input.app,
+          pepper: input.input.pepper,
+        },
+        fetchImpl: input.fetchImpl,
+      });
+    }
+    case "android-emulator": {
+      if (input.input.platform !== input.platform) return mismatchedPlatform();
+      return runPlatformDoctor({
+        platform: input.platform,
+        target: input.config.targets["android-emulator"]!,
+        tool: input.config.tools["android-emulator"]!,
+        installationChecks: input.installationChecks,
+        observations: {
+          emulator: input.input.emulator,
+          app: input.input.app,
+          appium: input.input.appium,
+          uiautomator2: input.input.uiautomator2,
+        },
+        fetchImpl: input.fetchImpl,
+      });
+    }
+  }
+}
+
+function mismatchedPlatform(): never {
+  throw new AiQaError(
+    "platform.mismatch",
+    "Doctor observations do not match the selected platform",
   );
 }
 

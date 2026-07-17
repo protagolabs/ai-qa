@@ -4,8 +4,14 @@ import { Command } from "commander";
 import { z } from "zod";
 import { caseIdSchema } from "../../core/cases/schema.js";
 import { readProjectConfig } from "../../core/config/repository.js";
+import { configuredPlatforms } from "../../core/config/schema.js";
+import { AiQaError } from "../../core/errors.js";
+import { platformSchema } from "../../core/platforms/schema.js";
+import {
+  platformReadinessSchema,
+  type PlatformReadiness,
+} from "../../core/readiness/schema.js";
 import { exploratoryRunInputSchema } from "../../core/runs/schema.js";
-import type { WebDoctorResult } from "../../services/doctor/web-doctor.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { createPreflightResultRun } from "../../services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../services/run-protocol/finalize-run.js";
@@ -23,50 +29,22 @@ import { readJsonInput, writeJson } from "../io.js";
 const startOptionsSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("exploratory"),
-    platform: z.literal("web"),
+    platform: platformSchema,
     execution: z.literal("local"),
     case: z.undefined().optional(),
   }),
   z.object({
     kind: z.literal("regression"),
-    platform: z.literal("web"),
+    platform: platformSchema,
     execution: z.enum(["local", "ci"]),
     case: caseIdSchema,
   }),
 ]);
 
-const doctorCheckSchema = z
-  .object({
-    code: z.enum([
-      "runtime.node",
-      "project.config",
-      "agent.project_skill",
-      "project.storage",
-      "web.entry_url",
-      "web.entry_page",
-      "web.readiness_url",
-      "web.chrome_devtools_mcp",
-      "agent.global_skill",
-    ]),
-    status: z.enum(["pass", "fail", "agent_confirmation_required"]),
-    message: z.string().min(1),
-  })
-  .strict();
-
-const webReadinessFields = {
-  platform: z.literal("web"),
-  status: z.enum(["ready", "not_ready"]),
-  checks: z.array(doctorCheckSchema),
-};
-
-const webReadinessSchema = z.object(webReadinessFields).strict();
-
-const doctorReadinessInputSchema = z
-  .object({
-    ...webReadinessFields,
+const doctorReadinessInputSchema = platformReadinessSchema
+  .extend({
     requiredAction: z.null().optional(),
   })
-  .strict()
   .transform(({ platform, status, checks }) => ({
     platform,
     status,
@@ -122,6 +100,20 @@ export function registerRunCommands(
           : { explicitProject: projectOption }),
       });
       const config = await readProjectConfig(project.projectRoot);
+      if (
+        !configuredPlatforms(config).includes(parsedOptions.platform) ||
+        config.targets[parsedOptions.platform] === undefined ||
+        config.tools[parsedOptions.platform] === undefined
+      ) {
+        throw new AiQaError(
+          "platform.unconfigured",
+          `Platform ${parsedOptions.platform} is not configured`,
+          {
+            platform: parsedOptions.platform,
+            configuredPlatforms: configuredPlatforms(config),
+          },
+        );
+      }
       const suppliedExploratory =
         parsedOptions.kind === "exploratory"
           ? await readJsonInput(context, exploratoryStartInputSchema)
@@ -132,8 +124,25 @@ export function registerRunCommands(
           : undefined;
       const readiness =
         parsedOptions.kind === "exploratory"
-          ? webReadinessSchema.parse(suppliedExploratory!.readiness)
+          ? platformReadinessSchema.parse(suppliedExploratory!.readiness)
           : suppliedRegression!;
+      if (readiness.platform !== parsedOptions.platform) {
+        throw new AiQaError(
+          "platform.mismatch",
+          "Run readiness does not match the selected platform",
+          {
+            selectedPlatform: parsedOptions.platform,
+            readinessPlatform: readiness.platform,
+          },
+        );
+      }
+      if (readiness.platform !== "web") {
+        throw new AiQaError(
+          "platform.protocol_not_available",
+          `Run protocol support for ${readiness.platform} is not available`,
+          { platform: readiness.platform },
+        );
+      }
       const globalSkill = await checkGlobalSkill({
         agentsHome: agentsHome(context),
         sourcePath: bundledSourcePath(),
@@ -149,9 +158,10 @@ export function registerRunCommands(
               ? ("pass" as const)
               : ("fail" as const),
           message: `Global skill status: ${globalSkill.status}`,
+          category: "tool" as const,
         },
       ];
-      const verifiedReadiness: WebDoctorResult = {
+      const verifiedReadiness: PlatformReadiness & { platform: "web" } = {
         platform: "web",
         status: checks.every((check) => check.status === "pass")
           ? "ready"
