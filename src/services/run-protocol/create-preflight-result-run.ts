@@ -1,26 +1,27 @@
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
 import {
+  configuredPlatforms,
   projectConfigSchema,
-  type EffectiveProjectConfig,
+  type ProjectConfig,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { RunRepository } from "../../core/runs/repository.js";
+import type { PlatformReadiness } from "../../core/readiness/schema.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
   type ExploratoryRunInput,
   type WorkOrder,
 } from "../../core/runs/schema.js";
-import type { DoctorCheck, WebDoctorResult } from "../doctor/web-doctor.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { finalizeRun } from "./finalize-run.js";
 import { prepareRegressionWorkOrder } from "./start-regression-run.js";
 import { VerdictService } from "./verdict-service.js";
 
-type NotReadyWebDoctorResult = WebDoctorResult & { status: "not_ready" };
+type NotReadyPlatformReadiness = PlatformReadiness & { status: "not_ready" };
 
 export type PreflightResult =
   | {
@@ -38,9 +39,9 @@ export type PreflightResult =
 
 type PreflightResultRunInput = {
   projectRoot: string;
-  readiness: NotReadyWebDoctorResult;
+  readiness: NotReadyPlatformReadiness;
   now: () => Date;
-  projectConfig?: EffectiveProjectConfig;
+  projectConfig?: ProjectConfig;
 } & (
   | {
       kind: "exploratory";
@@ -70,6 +71,12 @@ export async function createPreflightResultRun(
   const config = projectConfigSchema.parse(
     input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
+  if (!configuredPlatforms(config).includes(input.readiness.platform)) {
+    throw new AiQaError("platform.unconfigured", "Run platform is not configured", {
+      platform: input.readiness.platform,
+      configuredPlatforms: configuredPlatforms(config),
+    });
+  }
 
   let workOrder: WorkOrder;
   if (input.kind === "exploratory") {
@@ -88,6 +95,7 @@ export async function createPreflightResultRun(
         ? await readProjectSkillSnapshot(project.projectRoot)
         : undefined;
     workOrder = createExploratoryWorkOrder({
+      platform: input.readiness.platform,
       projectId: config.project.id,
       runId: createId("run"),
       input: payload,
@@ -143,7 +151,7 @@ export async function createPreflightResultRun(
       classification: "blocked",
       blockerSubtype,
       blockerIds: [blocker.id],
-      summary: "Preflight checks prevented Web QA execution",
+      summary: "Preflight checks prevented QA execution",
       criterionResults: [],
     });
     await finalizeRun({
@@ -157,7 +165,7 @@ export async function createPreflightResultRun(
   await verdicts.set({
     classification: "not_verified",
     reasonCode: "incomplete_coverage",
-    summary: "Agent confirmation is required before Web QA can execute",
+    summary: "Agent confirmation is required before QA can execute",
     criterionResults: [],
   });
   await finalizeRun({
@@ -174,13 +182,9 @@ export async function createPreflightResultRun(
 }
 
 function classifyFailedChecks(
-  checks: readonly DoctorCheck[],
+  checks: readonly PlatformReadiness["checks"][number][],
 ): "tool" | "environment" {
-  return checks.some(
-    (check) =>
-      check.code === "agent.global_skill" ||
-      check.code === "web.chrome_devtools_mcp",
-  )
+  return checks.some((check) => check.category === "tool")
     ? "tool"
     : "environment";
 }

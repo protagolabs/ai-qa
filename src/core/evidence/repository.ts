@@ -17,14 +17,19 @@ import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
+import { controllerForPlatform } from "../platforms/registry.js";
+import {
+  controllerSchema,
+  type Controller,
+  type Platform,
+} from "../platforms/schema.js";
 import { actionIdSchema, runIdSchema } from "../runs/schema.js";
-import { webControllerSchema, type WebController } from "../tools.js";
 import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
 
 export interface RegisterRawEvidenceInput {
   sourcePath: string;
   mediaType: string;
-  sourceTool: WebController;
+  sourceTool: Controller;
   sensitivity: "public" | "internal" | "sensitive";
   evidenceKinds: string[];
   captureActionId: string;
@@ -36,7 +41,7 @@ export const registerRawEvidenceInputSchema: z.ZodType<RegisterRawEvidenceInput>
     .object({
       sourcePath: z.string().min(1),
       mediaType: z.string().trim().min(1),
-      sourceTool: webControllerSchema,
+      sourceTool: controllerSchema,
       sensitivity: z.enum(["public", "internal", "sensitive"]),
       evidenceKinds: z.array(z.string().trim().min(1)).min(1),
       captureActionId: actionIdSchema,
@@ -101,6 +106,7 @@ function persistedInput(record: EvidenceRecord): object {
     captureActionId: record.captureActionId,
     idempotencyKey: record.idempotencyKey,
     contentHash: record.contentHash,
+    platform: record.platform,
   };
 }
 
@@ -108,17 +114,38 @@ export class EvidenceRepository {
   private readonly projectRoot: string;
   private readonly runId: string;
   private readonly now: () => Date;
+  private readonly platform: Platform;
   private readonly paths: EvidencePaths;
 
-  constructor(projectRoot: string, runId: string, now: () => Date) {
+  constructor(
+    projectRoot: string,
+    runId: string,
+    now: () => Date,
+    platform: Platform = "web",
+  ) {
     this.projectRoot = resolve(projectRoot);
     this.runId = runIdSchema.parse(runId);
     this.now = now;
+    this.platform = platform;
     this.paths = resolveEvidencePaths(this.projectRoot, this.runId);
   }
 
   async registerRaw(input: RegisterRawEvidenceInput): Promise<EvidenceRecord> {
     input = registerRawEvidenceInputSchema.parse(input);
+    const expectedController = controllerForPlatform(this.platform);
+    if (input.sourceTool !== expectedController) {
+      throw new AiQaError(
+        "evidence.controller_mismatch",
+        "Evidence provenance must match the immutable run platform",
+        {
+          runId: this.runId,
+          platform: this.platform,
+          expectedController,
+          evidencePlatform: this.platform,
+          sourceTool: input.sourceTool,
+        },
+      );
+    }
     await this.ensureStorageRoots();
     await this.ensureIndex();
     const release = await lockfile.lock(this.paths.index, {
@@ -148,6 +175,7 @@ export class EvidenceRepository {
           captureActionId: input.captureActionId,
           idempotencyKey: input.idempotencyKey,
           contentHash: sourceHash,
+          platform: this.platform,
         };
         if (
           canonicalJson(persistedInput(existing)) === canonicalJson(requested)
@@ -180,7 +208,7 @@ export class EvidenceRepository {
           .join("/"),
         contentHash,
         mediaType: input.mediaType,
-        platform: "web",
+        platform: this.platform,
         sourceTool: input.sourceTool,
         capturedAt: this.now().toISOString(),
         classification: "raw",
@@ -241,6 +269,21 @@ export class EvidenceRepository {
   }
 
   private async verifyRecord(record: EvidenceRecord): Promise<void> {
+    if (
+      record.platform !== this.platform ||
+      record.sourceTool !== controllerForPlatform(this.platform)
+    ) {
+      throw new AiQaError(
+        "evidence.integrity_error",
+        "Evidence provenance does not match the run platform",
+        {
+          runId: this.runId,
+          platform: this.platform,
+          evidencePlatform: record.platform,
+          sourceTool: record.sourceTool,
+        },
+      );
+    }
     const path = await this.resolveIndexedPath(record.projectRelativePath);
     const actualHash = sha256(await readFile(path));
     if (actualHash !== record.contentHash) {

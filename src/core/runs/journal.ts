@@ -84,8 +84,13 @@ export class RunJournal {
     ]);
     try {
       const events = await readJsonLines(this.path, runEventSchema);
+      const platform = events[0]?.platform;
       for (const [index, event] of events.entries()) {
-        if (event.runId !== this.runId || event.sequence !== index + 1) {
+        if (
+          event.runId !== this.runId ||
+          event.sequence !== index + 1 ||
+          event.platform !== platform
+        ) {
           throw new Error("journal invariant mismatch");
         }
       }
@@ -180,6 +185,17 @@ export class RunJournal {
     input: AppendRunEvent,
     timestamp: string,
   ): Promise<RunEvent> {
+    const immutablePlatform = events[0]?.platform;
+    if (
+      immutablePlatform !== undefined &&
+      input.platform !== immutablePlatform
+    ) {
+      throw new AiQaError(
+        "journal.integrity_error",
+        "Run journal integrity verification failed",
+        { runId: this.runId },
+      );
+    }
     if (input.idempotencyKey !== undefined) {
       const existing = events.find(
         (event) => event.idempotencyKey === input.idempotencyKey,

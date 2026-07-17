@@ -3,7 +3,7 @@ import { basename, dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 import { AiQaError } from "../../core/errors.js";
-import { webControllerSchema } from "../../core/tools.js";
+import { controllerSchema } from "../../core/platforms/schema.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { registerEvidence } from "../../services/run-protocol/register-evidence.js";
 import type { CliContext } from "../context.js";
@@ -12,7 +12,7 @@ import { readJsonInput, writeJson } from "../io.js";
 const evidenceInputSchema = z
   .object({
     mediaType: z.string().trim().min(1),
-    sourceTool: webControllerSchema,
+    sourceTool: controllerSchema,
     sensitivity: z.enum(["public", "internal", "sensitive"]),
     evidenceKinds: z.array(z.string().trim().min(1)).min(1),
     captureActionId: z.string().trim().min(1),

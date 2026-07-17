@@ -49,7 +49,7 @@ export class VerdictService {
           );
         }
       }
-      return blockerAppendInput(payload);
+      return blockerAppendInput(workOrder.platform, payload);
     });
   }
 
@@ -70,7 +70,7 @@ export class VerdictService {
         "verdict",
       );
       requireBlockedVerdictReferences(events, payload);
-      const candidate = verdictAppendInput(payload);
+      const candidate = verdictAppendInput(workOrder.platform, payload);
       const retry = verdicts.find(
         ({ event }) =>
           event.idempotencyKey === candidate.idempotencyKey &&
@@ -106,7 +106,7 @@ export class VerdictService {
         "verdict",
       );
       requireBlockedVerdictReferences(events, payload);
-      const candidate = verdictAppendInput(payload);
+      const candidate = verdictAppendInput(workOrder.platform, payload);
       const retry = verdicts.find(
         ({ event }) =>
           event.idempotencyKey === candidate.idempotencyKey &&
@@ -149,7 +149,7 @@ export class VerdictService {
       );
     }
     return this.appendValidated(
-      (_workOrder, events, verdicts) => {
+      (workOrder, events, verdicts) => {
         requireMutableRun(events);
         const current = effectiveVerdictFrom(verdicts);
         if (
@@ -167,7 +167,7 @@ export class VerdictService {
           criterionResults: [],
           ...(current === undefined ? {} : { supersedes: current.event.id }),
         });
-        return verdictAppendInput(payload);
+        return verdictAppendInput(workOrder.platform, payload);
       },
       { allowInterrupted: true },
     );
@@ -299,8 +299,12 @@ export function effectiveVerdictFrom(
   return effective[0];
 }
 
-function blockerAppendInput(payload: BlockerPayload): AppendRunEvent {
+function blockerAppendInput(
+  platform: WorkOrder["platform"],
+  payload: BlockerPayload,
+): AppendRunEvent {
   return typedAppendInput(
+    platform,
     "blocker",
     `blocker:${sha256Canonical(payload)}`,
     payload,
@@ -308,8 +312,12 @@ function blockerAppendInput(payload: BlockerPayload): AppendRunEvent {
   );
 }
 
-function verdictAppendInput(payload: VerdictPayload): AppendRunEvent {
+function verdictAppendInput(
+  platform: WorkOrder["platform"],
+  payload: VerdictPayload,
+): AppendRunEvent {
   return typedAppendInput(
+    platform,
     "verdict",
     `verdict:${sha256Canonical(payload)}`,
     payload,
@@ -332,6 +340,7 @@ function appendInput(event: RunEvent): AppendRunEvent {
 }
 
 function typedAppendInput(
+  platform: WorkOrder["platform"],
   type: "blocker" | "verdict",
   idempotencyKey: string,
   payload: unknown,
@@ -341,7 +350,7 @@ function typedAppendInput(
   return {
     type,
     actor: "agent",
-    platform: "web",
+    platform,
     tool: "ai-qa",
     idempotencyKey,
     payload,

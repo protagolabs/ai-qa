@@ -38,6 +38,7 @@ async function createRun(): Promise<{
   const repository = new RunRepository(projectRoot, now);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input: exploratoryRunInputSchema.parse({
@@ -71,6 +72,7 @@ async function createSmallBudgetRun(input: {
   maxRecoveryActions: number;
 }): Promise<Awaited<ReturnType<typeof createRun>>> {
   const existing = createExploratoryWorkOrder({
+    platform: "web",
     projectId: "sample-web",
     runId: "run-1",
     input: exploratoryRunInputSchema.parse({
@@ -173,6 +175,87 @@ describe("typed run protocol", () => {
         target: { description: "Login button" },
       }).success,
     ).toBe(false);
+  });
+
+  it("rejects planned and completed action controllers that mismatch the immutable platform", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-ios-protocol-project-"),
+    );
+    const repository = new RunRepository(projectRoot, fixedNow);
+    await repository.create(
+      createExploratoryWorkOrder({
+        platform: "ios-simulator",
+        projectId: "sample-project",
+        runId: "run-ios",
+        input: exploratoryRunInputSchema.parse({
+          goal: "Verify the iOS home screen",
+          acceptanceCriteria: [
+            {
+              id: "home-visible",
+              description: "Home is visible",
+              requiredEvidence: ["screenshot"],
+            },
+          ],
+          readiness: {
+            platform: "ios-simulator",
+            status: "ready",
+            checks: [],
+          },
+        }),
+        evidencePolicy: {
+          screenshots: "required",
+          defaultSensitivity: "internal",
+        },
+        startedAt: fixedNow(),
+      }),
+    );
+    const service = new RunProtocolService(projectRoot, "run-ios", fixedNow);
+
+    await expect(
+      service.planAction({
+        idempotencyKey: "wrong-plan-controller",
+        kind: "interaction",
+        intent: "Tap with the wrong controller",
+        tool: "chrome-devtools-mcp",
+        target: { description: "Continue button" },
+      }),
+    ).rejects.toMatchObject({
+      code: "run_protocol.controller_mismatch",
+      details: {
+        runId: "run-ios",
+        platform: "ios-simulator",
+        expectedController: "pepper",
+        actualController: "chrome-devtools-mcp",
+      },
+    });
+
+    const planned = await service.planAction({
+      idempotencyKey: "correct-plan-controller",
+      kind: "interaction",
+      intent: "Tap with Pepper",
+      tool: "pepper",
+      target: { description: "Continue button" },
+    });
+    await repository.journal("run-ios").append({
+      type: "action",
+      actor: "agent",
+      platform: "ios-simulator",
+      tool: "appium",
+      idempotencyKey: `complete:${planned.id}`,
+      payload: {
+        phase: "completed",
+        actionId: planned.id,
+        toolResult: { summary: "Forged completion" },
+      },
+      relatedIds: [planned.id],
+    });
+    await expect(
+      service.recordDecision({
+        kind: "semantic",
+        rationale: "Force an audited history read",
+        relatedIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
   it("plans an action and requires a fresh observation to resolve an unknown result", async () => {

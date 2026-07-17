@@ -3,7 +3,8 @@ import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
-import { WEB_CONTROLLER, webControllerSchema } from "../../core/tools.js";
+import { controllerForPlatform } from "../../core/platforms/registry.js";
+import { controllerSchema, type Platform } from "../../core/platforms/schema.js";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import {
   actionPayloadSchema,
@@ -36,7 +37,7 @@ export const planActionInputSchema = z
     idempotencyKey: z.string().trim().min(1),
     kind: z.enum(["interaction", "observation", "evidence-capture"]),
     intent: z.string().trim().min(1),
-    tool: webControllerSchema,
+    tool: controllerSchema,
     target: z
       .object({
         description: z.string().trim().min(1),
@@ -97,6 +98,7 @@ export class RunProtocolService {
     let enforceDeadline = true;
     return this.appendValidated(
       (workOrder, events) => {
+        requireController(workOrder, parsed.tool);
         const existing = events.find(
           (event) => event.idempotencyKey === parsed.idempotencyKey,
         );
@@ -185,6 +187,7 @@ export class RunProtocolService {
             : { recoveryForStepId: parsed.recoveryForStepId }),
         });
         const candidate = actionAppendInput(
+          workOrder.platform,
           parsed.tool,
           parsed.idempotencyKey,
           payload,
@@ -218,10 +221,11 @@ export class RunProtocolService {
 
   async completeAction(input: CompleteActionInput): Promise<RunEvent> {
     const parsed = completeActionInputSchema.parse(input);
-    return this.appendValidated((_workOrder, events) => {
+    return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
       const payload = actionPayloadSchema.parse(parsed);
       const candidate = actionAppendInput(
+        workOrder.platform,
         planned.event.tool,
         `complete:${parsed.actionId}`,
         payload,
@@ -245,7 +249,7 @@ export class RunProtocolService {
 
   async addObservation(input: ObservationPayload): Promise<RunEvent> {
     const parsed = observationPayloadSchema.parse(input);
-    return this.appendValidated((_workOrder, events) => {
+    return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
       if (planned.payload.kind !== "observation") {
         throw new AiQaError(
@@ -270,6 +274,7 @@ export class RunProtocolService {
         stepId: planned.payload.stepId,
       });
       const candidate = protocolAppendInput({
+        platform: workOrder.platform,
         type: "observation",
         actor: "agent",
         tool: planned.event.tool,
@@ -307,6 +312,7 @@ export class RunProtocolService {
         requireKnownStep(plannedActions(events), parsed.stepId);
       }
       const candidate = protocolAppendInput({
+        platform: workOrder.platform,
         type: "assertion",
         actor: "agent",
         tool: "ai-qa",
@@ -320,8 +326,9 @@ export class RunProtocolService {
 
   async recordDecision(input: DecisionPayload): Promise<RunEvent> {
     const parsed = decisionPayloadSchema.parse(input);
-    return this.appendValidated(() =>
+    return this.appendValidated((workOrder) =>
       protocolAppendInput({
+        platform: workOrder.platform,
         type: "decision",
         actor: "agent",
         tool: "ai-qa",
@@ -334,7 +341,7 @@ export class RunProtocolService {
 
   async resolveUnknownAction(input: RecoveryPayload): Promise<RunEvent> {
     const parsed = recoveryPayloadSchema.parse(input);
-    return this.appendValidated((_workOrder, events) => {
+    return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
       const terminal = requireSingleTerminal(
         events,
@@ -348,6 +355,7 @@ export class RunProtocolService {
         parsed.observationId,
       );
       const candidate = protocolAppendInput({
+        platform: workOrder.platform,
         type: "recovery",
         actor: "ai-qa",
         tool: "ai-qa",
@@ -439,7 +447,24 @@ function requireFreshObservationAfterResume(
   }
 }
 
+function requireController(workOrder: WorkOrder, actualController: string): void {
+  const expectedController = controllerForPlatform(workOrder.platform);
+  if (actualController !== expectedController) {
+    throw new AiQaError(
+      "run_protocol.controller_mismatch",
+      "Action controller must match the immutable run platform",
+      {
+        runId: workOrder.runId,
+        platform: workOrder.platform,
+        expectedController,
+        actualController,
+      },
+    );
+  }
+}
+
 function protocolAppendInput(input: {
+  platform: Platform;
   type: "action" | "observation" | "assertion" | "decision" | "recovery";
   actor: "agent" | "ai-qa";
   tool: string;
@@ -451,7 +476,7 @@ function protocolAppendInput(input: {
   return {
     type: input.type,
     actor: input.actor,
-    platform: "web",
+    platform: input.platform,
     tool: input.tool,
     idempotencyKey: input.idempotencyKey,
     payload: input.payload,
@@ -460,11 +485,13 @@ function protocolAppendInput(input: {
 }
 
 function actionAppendInput(
+  platform: Platform,
   tool: string,
   idempotencyKey: string,
   payload: ActionPayload,
 ): AppendRunEvent {
   return protocolAppendInput({
+    platform,
     type: "action",
     actor: "agent",
     tool,
@@ -792,6 +819,7 @@ export function validateProtocolEvents(
     let recoveryCount = 0;
 
     for (const [index, event] of events.entries()) {
+      requireSemantic(event.platform === workOrder.platform);
       const eventIdOwner = eventIdOwners.get(event.id);
       requireSemantic(
         eventIdOwner === undefined ||
@@ -825,7 +853,9 @@ export function validateProtocolEvents(
               idempotencyKey: event.idempotencyKey,
               relatedIds: [],
             });
-            requireSemantic(event.tool === WEB_CONTROLLER);
+            requireSemantic(
+              event.tool === controllerForPlatform(workOrder.platform),
+            );
             requireSemantic(
               typeof event.idempotencyKey === "string" &&
                 event.idempotencyKey.trim().length > 0,
@@ -927,7 +957,10 @@ export function validateProtocolEvents(
           requireSemantic(payload.runId === runId);
           requireSemantic(plan?.payload.kind === "evidence-capture");
           requireSemantic(terminal?.payload.phase === "completed");
-          requireSemantic(payload.sourceTool === WEB_CONTROLLER);
+          requireSemantic(payload.platform === workOrder.platform);
+          requireSemantic(
+            payload.sourceTool === controllerForPlatform(workOrder.platform),
+          );
           requireSemantic(payload.sourceTool === plan?.event.tool);
           requireSemantic(
             payload.criterionIds.every((id) => knownCriteria.has(id)),

@@ -9,7 +9,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify } from "yaml";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
@@ -28,12 +27,11 @@ import { createCapturedCli } from "../helpers/cli-context.js";
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
   initializeTestProject,
-  projectConfigV1,
   projectSkillSource,
 } from "../helpers/project-fixture.js";
 
 const config: ProjectConfig = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "https://example.com" } },
@@ -72,21 +70,25 @@ const readyPayload = exploratoryRunInputSchema.parse({
         code: "runtime.node",
         status: "pass",
         message: "Node runtime is supported",
+        category: "installation",
       },
       {
         code: "project.config",
         status: "pass",
         message: "Configuration .ai-qa/config.yaml is readable",
+        category: "installation",
       },
       {
         code: "agent.project_skill",
         status: "pass",
         message: "Project Skill is a regular file",
+        category: "installation",
       },
       {
         code: "project.storage",
         status: "pass",
         message: "Canonical project storage is writable",
+        category: "installation",
       },
     ],
   },
@@ -118,7 +120,7 @@ async function createActiveRegressionCase(
 ): Promise<void> {
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: "login-success",
     title: "Successful login",
     promotion: { sourceRunId: "run-source", validationIssues: [] },
@@ -158,6 +160,53 @@ async function createActiveRegressionCase(
 }
 
 describe("RunJournal", () => {
+  it("anchors events to the immutable work-order platform", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-ios-journal-"));
+    const repository = new RunRepository(projectRoot, () =>
+      new Date("2026-07-13T00:00:00.000Z"),
+    );
+    const workOrder = createExploratoryWorkOrder({
+      platform: "ios-simulator",
+      projectId: "sample-project",
+      runId: "run-ios",
+      input: exploratoryRunInputSchema.parse({
+        goal: "Verify the iOS home screen",
+        acceptanceCriteria: [
+          {
+            id: "home-visible",
+            description: "Home is visible",
+            requiredEvidence: ["screenshot"],
+          },
+        ],
+        readiness: {
+          platform: "ios-simulator",
+          status: "ready",
+          checks: [],
+        },
+      }),
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt: new Date("2026-07-13T00:00:00.000Z"),
+    });
+    const { journal } = await repository.create(workOrder);
+    await expect(journal.readAll()).resolves.toMatchObject([
+      { sequence: 1, platform: "ios-simulator" },
+    ]);
+
+    await expect(
+      journal.append({
+        type: "decision",
+        actor: "agent",
+        platform: "web",
+        tool: "ai-qa",
+        payload: { reason: "forged platform" },
+        relatedIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "journal.integrity_error" });
+  });
+
   it("maps a missing journal to run.not_found before a locked read", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
     const journal = RunJournal.open(
@@ -398,6 +447,7 @@ describe("RunRepository", () => {
   it("creates work orders exclusively and detects later tampering", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-repository-"));
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input: readyPayload,
@@ -447,6 +497,7 @@ describe("exploratory run start", () => {
     await expect(
       startExploratoryRun({
         projectRoot,
+        platform: "web",
         payload: {
           ...readyPayload,
           readiness: { ...readyPayload.readiness, status: "not_ready" },
@@ -466,6 +517,7 @@ describe("exploratory run start", () => {
 
     const workOrder = await startExploratoryRun({
       projectRoot,
+      platform: "web",
       payload: readyPayload,
       now: () => new Date("2026-07-13T00:00:00.000Z"),
     });
@@ -502,9 +554,10 @@ describe("exploratory run start", () => {
       status: "not_ready" as const,
       checks: [
         {
-          code: "agent.global_skill" as const,
+          code: "web.chrome_devtools_mcp" as const,
           status: "fail" as const,
           message: "Global skill status: stale",
+          category: "tool" as const,
         },
       ],
     };
@@ -538,9 +591,10 @@ describe("exploratory run start", () => {
       status: "not_ready" as const,
       checks: [
         {
-          code: "agent.global_skill" as const,
+          code: "web.chrome_devtools_mcp" as const,
           status: "fail" as const,
           message: "Global skill status: stale",
+          category: "tool" as const,
         },
       ],
     };
@@ -563,26 +617,6 @@ describe("exploratory run start", () => {
     await expect(readdir(join(projectRoot, ".ai-qa", "runs"))).resolves.toEqual(
       [],
     );
-  });
-
-  it("keeps legacy config v1 local-only without requiring a target Skill", async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    await initializeTestProject({ projectRoot, config });
-    await writeFile(
-      join(projectRoot, ".ai-qa", "config.yaml"),
-      stringify(projectConfigV1(), { sortMapEntries: true }),
-      "utf8",
-    );
-    await rm(join(projectRoot, projectSkillRelativePath));
-
-    const workOrder = await startExploratoryRun({
-      projectRoot,
-      payload: readyPayload,
-      now: () => new Date("2026-07-13T00:00:00.000Z"),
-    });
-
-    expect(workOrder.recordingPolicy).toEqual({ mode: "local-only" });
-    expect(workOrder).not.toHaveProperty("projectSkill");
   });
 
   it("uses one config snapshot for compatibility and the immutable work order", async () => {

@@ -18,6 +18,7 @@ async function createRun() {
   const repository = new RunRepository(projectRoot, now);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input: exploratoryRunInputSchema.parse({

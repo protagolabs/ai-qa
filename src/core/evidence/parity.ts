@@ -1,5 +1,6 @@
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
+import { controllerForPlatform } from "../platforms/registry.js";
 import { evidenceEventPayloadSchema } from "../runs/event-payloads.js";
 import type { RunEvent } from "../runs/schema.js";
 import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
@@ -22,6 +23,12 @@ export function validateEvidenceParity(
       void criterionIds;
       void observationIds;
       const record = evidenceRecordSchema.parse(recordInput);
+      if (
+        event.platform !== record.platform ||
+        record.sourceTool !== controllerForPlatform(record.platform)
+      ) {
+        throw new Error("evidence provenance mismatch");
+      }
       if (eventRecords.has(record.id))
         throw new Error("duplicate event record");
       eventRecords.set(record.id, record);

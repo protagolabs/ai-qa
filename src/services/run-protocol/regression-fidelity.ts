@@ -1,6 +1,6 @@
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
-import { WEB_CONTROLLER } from "../../core/tools.js";
+import { controllerForPlatform } from "../../core/platforms/registry.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -117,7 +117,7 @@ export function validateRegressionFidelity(
           { stepId: payload.stepId },
         );
       }
-      if (event.tool !== WEB_CONTROLLER) {
+      if (event.tool !== controllerForPlatform(workOrder.platform)) {
         throw replayError(
           "replay.tool_mismatch",
           "Regression actions must use the pinned platform tool",

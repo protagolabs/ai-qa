@@ -14,7 +14,11 @@ import {
   type WorkOrder,
 } from "./schema.js";
 
-function startedWorkOrderHash(events: RunEvent[], runId: string): string {
+function startedWorkOrderHash(
+  events: RunEvent[],
+  runId: string,
+  platform: WorkOrder["platform"],
+): string {
   const startEvents = events.filter(
     (event) =>
       event.type === "run" &&
@@ -30,6 +34,7 @@ function startedWorkOrderHash(events: RunEvent[], runId: string): string {
   if (
     event.sequence !== 1 ||
     event.runId !== runId ||
+    event.platform !== platform ||
     event.actor !== "ai-qa" ||
     event.tool !== "ai-qa" ||
     event.idempotencyKey !== `start-${runId}` ||
@@ -85,7 +90,7 @@ export class RunRepository {
       await journal.append({
         type: "run",
         actor: "ai-qa",
-        platform: "web",
+        platform: validated.platform,
         tool: "ai-qa",
         idempotencyKey: `start-${validated.runId}`,
         payload: { phase: "started", workOrderHash },
@@ -131,6 +136,7 @@ export class RunRepository {
       const expectedHash = startedWorkOrderHash(
         await this.journal(runId).readAll(),
         runId,
+        workOrder.platform,
       );
       if (
         workOrder.runId !== runId ||

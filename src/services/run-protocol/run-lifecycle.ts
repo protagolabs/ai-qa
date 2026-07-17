@@ -2,6 +2,7 @@ import { AiQaError } from "../../core/errors.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { assertJsonValue } from "../../core/json-value.js";
+import type { Platform } from "../../core/platforms/schema.js";
 import {
   cancelledRunPayloadSchema,
   interruptedRunPayloadSchema,
@@ -46,6 +47,7 @@ export async function resumeRun(input: {
       project.projectRoot,
       runId,
       input.now,
+      workOrder.platform,
     ).verifyAll();
     validateEvidenceParity(events, evidence, runId);
     validateProtocolEvents(events, workOrder, runId);
@@ -54,8 +56,12 @@ export async function resumeRun(input: {
     requireMutableLifecycle(lifecycle.current);
     const append =
       lifecycle.current.payload.phase === "interrupted"
-        ? resumedAppend(runId, lifecycle.current.event.id)
-        : interruptedAppend(runId, lifecycle.current.event.id);
+        ? resumedAppend(workOrder.platform, runId, lifecycle.current.event.id)
+        : interruptedAppend(
+            workOrder.platform,
+            runId,
+            lifecycle.current.event.id,
+          );
     return { input: append, resolve: (event: RunEvent) => event };
   });
 
@@ -66,6 +72,7 @@ export async function resumeRun(input: {
         project.projectRoot,
         runId,
         input.now,
+        workOrder.platform,
       ).verifyAll();
       validateEvidenceParity(events, evidence, runId);
       validateProtocolEvents(events, workOrder, runId);
@@ -80,7 +87,7 @@ export async function resumeRun(input: {
         );
       }
       return {
-        input: resumedAppend(runId, first.id),
+        input: resumedAppend(workOrder.platform, runId, first.id),
         resolve: (event: RunEvent) => event,
       };
     });
@@ -148,7 +155,9 @@ export async function cancelRun(input: {
       reason,
     });
     return {
-      input: lifecycleAppend(`cancel:${runId}`, payload, [verdict.id]),
+      input: lifecycleAppend(workOrder.platform, `cancel:${runId}`, payload, [
+        verdict.id,
+      ]),
       resolve: (event: RunEvent) => event,
     };
   });
@@ -157,6 +166,7 @@ export async function cancelRun(input: {
 }
 
 function interruptedAppend(
+  platform: Platform,
   runId: string,
   previousLifecycleEventId: string,
 ): AppendRunEvent {
@@ -165,6 +175,7 @@ function interruptedAppend(
     previousLifecycleEventId,
   });
   return lifecycleAppend(
+    platform,
     `interrupt:${runId}:${previousLifecycleEventId}`,
     payload,
     [previousLifecycleEventId],
@@ -172,6 +183,7 @@ function interruptedAppend(
 }
 
 function resumedAppend(
+  platform: Platform,
   runId: string,
   interruptedEventId: string,
 ): AppendRunEvent {
@@ -180,12 +192,16 @@ function resumedAppend(
     interruptedEventId,
     requiresFreshObservation: true,
   });
-  return lifecycleAppend(`resume:${runId}:${interruptedEventId}`, payload, [
-    interruptedEventId,
-  ]);
+  return lifecycleAppend(
+    platform,
+    `resume:${runId}:${interruptedEventId}`,
+    payload,
+    [interruptedEventId],
+  );
 }
 
 function lifecycleAppend(
+  platform: Platform,
   idempotencyKey: string,
   payload: unknown,
   relatedIds: string[],
@@ -194,7 +210,7 @@ function lifecycleAppend(
   return {
     type: "run",
     actor: "ai-qa",
-    platform: "web",
+    platform,
     tool: "ai-qa",
     idempotencyKey,
     payload,

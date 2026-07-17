@@ -29,7 +29,7 @@ import { initializeTestProject } from "../helpers/project-fixture.js";
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
 
 const config: ProjectConfig = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "https://example.com" } },
@@ -65,6 +65,7 @@ const readyPayload = exploratoryRunInputSchema.parse({
 
 function makeWorkOrder(runId = "run-1"): WorkOrder {
   return createExploratoryWorkOrder({
+    platform: "web",
     projectId: "sample-web",
     runId,
     input: readyPayload,
@@ -179,6 +180,7 @@ describe("host-authorized exploratory start boundary", () => {
     await expect(
       startExploratoryRun({
         projectRoot,
+        platform: "web",
         payload: readyPayload,
         now: fixedNow,
       }),

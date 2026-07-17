@@ -27,7 +27,7 @@ const now = () => new Date("2026-07-13T00:10:00.000Z");
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 
 const config: ProjectConfig = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   recordingPolicy: { mode: "local-only" },
   project: { id: "sample-web", name: "Sample Web" },
   targets: { web: { entryUrl: "https://example.com" } },
@@ -59,6 +59,7 @@ async function createRun(
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input: exploratoryRunInputSchema.parse({
@@ -1327,7 +1328,7 @@ describe("run lifecycle", () => {
 });
 
 describe("preflight result runs", () => {
-  it("completes a failed global-skill preflight as blocked:tool", async () => {
+  it("completes a failed controller preflight as blocked:tool", async () => {
     const fixture = await createPreflightProject();
 
     const result = await createPreflightResultRun({
@@ -1347,9 +1348,10 @@ describe("preflight result runs", () => {
           status: "not_ready",
           checks: [
             {
-              code: "agent.global_skill",
+              code: "web.chrome_devtools_mcp",
               status: "fail",
-              message: "Global skill status: stale",
+              message: "Chrome DevTools MCP is unavailable",
+              category: "tool",
             },
           ],
         },
@@ -1360,9 +1362,10 @@ describe("preflight result runs", () => {
         status: "not_ready",
         checks: [
           {
-            code: "agent.global_skill",
+            code: "web.chrome_devtools_mcp",
             status: "fail",
-            message: "Global skill status: stale",
+            message: "Chrome DevTools MCP is unavailable",
+            category: "tool",
           },
         ],
       },
@@ -1398,6 +1401,7 @@ describe("preflight result runs", () => {
           code: "web.chrome_devtools_mcp" as const,
           status: "agent_confirmation_required" as const,
           message: "Agent must confirm MCP capability",
+          category: "tool" as const,
         },
       ],
     };

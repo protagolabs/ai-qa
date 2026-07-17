@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
+import { controllerForPlatform } from "../../core/platforms/registry.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import {
   EvidenceRepository,
@@ -27,7 +28,6 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
-import { WEB_CONTROLLER } from "../../core/tools.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
@@ -60,6 +60,20 @@ export async function registerEvidence(input: {
   const journal = runRepository.journal(input.runId);
   const record = await journal.appendPrepared(async (events) => {
     const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
+    const expectedController = controllerForPlatform(workOrder.platform);
+    if (payload.sourceTool !== expectedController) {
+      throw new AiQaError(
+        "evidence.controller_mismatch",
+        "Evidence provenance must match the immutable run platform",
+        {
+          runId: workOrder.runId,
+          platform: workOrder.platform,
+          expectedController,
+          evidencePlatform: workOrder.platform,
+          sourceTool: payload.sourceTool,
+        },
+      );
+    }
     validateProtocolEvents(events, workOrder, input.runId);
     requireKnownCriteria(workOrder, citations.criterionIds);
     const lifecycle = validateRunLifecycleHistory(events, input.runId);
@@ -94,11 +108,22 @@ export async function registerEvidence(input: {
       events,
       payload.captureActionId,
     );
-    if (payload.sourceTool !== capture.event.tool) {
+    if (
+      capture.event.tool !== expectedController ||
+      payload.sourceTool !== capture.event.tool
+    ) {
       throw new AiQaError(
-        "evidence.source_tool_mismatch",
-        "Evidence source tool must match its completed capture action",
-        { captureActionId: payload.captureActionId },
+        "evidence.controller_mismatch",
+        "Evidence provenance must match the immutable run platform",
+        {
+          runId: workOrder.runId,
+          platform: workOrder.platform,
+          expectedController,
+          evidencePlatform: workOrder.platform,
+          sourceTool: payload.sourceTool,
+          captureActionId: payload.captureActionId,
+          captureActionTool: capture.event.tool,
+        },
       );
     }
     requireValidObservations(events, citations.observationIds);
@@ -107,6 +132,7 @@ export async function registerEvidence(input: {
       project.projectRoot,
       input.runId,
       input.now,
+      workOrder.platform,
     );
     if (existingPayload !== undefined) {
       const indexed = (await repository.readAll()).find(
@@ -132,28 +158,33 @@ export async function registerEvidence(input: {
       observationIds: citations.observationIds,
     });
     return {
-      input: evidenceAppendInput(eventPayload),
+      input: evidenceAppendInput(workOrder.platform, eventPayload),
       resolve: () => record,
     };
   });
   await journal.readLocked(async (events) => {
+    const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
     const records = await new EvidenceRepository(
       project.projectRoot,
       input.runId,
       input.now,
+      workOrder.platform,
     ).verifyAll();
     validateEvidenceParity(events, records, input.runId);
   });
   return record;
 }
 
-function evidenceAppendInput(payload: EvidenceEventPayload): AppendRunEvent {
+function evidenceAppendInput(
+  platform: WorkOrder["platform"],
+  payload: EvidenceEventPayload,
+): AppendRunEvent {
   const jsonPayload: unknown = payload;
   assertJsonValue(jsonPayload);
   return {
     type: "evidence",
     actor: "ai-qa",
-    platform: "web",
+    platform,
     tool: "ai-qa",
     idempotencyKey: payload.idempotencyKey,
     payload: jsonPayload,
@@ -274,9 +305,6 @@ function requireCompletedCaptureAction(
       payload.phase !== "planned" && payload.actionId === captureActionId,
   );
   if (terminals.length !== 1 || terminals[0]?.payload.phase !== "completed") {
-    throw invalidCaptureAction(captureActionId);
-  }
-  if (planned.event.tool !== WEB_CONTROLLER) {
     throw invalidCaptureAction(captureActionId);
   }
   return { event: planned.event, payload: plannedPayload };

@@ -136,13 +136,6 @@ export function registerRunCommands(
           },
         );
       }
-      if (readiness.platform !== "web") {
-        throw new AiQaError(
-          "platform.protocol_not_available",
-          `Run protocol support for ${readiness.platform} is not available`,
-          { platform: readiness.platform },
-        );
-      }
       const globalSkill = await checkGlobalSkill({
         agentsHome: agentsHome(context),
         sourcePath: bundledSourcePath(),
@@ -161,8 +154,8 @@ export function registerRunCommands(
           category: "installation" as const,
         },
       ];
-      const verifiedReadiness: PlatformReadiness & { platform: "web" } = {
-        platform: "web",
+      const verifiedReadiness: PlatformReadiness = {
+        platform: parsedOptions.platform,
         status: checks.every((check) => check.status === "pass")
           ? "ready"
           : "not_ready",
@@ -207,6 +200,7 @@ export function registerRunCommands(
           context,
           await startExploratoryRun({
             projectRoot: project.projectRoot,
+            platform: parsedOptions.platform,
             payload,
             now: context.now,
             projectConfig: config,

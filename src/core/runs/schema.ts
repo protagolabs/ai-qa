@@ -5,7 +5,13 @@ import {
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
 import { jsonValueSchema } from "../json-value.js";
-import { webControllerSchema } from "../tools.js";
+import { controllerMatchesPlatform } from "../platforms/registry.js";
+import {
+  controllerSchema,
+  platformSchema,
+  type Platform,
+} from "../platforms/schema.js";
+import { platformReadinessSchema } from "../readiness/schema.js";
 
 export const criterionIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
 
@@ -15,11 +21,7 @@ export const eventIdSchema = z
 
 export const actionIdSchema = eventIdSchema;
 
-export const storedWorkProtocolVersionSchema = z.enum([
-  "1.0.0",
-  "1.1.0",
-  "1.2.0",
-]);
+export const storedWorkProtocolVersionSchema = z.literal("2.0.0");
 
 export const projectSkillSnapshotSchema = z
   .object({
@@ -59,13 +61,7 @@ const acceptanceCriteriaSchema = z
     }
   });
 
-export const readinessSchema = z
-  .object({
-    platform: z.literal("web"),
-    status: z.enum(["ready", "not_ready"]),
-    checks: z.array(jsonValueSchema),
-  })
-  .strict();
+export const readinessSchema = platformReadinessSchema;
 
 export const exploratoryRunInputSchema = z
   .object({
@@ -92,7 +88,7 @@ export const requiredStepSchema = z
     id: stepIdSchema,
     order: z.number().int().nonnegative(),
     intent: z.string().trim().min(1),
-    tool: webControllerSchema,
+    tool: controllerSchema,
     target: z
       .object({
         description: z.string().trim().min(1),
@@ -117,7 +113,7 @@ const workOrderBaseSchema = z
     kind: z.enum(["exploratory", "regression"]),
     execution: z.enum(["local", "ci"]),
     projectId: z.string(),
-    platform: z.literal("web"),
+    platform: platformSchema,
     startedAt: z.string().datetime(),
     goal: goalSchema,
     acceptanceCriteria: acceptanceCriteriaSchema,
@@ -150,6 +146,22 @@ const workOrderBaseSchema = z
 
 export const workOrderSchema = workOrderBaseSchema.superRefine(
   (workOrder, context) => {
+    if (workOrder.readiness.platform !== workOrder.platform) {
+      context.addIssue({
+        code: "custom",
+        path: ["readiness", "platform"],
+        message: "Readiness must match run platform",
+      });
+    }
+    for (const [index, step] of workOrder.requiredSteps.entries()) {
+      if (!controllerMatchesPlatform(workOrder.platform, step.tool)) {
+        context.addIssue({
+          code: "custom",
+          path: ["requiredSteps", index, "tool"],
+          message: "Step controller must match run platform",
+        });
+      }
+    }
     const recordingMode = workOrder.recordingPolicy?.mode ?? "local-only";
     if (
       recordingMode === "local-only" &&
@@ -163,7 +175,6 @@ export const workOrderSchema = workOrderBaseSchema.superRefine(
       });
     }
     if (
-      workOrder.protocolVersion === "1.2.0" &&
       recordingMode === "project-skill" &&
       workOrder.projectSkill === undefined
     ) {
@@ -283,6 +294,7 @@ export function deepFreezeWorkOrder(workOrder: WorkOrder): Readonly<WorkOrder> {
 }
 
 export function createExploratoryWorkOrder(input: {
+  platform: Platform;
   projectId: string;
   runId: string;
   input: ExploratoryRunInput;
@@ -305,7 +317,7 @@ export function createExploratoryWorkOrder(input: {
     kind: "exploratory",
     execution: "local",
     projectId: input.projectId,
-    platform: "web",
+    platform: input.platform,
     startedAt: input.startedAt.toISOString(),
     goal: input.input.goal,
     acceptanceCriteria: input.input.acceptanceCriteria,
@@ -332,7 +344,7 @@ export const runEventSchema = z
     sequence: z.number().int().positive(),
     timestamp: z.string().datetime(),
     actor: z.enum(["agent", "user", "ai-qa"]),
-    platform: z.literal("web"),
+    platform: platformSchema,
     tool: z.string(),
     type: z.enum([
       "run",

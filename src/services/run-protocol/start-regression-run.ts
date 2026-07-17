@@ -1,7 +1,7 @@
 import { readProjectConfig } from "../../core/config/repository.js";
 import {
   projectConfigSchema,
-  type EffectiveProjectConfig,
+  type ProjectConfig,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
@@ -11,6 +11,7 @@ import {
   calculateWebVariantHash,
 } from "../../core/cases/schema.js";
 import { RunRepository } from "../../core/runs/repository.js";
+import type { PlatformReadiness } from "../../core/readiness/schema.js";
 import {
   deepFreezeWorkOrder,
   readinessSchema,
@@ -22,7 +23,6 @@ import {
   WORK_ORDER_SCHEMA_VERSION,
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
-import type { WebDoctorResult } from "../doctor/web-doctor.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 
@@ -47,10 +47,10 @@ interface PrepareRegressionWorkOrderInput {
   projectRoot: string;
   caseId: string;
   execution: "local" | "ci";
-  readiness: WebDoctorResult;
+  readiness: PlatformReadiness;
   now: () => Date;
   preflightResult?: true;
-  projectConfig?: EffectiveProjectConfig;
+  projectConfig?: ProjectConfig;
 }
 
 export async function prepareRegressionWorkOrder(
@@ -64,6 +64,13 @@ export async function prepareRegressionWorkOrder(
     input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   const readiness = readinessSchema.parse(input.readiness);
+  if (readiness.platform !== "web") {
+    throw new AiQaError(
+      "case.platform_variant_unavailable",
+      "The active case does not contain the selected platform variant",
+      { platform: readiness.platform, caseId: input.caseId },
+    );
+  }
   const revision = await new CaseRepository(
     project.projectRoot,
     input.now,
@@ -125,7 +132,7 @@ export async function startRegressionRun(
   if (input.readiness.status !== "ready") {
     throw new AiQaError(
       "doctor.not_ready",
-      "Normal regression execution requires a ready Web doctor result",
+      "Normal regression execution requires ready platform checks",
     );
   }
   const prepared = await prepareRegressionWorkOrder(input);

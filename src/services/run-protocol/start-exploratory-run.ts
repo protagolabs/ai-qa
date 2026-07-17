@@ -1,10 +1,12 @@
 import { readProjectConfig } from "../../core/config/repository.js";
 import {
+  configuredPlatforms,
   projectConfigSchema,
-  type EffectiveProjectConfig,
+  type ProjectConfig,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
+import type { Platform } from "../../core/platforms/schema.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
@@ -17,9 +19,10 @@ import { resolveProject } from "../project-root/resolve-project.js";
 
 export async function startExploratoryRun(input: {
   projectRoot: string;
+  platform: Platform;
   payload: ExploratoryRunInput;
   now: () => Date;
-  projectConfig?: EffectiveProjectConfig;
+  projectConfig?: ProjectConfig;
 }): Promise<WorkOrder> {
   const project = await resolveProject({
     cwd: input.projectRoot,
@@ -29,10 +32,26 @@ export async function startExploratoryRun(input: {
     input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   const payload = exploratoryRunInputSchema.parse(input.payload);
+  if (!configuredPlatforms(config).includes(input.platform)) {
+    throw new AiQaError("platform.unconfigured", "Run platform is not configured", {
+      platform: input.platform,
+      configuredPlatforms: configuredPlatforms(config),
+    });
+  }
+  if (payload.readiness.platform !== input.platform) {
+    throw new AiQaError(
+      "platform.mismatch",
+      "Run readiness does not match the selected platform",
+      {
+        selectedPlatform: input.platform,
+        readinessPlatform: payload.readiness.platform,
+      },
+    );
+  }
   if (payload.readiness.status !== "ready") {
     throw new AiQaError(
       "doctor.not_ready",
-      "Normal execution requires a ready Web doctor result",
+      "Normal execution requires ready platform checks",
     );
   }
   const projectSkill =
@@ -40,6 +59,7 @@ export async function startExploratoryRun(input: {
       ? await readProjectSkillSnapshot(project.projectRoot)
       : undefined;
   const workOrder = createExploratoryWorkOrder({
+    platform: input.platform,
     projectId: config.project.id,
     runId: createId("run"),
     input: payload,

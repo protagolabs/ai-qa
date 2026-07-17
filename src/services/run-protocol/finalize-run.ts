@@ -65,6 +65,7 @@ export async function finalizeRun(input: {
       project.projectRoot,
       runId,
       input.now,
+      workOrder.platform,
     ).verifyAll();
     validateEvidenceParity(events, evidence, runId);
     validateProtocolEvents(events, workOrder, runId);
@@ -131,7 +132,11 @@ export async function finalizeRun(input: {
         { runId },
       );
     }
-    const completionInput = completionAppendInput(runId, effective.event.id);
+    const completionInput = completionAppendInput(
+      workOrder.platform,
+      runId,
+      effective.event.id,
+    );
     return {
       input: completionInput,
       validateTimestamp: (timestamp: string) => {
@@ -581,6 +586,7 @@ function isEvidenceAttempt(events: readonly RunEvent[], id: string): boolean {
 }
 
 function completionAppendInput(
+  platform: WorkOrder["platform"],
   runId: string,
   verdictId: string,
 ): AppendRunEvent {
@@ -592,7 +598,7 @@ function completionAppendInput(
   return {
     type: "run",
     actor: "ai-qa",
-    platform: "web",
+    platform,
     tool: "ai-qa",
     idempotencyKey: `finish:${runId}`,
     payload,

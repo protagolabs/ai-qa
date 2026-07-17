@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalJson,
-  sha256Canonical,
-} from "../../src/core/canonical-json.js";
+  controllerForPlatform,
+} from "../../src/core/platforms/registry.js";
+import type { Platform } from "../../src/core/platforms/schema.js";
 import {
   createExploratoryWorkOrder,
   effectiveWorkOrderRecordingMode,
@@ -11,7 +11,27 @@ import {
   storedWorkProtocolVersionSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
-import { projectConfigV2 } from "../helpers/project-fixture.js";
+import { projectConfig } from "../helpers/project-fixture.js";
+
+const evidencePolicy = {
+  screenshots: "required" as const,
+  defaultSensitivity: "internal" as const,
+};
+const startedAt = new Date("2026-07-13T00:00:00.000Z");
+
+function exploratoryInput(platform: Platform) {
+  return exploratoryRunInputSchema.parse({
+    goal: "Verify successful login",
+    acceptanceCriteria: [
+      {
+        id: "authenticated-home-visible",
+        description: "Authenticated home is visible",
+        requiredEvidence: ["post-action-screenshot"],
+      },
+    ],
+    readiness: { platform, status: "ready", checks: [] },
+  });
+}
 
 describe("exploratory work orders", () => {
   const projectSkill = {
@@ -19,95 +39,83 @@ describe("exploratory work orders", () => {
     contentSha256: "a".repeat(64),
   };
 
-  it("preserves stored 1.0/1.1 local-only bytes and hashes", () => {
-    const legacy = {
-      schemaVersion: 1,
-      runId: "run-legacy",
-      kind: "exploratory",
-      execution: "local",
-      projectId: "sample-web",
-      platform: "web",
-      startedAt: "2026-07-13T00:00:00.000Z",
-      goal: "Verify successful login",
-      acceptanceCriteria: [
-        {
-          id: "authenticated-home-visible",
-          description: "Authenticated home is visible",
-          requiredEvidence: ["post-action-screenshot"],
-        },
-      ],
-      requiredSteps: [],
-      readiness: { platform: "web", status: "ready", checks: [] },
-      evidencePolicy: {
-        screenshots: "required",
-        defaultSensitivity: "internal",
-      },
-      budget: {
-        maxToolCalls: 100,
-        maxRecoveryActions: 10,
-        deadline: "2026-07-13T00:30:00.000Z",
-      },
-    };
+  it.each([
+    ["web", "chrome-devtools-mcp"],
+    ["ios-simulator", "pepper"],
+    ["android-emulator", "appium"],
+  ] as const)("audits %s with %s", async (platform, controller) => {
+    const workOrder = createExploratoryWorkOrder({
+      platform,
+      projectId: "sample-project",
+      runId: `run-${platform}`,
+      input: exploratoryInput(platform),
+      evidencePolicy,
+      recordingPolicy: { mode: "local-only" },
+      startedAt,
+    });
 
-    for (const protocolVersion of ["1.0.0", "1.1.0"] as const) {
-      const stored = { ...legacy, protocolVersion };
-      const bytes = canonicalJson(stored);
-      const hash = sha256Canonical(stored);
+    expect(workOrder.platform).toBe(platform);
+    expect(workOrder.readiness.platform).toBe(platform);
+    expect(controllerForPlatform(workOrder.platform)).toBe(controller);
+    expect(workOrder.protocolVersion).toBe("2.0.0");
+    expect(workOrder.schemaVersion).toBe(2);
+  });
 
-      const parsed = workOrderSchema.parse(stored);
-
-      expect(canonicalJson(parsed)).toBe(bytes);
-      expect(sha256Canonical(parsed)).toBe(hash);
-      expect(parsed).not.toHaveProperty("recordingPolicy");
-      expect(parsed).not.toHaveProperty("projectSkill");
-      expect(effectiveWorkOrderRecordingMode(parsed)).toBe("local-only");
-      expect(
-        storedWorkProtocolVersionSchema.parse(parsed.protocolVersion),
-      ).toBe(protocolVersion);
+  it("accepts only the current stored work protocol", () => {
+    expect(storedWorkProtocolVersionSchema.parse("2.0.0")).toBe("2.0.0");
+    for (const legacy of ["1.0.0", "1.1.0", "1.2.0"]) {
+      expect(() => storedWorkProtocolVersionSchema.parse(legacy)).toThrow();
     }
   });
 
-  it("reads a stored 1.1 project-skill work order without a snapshot", () => {
-    const stored = {
-      schemaVersion: 1,
-      protocolVersion: "1.1.0",
-      runId: "run-historical-project-skill",
-      kind: "exploratory",
-      execution: "local",
-      projectId: "sample-web",
-      platform: "web",
-      startedAt: "2026-07-13T00:00:00.000Z",
-      goal: "Verify successful login",
-      acceptanceCriteria: [
-        {
-          id: "authenticated-home-visible",
-          description: "Authenticated home is visible",
-          requiredEvidence: ["post-action-screenshot"],
+  it("rejects readiness and required-step controllers that mismatch the run platform", () => {
+    const workOrder = createExploratoryWorkOrder({
+      platform: "ios-simulator",
+      projectId: "sample-project",
+      runId: "run-ios",
+      input: exploratoryInput("ios-simulator"),
+      evidencePolicy,
+      startedAt,
+    });
+
+    expect(() =>
+      workOrderSchema.parse({
+        ...workOrder,
+        readiness: { ...workOrder.readiness, platform: "web" },
+      }),
+    ).toThrow("Readiness must match run platform");
+    expect(() =>
+      workOrderSchema.parse({
+        ...workOrder,
+        kind: "regression",
+        requiredSteps: [
+          {
+            id: "step-login",
+            order: 0,
+            intent: "Submit login",
+            tool: "chrome-devtools-mcp",
+            target: {
+              description: "Login button",
+              stability: "stable",
+              stabilityRationale: "Unique application-owned target",
+            },
+            expectedState: "Home is visible",
+            assertionStrategy: "Observe the home screen",
+            evidenceCheckpoints: ["screenshot"],
+          },
+        ],
+        pinnedCase: {
+          caseId: "login-success",
+          revision: 1,
+          caseContentHash: `sha256:${"a".repeat(64)}`,
+          platformVariantHash: `sha256:${"b".repeat(64)}`,
         },
-      ],
-      requiredSteps: [],
-      readiness: { platform: "web", status: "ready", checks: [] },
-      evidencePolicy: {
-        screenshots: "required",
-        defaultSensitivity: "internal",
-      },
-      recordingPolicy: { mode: "project-skill" },
-      budget: {
-        maxToolCalls: 100,
-        maxRecoveryActions: 10,
-        deadline: "2026-07-13T00:30:00.000Z",
-      },
-    };
-
-    const parsed = workOrderSchema.parse(stored);
-
-    expect(parsed.protocolVersion).toBe("1.1.0");
-    expect(effectiveWorkOrderRecordingMode(parsed)).toBe("project-skill");
-    expect(parsed).not.toHaveProperty("projectSkill");
+      }),
+    ).toThrow("Step controller must match run platform");
   });
 
   it("snapshots the config recording mode in new work orders", () => {
-    const config = projectConfigV2("project-skill");
+    const config = projectConfig(["web"], "project-skill");
     const input = exploratoryRunInputSchema.parse({
       goal: "Verify successful login",
       acceptanceCriteria: [
@@ -120,6 +128,7 @@ describe("exploratory work orders", () => {
       readiness: { platform: "web", status: "ready", checks: [] },
     });
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: config.project.id,
       runId: "run-1",
       input,
@@ -134,7 +143,7 @@ describe("exploratory work orders", () => {
 
     config.recordingPolicy.mode = "local-only";
 
-    expect(workOrder.protocolVersion).toBe("1.2.0");
+    expect(workOrder.protocolVersion).toBe("2.0.0");
     expect(effectiveWorkOrderRecordingMode(workOrder)).toBe("project-skill");
     expect(workOrder.projectSkill).toEqual(projectSkill);
     expect(Object.isFrozen(workOrder.recordingPolicy)).toBe(true);
@@ -154,6 +163,7 @@ describe("exploratory work orders", () => {
       readiness: { platform: "web", status: "ready", checks: [] },
     });
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-local",
       input,
@@ -185,6 +195,7 @@ describe("exploratory work orders", () => {
       readiness: { platform: "web", status: "ready", checks: [] },
     });
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-local",
       input,
@@ -218,6 +229,7 @@ describe("exploratory work orders", () => {
     });
 
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input,
@@ -272,6 +284,7 @@ describe("exploratory work orders", () => {
       exploratoryRunInputSchema.parse({ ...input, goal: "   " }),
     ).toThrow();
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input,
@@ -306,6 +319,7 @@ describe("exploratory work orders", () => {
       readiness: { platform: "web", status: "ready", checks: [] },
     });
     const workOrder = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input,
@@ -332,6 +346,7 @@ describe("exploratory work orders", () => {
       readiness: { platform: "web", status: "ready", checks: [] },
     });
     const exploratory = createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input,

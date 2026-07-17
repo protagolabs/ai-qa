@@ -40,6 +40,7 @@ async function createRun(): Promise<{
   const runRepository = new RunRepository(projectRoot, fixedNow);
   await runRepository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-1",
       input: exploratoryRunInputSchema.parse({
@@ -151,6 +152,151 @@ describe("EvidenceRepository", () => {
         idempotencyKey: "fake-source",
       }).success,
     ).toBe(false);
+  });
+
+  it("rejects mismatched evidence provenance before copying or appending", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-ios-evidence-"));
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "ios-screen");
+    const runRepository = new RunRepository(projectRoot, fixedNow);
+    await runRepository.create(
+      createExploratoryWorkOrder({
+        platform: "ios-simulator",
+        projectId: "sample-project",
+        runId: "run-ios",
+        input: exploratoryRunInputSchema.parse({
+          goal: "Verify iOS home",
+          acceptanceCriteria: [
+            {
+              id: "home-visible",
+              description: "Home is visible",
+              requiredEvidence: ["screenshot"],
+            },
+          ],
+          readiness: {
+            platform: "ios-simulator",
+            status: "ready",
+            checks: [],
+          },
+        }),
+        evidencePolicy: {
+          screenshots: "required",
+          defaultSensitivity: "internal",
+        },
+        startedAt: fixedNow(),
+      }),
+    );
+    const journal = runRepository.journal("run-ios");
+    const capture = await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "ios-simulator",
+      tool: "pepper",
+      idempotencyKey: "capture-ios",
+      payload: {
+        phase: "planned",
+        kind: "evidence-capture",
+        intent: "Capture the iOS home",
+        stepId: "step-home",
+        target: { description: "Home screen" },
+      },
+      relatedIds: [],
+    });
+    await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "ios-simulator",
+      tool: "pepper",
+      idempotencyKey: `complete:${capture.id}`,
+      payload: {
+        phase: "completed",
+        actionId: capture.id,
+        toolResult: { summary: "Screenshot captured" },
+      },
+      relatedIds: [capture.id],
+    });
+
+    await expect(
+      registerEvidence({
+        projectRoot,
+        runId: "run-ios",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["screenshot"],
+          captureActionId: capture.id,
+          idempotencyKey: "wrong-controller",
+        },
+        criterionIds: ["home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({
+      code: "evidence.controller_mismatch",
+      details: {
+        runId: "run-ios",
+        platform: "ios-simulator",
+        expectedController: "pepper",
+        evidencePlatform: "ios-simulator",
+        sourceTool: "chrome-devtools-mcp",
+      },
+    });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence", "run-ios")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(journal.readAll()).resolves.toHaveLength(3);
+
+    const forgedCapture = await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "ios-simulator",
+      tool: "appium",
+      idempotencyKey: "forged-capture-controller",
+      payload: {
+        phase: "planned",
+        kind: "evidence-capture",
+        intent: "Forge capture provenance",
+        stepId: "step-home",
+        target: { description: "Home screen" },
+      },
+      relatedIds: [],
+    });
+    await journal.append({
+      type: "action",
+      actor: "agent",
+      platform: "ios-simulator",
+      tool: "appium",
+      idempotencyKey: `complete:${forgedCapture.id}`,
+      payload: {
+        phase: "completed",
+        actionId: forgedCapture.id,
+        toolResult: { summary: "Forged screenshot" },
+      },
+      relatedIds: [forgedCapture.id],
+    });
+    await expect(
+      registerEvidence({
+        projectRoot,
+        runId: "run-ios",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: "pepper",
+          sensitivity: "internal",
+          evidenceKinds: ["screenshot"],
+          captureActionId: forgedCapture.id,
+          idempotencyKey: "forged-capture-provenance",
+        },
+        criterionIds: ["home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "evidence", "run-ios")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("persists newline-terminated replacements across repository instances", async () => {

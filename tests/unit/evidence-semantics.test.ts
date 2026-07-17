@@ -10,7 +10,7 @@ function event(
   payload: unknown,
 ): RunEvent {
   return runEventSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     runId: "run-1",
     sequence,
@@ -75,7 +75,7 @@ function evidence(
   observationIds: string[],
 ): RunEvent {
   return event(sequence, `event-${id}`, "evidence", {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     runId: "run-1",
     projectRelativePath: `.ai-qa/evidence/run-1/files/${id}-screen.png`,

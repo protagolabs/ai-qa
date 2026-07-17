@@ -1,8 +1,8 @@
 import { posix } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
+import { controllerSchema, platformSchema } from "../platforms/schema.js";
 import { actionIdSchema, runIdSchema } from "../runs/schema.js";
-import { webControllerSchema } from "../tools.js";
 
 export const evidenceIdSchema = z
   .string()
@@ -43,8 +43,8 @@ export const evidenceRecordSchema = z
     projectRelativePath: normalizedRelativePosixPathSchema,
     contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     mediaType: z.string().min(1),
-    platform: z.literal("web"),
-    sourceTool: webControllerSchema,
+    platform: platformSchema,
+    sourceTool: controllerSchema,
     capturedAt: z.string().datetime(),
     classification: z.enum(["raw", "redacted", "annotated"]),
     sensitivity: z.enum(["public", "internal", "sensitive"]),
