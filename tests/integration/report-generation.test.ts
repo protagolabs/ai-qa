@@ -496,10 +496,7 @@ describe("generateRunReport", () => {
     });
     await expect(
       access(
-        join(
-          fixture.projectRoot,
-          ".ai-qa/reports/runs/run-1/report.json",
-        ),
+        join(fixture.projectRoot, ".ai-qa/reports/runs/run-1"),
       ),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
