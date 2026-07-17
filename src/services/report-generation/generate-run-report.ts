@@ -7,7 +7,7 @@ import {
 import { CaseRepository } from "../../core/cases/repository.js";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
-import type { EffectiveProjectConfig } from "../../core/config/schema.js";
+import type { ProjectConfig } from "../../core/config/schema.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { AiQaError } from "../../core/errors.js";
@@ -70,7 +70,7 @@ export interface ReportOperationInput {
 
 interface VerifiedRunReport {
   projectRoot: string;
-  config: EffectiveProjectConfig;
+  config: ProjectConfig;
   recordingMode: "local-only" | "project-skill";
   projectSkill?: ProjectSkillSnapshot;
   report: RunReport;
@@ -355,7 +355,7 @@ async function buildVerifiedRunReport(
 
 function reportPaths(
   runId: string,
-  config: EffectiveProjectConfig,
+  config: ProjectConfig,
 ): ProjectLocalReportPaths {
   runId = runIdSchema.parse(runId);
   const directory = `.ai-qa/reports/runs/${runId}`;

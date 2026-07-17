@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
-import type { EffectiveProjectConfig } from "../../core/config/schema.js";
+import type { ProjectConfig } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import {
@@ -47,7 +47,7 @@ export interface GeneratedRunGroupReport {
 
 interface VerifiedRunGroupReport {
   projectRoot: string;
-  config: EffectiveProjectConfig;
+  config: ProjectConfig;
   recordingMode: "local-only" | "project-skill";
   projectSkill?: ProjectSkillSnapshot;
   report: RunGroupReport;
@@ -380,7 +380,7 @@ function cellKey(caseId: string, platform: string): string {
 
 function groupReportPaths(
   runGroupId: string,
-  config: EffectiveProjectConfig,
+  config: ProjectConfig,
 ): ProjectLocalReportPaths {
   runGroupId = runGroupIdSchema.parse(runGroupId);
   const directory = `.ai-qa/reports/groups/${runGroupId}`;
