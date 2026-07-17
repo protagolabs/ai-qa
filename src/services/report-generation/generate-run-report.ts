@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   calculateCaseContentHash,
-  calculateWebVariantHash,
+  calculatePlatformVariantHash,
 } from "../../core/cases/schema.js";
 import { CaseRepository } from "../../core/cases/repository.js";
 import { canonicalJson } from "../../core/canonical-json.js";
@@ -12,6 +12,7 @@ import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
+import { controllerForPlatform } from "../../core/platforms/registry.js";
 import { runReportSchema, type RunReport } from "../../core/reports/schema.js";
 import {
   requireRunReportRegularFile,
@@ -40,6 +41,7 @@ import {
   type VerdictPayload,
   verdictPayloadSchema,
 } from "../../core/verdicts/schema.js";
+import { REPORT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
@@ -123,6 +125,12 @@ export async function generateRunReport(
     await Promise.all(writes);
   });
   return { report: verified.report, ...paths };
+}
+
+export async function verifyRunReport(
+  input: ReportOperationInput,
+): Promise<RunReport> {
+  return (await buildVerifiedRunReport(input)).report;
 }
 
 async function verifyOptionalExistingReportArtifact(input: {
@@ -291,7 +299,7 @@ async function buildVerifiedRunReport(
           ? events
           : events.filter((event) => summaryTimelineTypes.has(event.type));
       const report = runReportSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: REPORT_SCHEMA_VERSION,
         generatedAt: verificationTime,
         project: config.project,
         reportPolicy: {
@@ -303,6 +311,7 @@ async function buildVerifiedRunReport(
           kind: workOrder.kind,
           execution: workOrder.execution,
           platform: workOrder.platform,
+          controller: controllerForPlatform(workOrder.platform),
           status: phase,
         },
         verdict: reportVerdict(effective.payload),
@@ -319,6 +328,7 @@ async function buildVerifiedRunReport(
           contentHash: record.contentHash,
           path: record.projectRelativePath,
           evidenceKinds: record.evidenceKinds,
+          sourceTool: record.sourceTool,
         })),
         timeline: timelineEvents.map((event) => ({
           sequence: event.sequence,
@@ -473,14 +483,17 @@ async function validatePinnedRegressionCase(
     pinned.revision,
   );
   const caseContentHash = calculateCaseContentHash(revision);
-  const platformVariantHash = calculateWebVariantHash(revision);
+  const platformVariantHash = calculatePlatformVariantHash(
+    revision,
+    workOrder.platform,
+  );
   if (
     pinned.caseContentHash !== caseContentHash ||
     pinned.platformVariantHash !== platformVariantHash
   ) {
     throw new AiQaError(
       "case.content_hash_mismatch",
-      "Pinned regression case or Web variant hash verification failed",
+      "Pinned regression case or platform variant hash verification failed",
       {
         caseId: pinned.caseId,
         revision: pinned.revision,

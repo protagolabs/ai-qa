@@ -18,12 +18,17 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import {
   calculateCaseContentHash,
-  calculateWebVariantHash,
+  calculatePlatformVariantHash,
 } from "../../src/core/cases/schema.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
+import type {
+  Controller,
+  Platform,
+} from "../../src/core/platforms/schema.js";
 import { runReportSchema } from "../../src/core/reports/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -33,6 +38,7 @@ import {
 import {
   exportProjectLocalRunReport,
   generateRunReport,
+  verifyRunReport,
   withVerifiedGeneratedRunReport,
 } from "../../src/services/report-generation/generate-run-report.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
@@ -42,7 +48,10 @@ import { RunProtocolService } from "../../src/services/run-protocol/run-protocol
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { initializeTestProject } from "../helpers/project-fixture.js";
+import {
+  initializeTestProject,
+  projectConfig as createProjectConfig,
+} from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const eventNow = () => new Date("2026-07-13T00:10:00.000Z");
@@ -53,29 +62,21 @@ function config(
     formats?: Array<"markdown" | "json">;
     detail?: "summary" | "full";
     recordingMode?: "local-only" | "project-skill";
+    platform?: Platform;
   } = {},
 ): ProjectConfig {
+  const platform = input.platform ?? "web";
+  const base = createProjectConfig(
+    [platform],
+    input.recordingMode ?? "local-only",
+  );
   return {
-    schemaVersion: 2,
-    recordingPolicy: { mode: input.recordingMode ?? "local-only" },
-    project: { id: "sample-web", name: "Sample Web" },
-    targets: { web: { entryUrl: "https://example.com" } },
-    environments: {},
-    tools: { web: { controller: "chrome-devtools-mcp" } },
-    evidencePolicy: {
-      screenshots: "required",
-      defaultSensitivity: "internal",
-      retentionDays: 30,
-    },
+    ...base,
     reportPolicy: {
       formats: input.formats ?? ["markdown", "json"],
       audience: "engineering",
       detail: input.detail ?? "full",
     },
-    storagePolicy: { adapter: "project-local" },
-    gitPolicy: { config: "track", artifacts: "ignore" },
-    ciPolicy: { nonPassExit: "failure" },
-    secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
   };
 }
 
@@ -95,8 +96,11 @@ async function completedRun(
     preActionEvidenceLaundering?: boolean;
     recordingMode?: "local-only" | "project-skill";
     verdictSummary?: string;
+    platform?: Platform;
   } = {},
 ) {
+  const platform = options.platform ?? "web";
+  const controller = controllerForPlatform(platform);
   const projectConfig = config(options);
   const project = await initializedProject(projectConfig);
   const projectSkillPath = ".agents/skills/ai-qa-project/SKILL.md" as const;
@@ -107,6 +111,7 @@ async function completedRun(
   const repository = new RunRepository(project.projectRoot, eventNow);
   await repository.create(
     createExploratoryWorkOrder({
+      platform,
       projectId: "sample-web",
       runId: "run-1",
       input: exploratoryRunInputSchema.parse({
@@ -118,7 +123,7 @@ async function completedRun(
             requiredEvidence: ["post-action-screenshot"],
           },
         ],
-        readiness: { platform: "web", status: "ready", checks: [] },
+        readiness: { platform, status: "ready", checks: [] },
       }),
       evidencePolicy: {
         screenshots: "required",
@@ -147,7 +152,7 @@ async function completedRun(
     idempotencyKey: "observe-home",
     kind: "observation",
     intent: "Observe authenticated home",
-    tool: "chrome-devtools-mcp",
+    tool: controller,
     target: { description: "Current page" },
   });
   await protocol.completeAction({
@@ -173,7 +178,7 @@ async function completedRun(
     idempotencyKey: "capture-home",
     kind: "evidence-capture",
     intent: "Capture authenticated home",
-    tool: "chrome-devtools-mcp",
+    tool: controller,
     target: { description: "Authenticated home" },
     stepId,
   });
@@ -190,7 +195,7 @@ async function completedRun(
     payload: {
       sourcePath,
       mediaType: "image/png",
-      sourceTool: "chrome-devtools-mcp",
+      sourceTool: controller,
       sensitivity: "internal",
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: captureAction.id,
@@ -206,7 +211,7 @@ async function completedRun(
           idempotencyKey: "submit-after-stale-evidence",
           kind: "interaction",
           intent: "Submit valid credentials",
-          tool: "chrome-devtools-mcp",
+          tool: controller,
           target: { description: "Login button" },
         })
       : undefined;
@@ -256,7 +261,7 @@ async function completedRun(
     await repository.journal("run-1").append({
       type: "run",
       actor: "ai-qa",
-      platform: "web",
+      platform,
       tool: "ai-qa",
       idempotencyKey: "finish:run-1",
       payload: { phase: "completed", verdictId: verdict.id },
@@ -266,6 +271,153 @@ async function completedRun(
     await finalizeRun({ ...project, runId: "run-1", now: eventNow });
   }
   return { ...project, evidence, repository };
+}
+
+async function completedRegressionRun(
+  platform: Platform,
+  controller: Controller,
+) {
+  const project = await initializedProject(config({ platform }));
+  const cases = new CaseRepository(project.projectRoot, eventNow);
+  const revision = await cases.createDraft({
+    schemaVersion: 1,
+    caseId: "platform-report",
+    title: "Verify platform state",
+    promotion: {
+      sources: { [platform]: { sourceRunId: "run-source" } },
+      validationIssues: [],
+    },
+    acceptanceCriteria: [
+      {
+        id: "platform-state-visible",
+        description: "Platform state is visible",
+        requiredEvidence: ["post-action-screenshot"],
+      },
+    ],
+    variants: {
+      [platform]: {
+        steps: [
+          {
+            id: "step-platform-state",
+            sourceActionId: "event-source-action",
+            intent: "Open the platform state",
+            tool: controller,
+            target: {
+              description: "Platform state",
+              stability: "stable",
+              stabilityRationale: "Stable application-owned target",
+            },
+            expectedState: "Platform state is visible",
+            assertionStrategy: "Observe the platform state",
+            evidenceCheckpoints: ["post-action-screenshot"],
+          },
+        ],
+      },
+    },
+  });
+  await cases.activate("platform-report", revision.revision, {
+    confirmedBy: "user",
+    confirmedAt: startedAt.toISOString(),
+  });
+  const workOrder = await startRegressionRun({
+    ...project,
+    caseId: "platform-report",
+    platform,
+    execution: "local",
+    readiness: { platform, status: "ready", checks: [] },
+    now: () => startedAt,
+  });
+  const protocol = new RunProtocolService(
+    project.projectRoot,
+    workOrder.runId,
+    eventNow,
+  );
+  const interaction = await protocol.planAction({
+    idempotencyKey: "open-platform-state",
+    kind: "interaction",
+    intent: "Open the platform state",
+    tool: controller,
+    target: { description: "Platform state" },
+    stepId: "step-platform-state",
+  });
+  await protocol.completeAction({
+    actionId: interaction.id,
+    phase: "completed",
+    toolResult: { summary: "Platform state opened" },
+  });
+  const observation = await protocol.addObservation({
+    actionId: interaction.id,
+    summary: "Platform state is visible",
+    state: { visible: true },
+  });
+  const capture = await protocol.planAction({
+    idempotencyKey: "capture-platform-state",
+    kind: "evidence-capture",
+    intent: "Capture the platform state",
+    tool: controller,
+    target: { description: "Platform state" },
+    stepId: "step-platform-state",
+  });
+  await protocol.completeAction({
+    actionId: capture.id,
+    phase: "completed",
+    toolResult: { summary: "Platform state captured" },
+  });
+  const sourcePath = join(project.projectRoot, `${platform}.png`);
+  await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
+  const evidence = await registerEvidence({
+    ...project,
+    runId: workOrder.runId,
+    payload: {
+      sourcePath,
+      mediaType: "image/png",
+      sourceTool: controller,
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: capture.id,
+      idempotencyKey: "platform-state-evidence",
+    },
+    criterionIds: ["platform-state-visible"],
+    observationIds: [observation.id],
+    now: eventNow,
+  });
+  const assertion = await protocol.recordAssertion({
+    criterionId: "platform-state-visible",
+    status: "satisfied",
+    assertionKinds: ["semantic-ui"],
+    actual: "Platform state is visible",
+    expected: "Platform state is visible",
+    observationIds: [observation.id],
+    evidenceIds: [evidence.id],
+    stepId: "step-platform-state",
+  });
+  await new VerdictService(
+    project.projectRoot,
+    workOrder.runId,
+    eventNow,
+  ).set({
+    classification: "pass",
+    summary: "Platform state verified",
+    criterionResults: [
+      {
+        criterionId: "platform-state-visible",
+        status: "satisfied",
+        assertionIds: [assertion.id],
+        evidenceIds: [evidence.id],
+      },
+    ],
+  });
+  await finalizeRun({
+    ...project,
+    runId: workOrder.runId,
+    now: eventNow,
+  });
+  const generated = await generateRunReport({
+    ...project,
+    runId: workOrder.runId,
+    now: generatedNow,
+  });
+  return { ...project, workOrder, revision, evidence, generated };
 }
 
 async function appendDuplicateTypedEvidenceEvent(
@@ -295,6 +447,63 @@ async function appendDuplicateTypedEvidenceEvent(
 }
 
 describe("generateRunReport", () => {
+  it.each([
+    ["web", "chrome-devtools-mcp"],
+    ["ios-simulator", "pepper"],
+    ["android-emulator", "appium"],
+  ] as const)(
+    "reports %s runs with %s provenance and platform-neutral variant labels",
+    async (platform, controller) => {
+      const fixture = await completedRegressionRun(platform, controller);
+      const markdown = await readFile(
+        join(fixture.projectRoot, fixture.generated.markdownPath!),
+        "utf8",
+      );
+
+      expect(fixture.generated.report.run).toMatchObject({
+        platform,
+        controller,
+      });
+      expect(
+        fixture.generated.report.evidence.every(
+          (item) => item.sourceTool === controller,
+        ),
+      ).toBe(true);
+      expect(fixture.generated.report.workOrder.pinnedCase).toMatchObject({
+        platformVariantHash: calculatePlatformVariantHash(
+          fixture.revision,
+          platform,
+        ),
+      });
+      expect(markdown).toContain(`- Platform: \`${platform}\``);
+      expect(markdown).toContain(`- Controller: \`${controller}\``);
+      expect(markdown).toContain("- Platform variant hash:");
+    },
+  );
+
+  it("builds a locked verified report without writing report artifacts", async () => {
+    const fixture = await completedRun();
+
+    await expect(
+      verifyRunReport({ ...fixture, runId: "run-1", now: generatedNow }),
+    ).resolves.toMatchObject({
+      run: {
+        id: "run-1",
+        platform: "web",
+        controller: "chrome-devtools-mcp",
+      },
+      integrity: { status: "verified" },
+    });
+    await expect(
+      access(
+        join(
+          fixture.projectRoot,
+          ".ai-qa/reports/runs/run-1/report.json",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("waits for the per-run report lock before replacing an artifact set", async () => {
     const fixture = await completedRun();
     await generateRunReport({ ...fixture, runId: "run-1", now: generatedNow });
@@ -556,6 +765,7 @@ describe("generateRunReport", () => {
     const repository = new RunRepository(project.projectRoot, eventNow);
     await repository.create(
       createExploratoryWorkOrder({
+        platform: "web",
         projectId: "sample-web",
         runId: "run-1",
         input: exploratoryRunInputSchema.parse({
@@ -619,6 +829,7 @@ describe("generateRunReport", () => {
     const repository = new RunRepository(project.projectRoot, eventNow);
     await repository.create(
       createExploratoryWorkOrder({
+        platform: "web",
         projectId: "sample-web",
         runId: "run-1",
         input: exploratoryRunInputSchema.parse({
@@ -820,6 +1031,7 @@ describe("generateRunReport", () => {
     const repository = new RunRepository(project.projectRoot, eventNow);
     await repository.create(
       createExploratoryWorkOrder({
+        platform: "web",
         projectId: "sample-web",
         runId: "run-1",
         input: exploratoryRunInputSchema.parse({
@@ -914,14 +1126,17 @@ describe("generateRunReport", () => {
     ).rejects.toMatchObject({ code: "run.deadline_exceeded" });
   });
 
-  it("revalidates pinned regression case and Web variant hashes before writing", async () => {
+  it("revalidates pinned regression case and platform variant hashes before writing", async () => {
     const project = await initializedProject(config());
     const cases = new CaseRepository(project.projectRoot, eventNow);
     const draft = await cases.createDraft({
       schemaVersion: 1,
       caseId: "login-success",
       title: "Verify successful login",
-      promotion: { sourceRunId: "run-source", validationIssues: [] },
+      promotion: {
+        sources: { web: { sourceRunId: "run-source" } },
+        validationIssues: [],
+      },
       acceptanceCriteria: [
         {
           id: "authenticated-home-visible",
@@ -952,7 +1167,7 @@ describe("generateRunReport", () => {
       },
     });
     expect(draft.contentHash).toBe(calculateCaseContentHash(draft));
-    expect(calculateWebVariantHash(draft)).toMatch(/^sha256:/);
+    expect(calculatePlatformVariantHash(draft, "web")).toMatch(/^sha256:/);
     await cases.activate("login-success", draft.revision, {
       confirmedBy: "user",
       confirmedAt: eventNow().toISOString(),
@@ -960,6 +1175,7 @@ describe("generateRunReport", () => {
     const workOrder = await startRegressionRun({
       ...project,
       caseId: "login-success",
+      platform: "web",
       execution: "local",
       readiness: { platform: "web", status: "ready", checks: [] },
       now: eventNow,

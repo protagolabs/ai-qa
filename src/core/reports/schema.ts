@@ -1,9 +1,12 @@
 import { z } from "zod";
+import { REPORT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { caseIdSchema } from "../cases/schema.js";
 import {
   evidenceIdSchema,
   normalizedRelativePosixPathSchema,
 } from "../evidence/schema.js";
+import { controllerMatchesPlatform } from "../platforms/registry.js";
+import { controllerSchema, platformSchema } from "../platforms/schema.js";
 import {
   criterionIdSchema,
   eventIdSchema,
@@ -47,7 +50,7 @@ const reportVerdictSchema = z.discriminatedUnion("classification", [
 
 export const runReportSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(REPORT_SCHEMA_VERSION),
     generatedAt: z.string().datetime(),
     project: z
       .object({
@@ -66,7 +69,8 @@ export const runReportSchema = z
         id: runIdSchema,
         kind: z.enum(["exploratory", "regression"]),
         execution: z.enum(["local", "ci"]),
-        platform: z.literal("web"),
+        platform: platformSchema,
+        controller: controllerSchema,
         status: z.enum(["completed", "cancelled"]),
       })
       .strict(),
@@ -107,6 +111,7 @@ export const runReportSchema = z
           contentHash: sha256Schema,
           path: normalizedRelativePosixPathSchema,
           evidenceKinds: z.array(z.string().trim().min(1)).min(1),
+          sourceTool: controllerSchema,
         })
         .strict(),
     ),
@@ -140,6 +145,24 @@ export const runReportSchema = z
   })
   .strict()
   .superRefine((report, context) => {
+    if (
+      !controllerMatchesPlatform(report.run.platform, report.run.controller)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "controller"],
+        message: "Report controller must match its run platform",
+      });
+    }
+    for (const [index, evidence] of report.evidence.entries()) {
+      if (evidence.sourceTool !== report.run.controller) {
+        context.addIssue({
+          code: "custom",
+          path: ["evidence", index, "sourceTool"],
+          message: "Evidence source tool must match the report controller",
+        });
+      }
+    }
     if (
       report.run.status === "cancelled" &&
       (report.verdict.classification !== "not_verified" ||

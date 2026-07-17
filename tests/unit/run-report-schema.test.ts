@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
+import type { Platform } from "../../src/core/platforms/schema.js";
 import { runReportSchema } from "../../src/core/reports/schema.js";
+import { REPORT_SCHEMA_VERSION } from "../../src/schemas/versions.js";
 
-function report(status: "completed" | "cancelled" = "completed") {
+function report(
+  status: "completed" | "cancelled" = "completed",
+  platform: Platform = "web",
+) {
+  const controller = controllerForPlatform(platform);
   return {
-    schemaVersion: 1,
+    schemaVersion: REPORT_SCHEMA_VERSION,
     generatedAt: "2026-07-13T00:10:00.000Z",
     project: { id: "sample-web", name: "Sample Web" },
     reportPolicy: { audience: "engineering", detail: "full" },
@@ -11,7 +18,8 @@ function report(status: "completed" | "cancelled" = "completed") {
       id: "run-1",
       kind: "regression",
       execution: "local",
-      platform: "web",
+      platform,
+      controller,
       status,
     },
     verdict:
@@ -60,6 +68,7 @@ function report(status: "completed" | "cancelled" = "completed") {
         contentHash: `sha256:${"a".repeat(64)}`,
         path: ".ai-qa/evidence/run-1/files/evidence-home-home.png",
         evidenceKinds: ["post-action-screenshot"],
+        sourceTool: controller,
       },
     ],
     timeline: [
@@ -84,6 +93,34 @@ describe("runReportSchema", () => {
     expect(runReportSchema.parse(report("cancelled")).run.status).toBe(
       "cancelled",
     );
+  });
+
+  it.each(["web", "ios-simulator", "android-emulator"] as const)(
+    "accepts matching %s platform, controller, and evidence provenance",
+    (platform) => {
+      const parsed = runReportSchema.parse(report("completed", platform));
+
+      expect(parsed.run).toMatchObject({
+        platform,
+        controller: controllerForPlatform(platform),
+      });
+      expect(parsed.evidence[0]?.sourceTool).toBe(parsed.run.controller);
+    },
+  );
+
+  it("rejects mismatched run and evidence controllers", () => {
+    expect(() =>
+      runReportSchema.parse({
+        ...report(),
+        run: { ...report().run, controller: "pepper" },
+      }),
+    ).toThrow();
+    expect(() =>
+      runReportSchema.parse({
+        ...report(),
+        evidence: [{ ...report().evidence[0], sourceTool: "pepper" }],
+      }),
+    ).toThrow();
   });
 
   it("rejects non-terminal status and unknown nested fields", () => {

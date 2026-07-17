@@ -45,7 +45,7 @@ import { RunProtocolService } from "../../src/services/run-protocol/run-protocol
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
-  projectConfigV2,
+  projectConfig,
 } from "../helpers/project-fixture.js";
 
 const FIRST_RECORDED_AT = "2026-07-15T01:00:00.000Z";
@@ -805,12 +805,13 @@ async function receiptFixture(
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-receipt-project-"));
   await initializeTestProject({
     projectRoot,
-    config: projectConfigV2(mode),
+    config: projectConfig(["web"], mode),
   });
   const projectSkillPath = join(projectRoot, PROJECT_SKILL_RELATIVE_PATH);
   const projectSkillContent = await readFile(projectSkillPath, "utf8");
   const repository = new RunRepository(projectRoot, RUN_NOW);
   const currentWorkOrder = createExploratoryWorkOrder({
+    platform: "web",
     projectId: "sample-web",
     runId: "run-1",
     input: exploratoryRunInputSchema.parse({
@@ -1326,7 +1327,7 @@ describe("verified report recording receipt service", () => {
     const fixture = await receiptFixture({ mode: "project-skill" });
     await writeProjectConfig(
       fixture.projectRoot,
-      projectConfigV2("local-only"),
+      projectConfig(["web"], "local-only"),
     );
 
     await expect(readRecordingStatus(fixture)).resolves.toMatchObject({
@@ -1349,7 +1350,7 @@ describe("verified report recording receipt service", () => {
       const fixture = await receiptFixture({ mode: "local-only", legacy });
       await writeProjectConfig(
         fixture.projectRoot,
-        projectConfigV2("project-skill"),
+        projectConfig(["web"], "project-skill"),
       );
 
       await expect(readRecordingStatus(fixture)).resolves.toEqual({

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { runReportSchema } from "../../src/core/reports/schema.js";
+import { REPORT_SCHEMA_VERSION } from "../../src/schemas/versions.js";
 import { renderRunReportMarkdown } from "../../src/services/report-generation/render-markdown.js";
 
 describe("renderRunReportMarkdown", () => {
   it("preserves verdict classification and criterion/evidence IDs deterministically", () => {
     const report = runReportSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: REPORT_SCHEMA_VERSION,
       generatedAt: "2026-07-13T00:10:00.000Z",
       project: { id: "sample-web", name: "Sample Web" },
       reportPolicy: { audience: "engineering", detail: "full" },
@@ -14,6 +15,7 @@ describe("renderRunReportMarkdown", () => {
         kind: "regression",
         execution: "local",
         platform: "web",
+        controller: "chrome-devtools-mcp",
         status: "completed",
       },
       verdict: {
@@ -54,6 +56,7 @@ describe("renderRunReportMarkdown", () => {
           contentHash: `sha256:${"a".repeat(64)}`,
           path: ".ai-qa/evidence/run-1/files/evidence-home-home.png",
           evidenceKinds: ["post-action-screenshot"],
+          sourceTool: "chrome-devtools-mcp",
         },
       ],
       timeline: [
@@ -76,6 +79,11 @@ describe("renderRunReportMarkdown", () => {
     expect(markdown).toContain("Verdict: `pass`");
     expect(markdown).toContain("authenticated-home-visible");
     expect(markdown).toContain("evidence-home");
+    expect(markdown).toContain("- Platform: `web`");
+    expect(markdown).toContain("- Controller: `chrome-devtools-mcp`");
+    expect(markdown).toContain("- Platform variant hash:");
+    expect(markdown).toContain("source-tool `chrome-devtools-mcp`");
+    expect(markdown).not.toContain("Web variant hash");
     expect(renderRunReportMarkdown(report)).toBe(markdown);
   });
 });
