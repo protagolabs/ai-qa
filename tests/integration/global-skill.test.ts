@@ -584,7 +584,7 @@ describe("bundled global skill 1.4", () => {
       "Treat `requiredAction.kind: configure-project` as a mandatory first-use gate.",
       "Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.",
       "Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.",
-      "Configuration source precedence is explicit user decisions, unambiguous project-owned instructions, then safe product defaults.",
+      "Configuration source precedence for fields other than recording mode is explicit user decisions, unambiguous project-owned instructions, then safe product defaults.",
       "Ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.",
       "If the user cancels or defers setup, do not write files, use temporary defaults, or resume QA.",
       "Resume the original QA request only after the post-write doctor returns `ready`.",

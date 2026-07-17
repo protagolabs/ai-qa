@@ -183,6 +183,7 @@ PACK_DIR="$(mktemp -d)"
 PREFIX="$(mktemp -d)"
 MACHINE_HOME="$(mktemp -d)"
 AGENTS_HOME="$MACHINE_HOME/agents"
+export AI_QA_HOME="$MACHINE_HOME/ai-qa-sentinel"
 pnpm pack --pack-destination "$PACK_DIR"
 npm install --global --prefix "$PREFIX" "$PACK_DIR/ai-qa-0.0.0.tgz"
 AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill install --global
@@ -194,7 +195,7 @@ The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm
 ## Current replay ordered execution
 
 1. Start the fixture and confirm `/health` returns `ok`. Keep its terminal open for the complete run.
-2. Use the isolated CLI with `AI_QA_AGENTS_HOME` set to the path above and host-granted access to `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): run doctor, discuss requirements, explicitly choose `recordingPolicy.mode: local-only` as the user decision, draft the schema-v2 config and ordinary fixture Project Skill in scratch space with `skill-creator`, validate them separately, display both complete diffs, obtain one confirmation, write both files through the host, and run doctor again. Neither recording mode is a default. Never pass the historical bare schema-v1 block above to the current CLI.
+2. Use the isolated CLI with exported sentinel `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above for every CLI command, plus host-granted access to `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): run doctor, discuss requirements, explicitly choose `recordingPolicy.mode: local-only` as the user decision, draft the schema-v2 config and ordinary fixture Project Skill in scratch space with `skill-creator`, validate them separately, display both complete diffs, obtain one confirmation, write both files through the host, and run doctor again. Neither recording mode is a default. Never pass the historical bare schema-v1 block above to the current CLI.
 3. Activate the installed `ai-qa` skill. Use Chrome DevTools MCP to open the entry URL, confirm that the login fixture is rendered, and supply that observation to `doctor --platform web --json --stdin-json`.
 4. Start one exploratory run with the two stable criterion IDs above.
 5. For every Chrome DevTools MCP call—including navigation, DOM observation, form interaction, and screenshot capture—first record `action plan` with `tool: "chrome-devtools-mcp"`, invoke MCP, then record `action complete`. Retain the login interaction's returned `payload.stepId`; use it for the fresh authenticated observation action, the later evidence-capture action, and the satisfied assertions. The interaction terminal result must precede the fresh observation, and the fresh observation must precede screenshot capture.
