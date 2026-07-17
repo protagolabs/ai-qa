@@ -1,11 +1,4 @@
-import {
-  lstat,
-  mkdtemp,
-  open,
-  readFile,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { lstat, mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";

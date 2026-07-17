@@ -203,9 +203,9 @@ export async function previewGlobalSkillSync(input: {
     references.map((reference) => reference.relativePath),
   );
   const installedReferenceRoot = join(dirname(destination), "references");
-  const staleReferencePaths = (
-    await listFiles(installedReferenceRoot)
-  ).filter((relativePath) => !sourceReferencePaths.has(relativePath));
+  const staleReferencePaths = (await listFiles(installedReferenceRoot)).filter(
+    (relativePath) => !sourceReferencePaths.has(relativePath),
+  );
   for (const relativePath of staleReferencePaths) {
     const installedPath = join(installedReferenceRoot, relativePath);
     const installed = await readFile(installedPath, "utf8");
@@ -272,9 +272,9 @@ export async function syncGlobalSkill(
     references.map((reference) => reference.relativePath),
   );
   const installedReferenceRoot = join(dirname(destination), "references");
-  const staleReferencePaths = (
-    await listFiles(installedReferenceRoot)
-  ).filter((relativePath) => !sourceReferencePaths.has(relativePath));
+  const staleReferencePaths = (await listFiles(installedReferenceRoot)).filter(
+    (relativePath) => !sourceReferencePaths.has(relativePath),
+  );
   if (staleReferencePaths.length > 0 && !input.confirmManagedReplacement) {
     throw new AiQaError(
       "skill.reference_conflict",

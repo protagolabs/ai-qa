@@ -66,9 +66,7 @@ export const projectConfigV3Schema = z
   })
   .superRefine((config, context) => {
     const targetKeys = Object.keys(config.targets)
-      .filter(
-        (platform) => config.targets[platform as Platform] !== undefined,
-      )
+      .filter((platform) => config.targets[platform as Platform] !== undefined)
       .sort();
     const toolKeys = Object.keys(config.tools)
       .filter((platform) => config.tools[platform as Platform] !== undefined)

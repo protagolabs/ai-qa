@@ -227,9 +227,7 @@ export class RecordingRepository {
       return { state: "present", events, artifact: expected };
     }
     const artifact = parsedArtifact.data;
-    if (
-      canonicalJson(artifact.subject) !== canonicalJson(this.subject)
-    ) {
+    if (canonicalJson(artifact.subject) !== canonicalJson(this.subject)) {
       throw this.integrityError();
     }
 
@@ -358,9 +356,9 @@ export class RecordingRepository {
   }
 }
 
-function subjectDetails(subject: ReportSubject):
-  | { runId: string }
-  | { runGroupId: string } {
+function subjectDetails(
+  subject: ReportSubject,
+): { runId: string } | { runGroupId: string } {
   return subject.kind === "run"
     ? { runId: subject.id }
     : { runGroupId: subject.id };

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
-import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
 import {
   evidenceRecordSchema,
@@ -44,7 +43,7 @@ import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:05:00.000Z");
-const ready: PlatformReadiness & WorkOrder["readiness"] = {
+const ready: WorkOrder["readiness"] = {
   platform: "web" as const,
   status: "ready" as const,
   checks: [
@@ -212,6 +211,7 @@ async function expectCoherentWebArtifacts(input: {
         contentHash: record.contentHash,
         path: record.projectRelativePath,
         evidenceKinds: record.evidenceKinds,
+        sourceTool: record.sourceTool,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   );

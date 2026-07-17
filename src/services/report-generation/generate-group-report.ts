@@ -53,8 +53,7 @@ interface VerifiedRunGroupReport {
   report: RunGroupReport;
 }
 
-export interface VerifiedGeneratedRunGroupReport
-  extends VerifiedRunGroupReport {
+export interface VerifiedGeneratedRunGroupReport extends VerifiedRunGroupReport {
   directory: string;
   paths: ProjectLocalReportPaths;
 }
@@ -163,7 +162,8 @@ export async function withVerifiedGeneratedRunGroupReport<T>(
       });
       const markdown = await readFile(path, "utf8");
       const expected =
-        persistedJson ?? groupReportWithMarkdownTimestamps(verified.report, markdown);
+        persistedJson ??
+        groupReportWithMarkdownTimestamps(verified.report, markdown);
       if (markdown !== renderRunGroupReportMarkdown(expected)) {
         throw groupReportIntegrityError(input.runGroupId, paths.markdownPath);
       }
@@ -320,9 +320,7 @@ async function buildVerifiedRunGroupReport(
   });
 }
 
-function recordingPolicy(
-  manifest: RunGroupManifest,
-): {
+function recordingPolicy(manifest: RunGroupManifest): {
   recordingMode: "local-only" | "project-skill";
   projectSkill?: ProjectSkillSnapshot;
 } {
@@ -439,7 +437,10 @@ function groupReportWithMarkdownTimestamps(
   }
 }
 
-function groupReportIntegrityError(runGroupId: string, path: string): AiQaError {
+function groupReportIntegrityError(
+  runGroupId: string,
+  path: string,
+): AiQaError {
   return new AiQaError(
     "report.integrity_error",
     "Generated group report artifact does not match verified group state",

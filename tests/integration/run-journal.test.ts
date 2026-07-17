@@ -24,7 +24,7 @@ import { createPreflightResultRun } from "../../src/services/run-protocol/create
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
+import { installStaleGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
   initializeTestProject,
   projectConfig,
@@ -121,10 +121,13 @@ async function createActiveRegressionCase(
 ): Promise<void> {
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
-    schemaVersion: 2,
+    schemaVersion: 1,
     caseId: "login-success",
     title: "Successful login",
-    promotion: { sourceRunId: "run-source", validationIssues: [] },
+    promotion: {
+      sources: { web: { sourceRunId: "run-source" } },
+      validationIssues: [],
+    },
     acceptanceCriteria: [
       {
         id: "authenticated-home-visible",
@@ -163,8 +166,9 @@ async function createActiveRegressionCase(
 describe("RunJournal", () => {
   it("anchors events to the immutable work-order platform", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-ios-journal-"));
-    const repository = new RunRepository(projectRoot, () =>
-      new Date("2026-07-13T00:00:00.000Z"),
+    const repository = new RunRepository(
+      projectRoot,
+      () => new Date("2026-07-13T00:00:00.000Z"),
     );
     const workOrder = createExploratoryWorkOrder({
       platform: "ios-simulator",
@@ -539,6 +543,7 @@ describe("exploratory run start", () => {
     const workOrder = await startRegressionRun({
       projectRoot,
       caseId: "login-success",
+      platform: "web",
       execution: "local",
       readiness: { platform: "web", status: "ready", checks: [] },
       now,
@@ -547,18 +552,20 @@ describe("exploratory run start", () => {
     expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
   });
 
-  it("returns a stable boundary error for non-Web regression variants before Task 4", async () => {
+  it("rejects a configured platform missing from the active case", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
     await initializeTestProject({
       projectRoot,
       config: projectConfig(["ios-simulator"]),
     });
+    await createActiveRegressionCase(projectRoot, now);
 
     await expect(
       startRegressionRun({
         projectRoot,
         caseId: "login-success",
+        platform: "ios-simulator",
         execution: "local",
         readiness: {
           platform: "ios-simulator",
@@ -568,7 +575,7 @@ describe("exploratory run start", () => {
         now,
       }),
     ).rejects.toMatchObject({
-      code: "case.platform_variant_unavailable",
+      code: "case.variant_missing",
       details: { platform: "ios-simulator", caseId: "login-success" },
     });
   });
@@ -703,7 +710,7 @@ describe("exploratory run start", () => {
     ).toBe(JSON.stringify(workOrder));
   });
 
-  it("creates a blocked preflight result when the global skill is missing", async () => {
+  it("classifies a missing global skill installation as an environment blocker", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
     await initializeTestProject({ projectRoot, config });
     const captured = createCapturedCli({
@@ -742,7 +749,7 @@ describe("exploratory run start", () => {
     expect(result).toMatchObject({
       status: "completed",
       verdict: "blocked",
-      blockerSubtype: "tool",
+      blockerSubtype: "environment",
     });
     expect(result).not.toHaveProperty("workOrder");
     const workOrder = await new RunRepository(
@@ -766,7 +773,7 @@ describe("exploratory run start", () => {
     ).toBe(true);
   });
 
-  it("blocks project-skill preflight when the installed global skill lacks receipt capability", async () => {
+  it("classifies a stale global skill installation as an environment blocker", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
     await initializeTestProject({
@@ -776,7 +783,7 @@ describe("exploratory run start", () => {
         recordingPolicy: { mode: "project-skill" },
       },
     });
-    await installReleasedLegacyGlobalSkill(agentsHome);
+    await installStaleGlobalSkill(agentsHome);
     const captured = createCapturedCli({
       cwd: projectRoot,
       env: { AI_QA_AGENTS_HOME: agentsHome },
@@ -808,7 +815,7 @@ describe("exploratory run start", () => {
       () => new Date("2026-07-13T00:00:00.000Z"),
     ).readVerifiedWorkOrder(result.runId);
 
-    expect(result).toMatchObject({ blockerSubtype: "tool" });
+    expect(result).toMatchObject({ blockerSubtype: "environment" });
     expect(workOrder.readiness.status).toBe("not_ready");
     expect(workOrder.readiness.checks).toEqual(
       expect.arrayContaining([

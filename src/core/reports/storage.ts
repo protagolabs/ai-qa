@@ -9,8 +9,7 @@ type RunReportFilename =
   "report.json" | "report.md" | "recording.jsonl" | "recording.json";
 
 type ReportSubject =
-  | { kind: "run"; id: string }
-  | { kind: "run-group"; id: string };
+  { kind: "run"; id: string } | { kind: "run-group"; id: string };
 
 export async function resolveRunReportDirectory(input: {
   projectRoot: string;
@@ -177,9 +176,9 @@ export async function withRunReportLock<T>(
 
 export const withGroupReportLock = withRunReportLock;
 
-function reportDetails(subject: ReportSubject):
-  | { runId: string }
-  | { runGroupId: string } {
+function reportDetails(
+  subject: ReportSubject,
+): { runId: string } | { runGroupId: string } {
   return subject.kind === "run"
     ? { runId: subject.id }
     : { runGroupId: subject.id };

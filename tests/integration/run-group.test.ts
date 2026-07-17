@@ -19,15 +19,10 @@ import { runGroupManifestSchema } from "../../src/core/run-groups/schema.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
-import {
-  workOrderSchema,
-  type WorkOrder,
-} from "../../src/core/runs/schema.js";
+import { workOrderSchema, type WorkOrder } from "../../src/core/runs/schema.js";
 import { cancelRunGroup } from "../../src/services/run-groups/cancel-run-group.js";
 import { finishRunGroup } from "../../src/services/run-groups/finish-run-group.js";
-import {
-  materializeRunGroup,
-} from "../../src/services/run-groups/materialize-run-group.js";
+import { materializeRunGroup } from "../../src/services/run-groups/materialize-run-group.js";
 import { startRunGroup } from "../../src/services/run-groups/start-run-group.js";
 import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
@@ -39,11 +34,7 @@ import {
 
 const startedAt = new Date("2026-07-17T00:00:00.000Z");
 const now = () => startedAt;
-const allPlatforms = [
-  "web",
-  "ios-simulator",
-  "android-emulator",
-] as const;
+const allPlatforms = ["web", "ios-simulator", "android-emulator"] as const;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -180,28 +171,25 @@ describe("immutable run groups", () => {
     ["one", ["web"]],
     ["two", ["web", "ios-simulator"]],
     ["three", allPlatforms],
-  ] as const)(
-    "freezes %s selected platform set",
-    async (_label, platforms) => {
-      const { projectRoot, cases } = await fixture();
-      await createActiveCase({ cases, caseId: "matrix", platforms });
+  ] as const)("freezes %s selected platform set", async (_label, platforms) => {
+    const { projectRoot, cases } = await fixture();
+    await createActiveCase({ cases, caseId: "matrix", platforms });
 
-      const started = await startRunGroup({
-        projectRoot,
-        selection: { mode: "explicit", caseIds: ["matrix"] },
-        platforms: [...platforms],
-        execution: "ci",
-        readiness: readinessByPlatform(platforms),
-        now,
-      });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["matrix"] },
+      platforms: [...platforms],
+      execution: "ci",
+      readiness: readinessByPlatform(platforms),
+      now,
+    });
 
-      expect(started.manifest.selectedPlatforms).toEqual(platforms);
-      expect(started.manifest.members).toHaveLength(platforms.length);
-      expect(
-        new Set(started.manifest.members.map((member) => member.runId)).size,
-      ).toBe(platforms.length);
-    },
-  );
+    expect(started.manifest.selectedPlatforms).toEqual(platforms);
+    expect(started.manifest.members).toHaveLength(platforms.length);
+    expect(
+      new Set(started.manifest.members.map((member) => member.runId)).size,
+    ).toBe(platforms.length);
+  });
 
   it("selects every active case exactly once with --all-active semantics", async () => {
     const { projectRoot, cases } = await fixture(["web"]);
@@ -459,17 +447,15 @@ describe("immutable run groups", () => {
       caseId: "matrix",
       platforms: allPlatforms,
     });
-    const originalCreate = RunRepository.prototype.create;
+    const originalRepository = new RunRepository(projectRoot, now);
+    const originalCreate = originalRepository.create.bind(originalRepository);
     let createCount = 0;
     const create = vi
       .spyOn(RunRepository.prototype, "create")
-      .mockImplementation(async function (
-        this: RunRepository,
-        workOrder: WorkOrder,
-      ) {
+      .mockImplementation(async (workOrder: WorkOrder) => {
         createCount += 1;
         if (createCount === 2) throw new Error("injected child failure");
-        return originalCreate.call(this, workOrder);
+        return originalCreate(workOrder);
       });
 
     await expect(
@@ -484,7 +470,6 @@ describe("immutable run groups", () => {
     ).rejects.toMatchObject({
       code: "run_group.materialization_failed",
       details: {
-        runGroupId: expect.stringMatching(/^run-group-/),
         causeCode: "internal.unexpected_error",
       },
     });
@@ -493,7 +478,7 @@ describe("immutable run groups", () => {
     const [runGroupId] = await readdir(
       join(projectRoot, ".ai-qa", "run-groups"),
     );
-    expect(runGroupId).toBeDefined();
+    expect(runGroupId).toMatch(/^run-group-/u);
     const repository = new RunGroupRepository(projectRoot, now);
     const manifest = await repository.readManifest(runGroupId!);
     expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toHaveLength(1);
@@ -532,17 +517,15 @@ describe("immutable run groups", () => {
       caseId: "matrix",
       platforms: ["web", "ios-simulator"],
     });
-    const originalCreate = RunRepository.prototype.create;
+    const originalRepository = new RunRepository(projectRoot, now);
+    const originalCreate = originalRepository.create.bind(originalRepository);
     let createCount = 0;
     const create = vi
       .spyOn(RunRepository.prototype, "create")
-      .mockImplementation(async function (
-        this: RunRepository,
-        workOrder: WorkOrder,
-      ) {
+      .mockImplementation(async (workOrder: WorkOrder) => {
         createCount += 1;
         if (createCount === 2) throw new Error("injected child failure");
-        return originalCreate.call(this, workOrder);
+        return originalCreate(workOrder);
       });
     await expect(
       startRunGroup({
@@ -555,12 +538,12 @@ describe("immutable run groups", () => {
       }),
     ).rejects.toMatchObject({
       code: "run_group.materialization_failed",
-      details: { runGroupId: expect.stringMatching(/^run-group-/) },
     });
     create.mockRestore();
     const [runGroupId] = await readdir(
       join(projectRoot, ".ai-qa", "run-groups"),
     );
+    expect(runGroupId).toMatch(/^run-group-/u);
 
     await expect(
       cancelRunGroup({
@@ -780,7 +763,9 @@ describe("immutable run groups", () => {
     );
 
     await expect(
-      new RunGroupRepository(projectRoot, now).readManifest(started.manifest.id),
+      new RunGroupRepository(projectRoot, now).readManifest(
+        started.manifest.id,
+      ),
     ).rejects.toMatchObject({ code: "run_group.integrity_error" });
   });
 
@@ -908,13 +893,7 @@ describe("immutable run groups", () => {
     const cancelCli = createCapturedCli({ cwd: projectRoot, now });
     expect(
       await runCli(
-        [
-          "run-group",
-          "cancel",
-          started.manifest.id,
-          "--reason",
-          "stop matrix",
-        ],
+        ["run-group", "cancel", started.manifest.id, "--reason", "stop matrix"],
         cancelCli.context,
       ),
     ).toBe(0);

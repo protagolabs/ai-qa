@@ -14,7 +14,7 @@ import { stringify } from "yaml";
 import { describe, expect, it } from "vitest";
 import { runInstallationDoctor } from "../../src/services/doctor/installation-doctor.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
-import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
+import { installStaleGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
   initializeTestProject,
   projectConfig,
@@ -187,7 +187,7 @@ describe("runInstallationDoctor", () => {
         installGlobalSkill: false,
       });
       if (globalStatus === "stale") {
-        await installReleasedLegacyGlobalSkill(agentsHome);
+        await installStaleGlobalSkill(agentsHome);
       } else if (globalStatus === "conflict") {
         await installCurrentGlobalSkill(agentsHome);
         await writeFile(

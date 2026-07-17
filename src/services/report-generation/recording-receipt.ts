@@ -277,9 +277,9 @@ function projectSkillSnapshotMissing(subject: ReportSubject): AiQaError {
   );
 }
 
-function subjectDetails(subject: ReportSubject):
-  | { runId: string }
-  | { runGroupId: string } {
+function subjectDetails(
+  subject: ReportSubject,
+): { runId: string } | { runGroupId: string } {
   return subject.kind === "run"
     ? { runId: subject.id }
     : { runGroupId: subject.id };

@@ -33,10 +33,14 @@ export async function startExploratoryRun(input: {
   );
   const payload = exploratoryRunInputSchema.parse(input.payload);
   if (!configuredPlatforms(config).includes(input.platform)) {
-    throw new AiQaError("platform.unconfigured", "Run platform is not configured", {
-      platform: input.platform,
-      configuredPlatforms: configuredPlatforms(config),
-    });
+    throw new AiQaError(
+      "platform.unconfigured",
+      "Run platform is not configured",
+      {
+        platform: input.platform,
+        configuredPlatforms: configuredPlatforms(config),
+      },
+    );
   }
   if (payload.readiness.platform !== input.platform) {
     throw new AiQaError(

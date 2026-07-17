@@ -11,7 +11,7 @@ import {
   runEventSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
-import { WEB_CONTROLLER } from "../../src/core/tools.js";
+import { controllerForPlatform } from "../../src/core/tools.js";
 import { effectiveInteractionSuccesses } from "../../src/services/run-protocol/effective-interactions.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import {
@@ -469,7 +469,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "submit-login",
       kind: "interaction" as const,
       intent: "Submit login",
-      tool: WEB_CONTROLLER,
+      tool: controllerForPlatform("web"),
       target: { description: "Login button" },
     };
     const planned = await service.planAction(input);
@@ -522,7 +522,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "concurrent-plan",
       kind: "interaction" as const,
       intent: "Perform one concurrent action",
-      tool: WEB_CONTROLLER,
+      tool: controllerForPlatform("web"),
       target: { description: "Button" },
     };
     const [firstPlan, secondPlan] = await Promise.all([
@@ -588,7 +588,7 @@ describe("typed run protocol", () => {
       idempotencyKey: "only-tool-call",
       kind: "interaction" as const,
       intent: "Use the only call",
-      tool: WEB_CONTROLLER,
+      tool: controllerForPlatform("web"),
       target: { description: "Page" },
       stepId: "step-budget",
     };

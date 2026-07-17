@@ -72,10 +72,14 @@ export async function createPreflightResultRun(
     input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   if (!configuredPlatforms(config).includes(input.readiness.platform)) {
-    throw new AiQaError("platform.unconfigured", "Run platform is not configured", {
-      platform: input.readiness.platform,
-      configuredPlatforms: configuredPlatforms(config),
-    });
+    throw new AiQaError(
+      "platform.unconfigured",
+      "Run platform is not configured",
+      {
+        platform: input.readiness.platform,
+        configuredPlatforms: configuredPlatforms(config),
+      },
+    );
   }
 
   let workOrder: WorkOrder;

@@ -7,10 +7,10 @@ import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
+import { installStaleGlobalSkill } from "../helpers/global-skill-fixture.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
-const config: ProjectConfig = {
+const config = {
   schemaVersion: 3,
   recordingPolicy: { mode: "local-only" },
   project: { id: "doctor-web", name: "Doctor Web" },
@@ -36,7 +36,7 @@ const config: ProjectConfig = {
   gitPolicy: { config: "track", artifacts: "ignore" },
   ciPolicy: { nonPassExit: "failure" },
   secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
-};
+} satisfies ProjectConfig;
 
 async function listFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
@@ -172,13 +172,7 @@ describe("platform doctor CLI", () => {
 
     expect(
       await runCli(
-        [
-          "doctor",
-          "--platform",
-          "ios-simulator",
-          "--json",
-          "--stdin-json",
-        ],
+        ["doctor", "--platform", "ios-simulator", "--json", "--stdin-json"],
         captured.context,
       ),
     ).toBe(1);
@@ -338,7 +332,7 @@ describe("platform doctor CLI", () => {
           recordingPolicy: { mode: recordingMode },
         },
       });
-      await installReleasedLegacyGlobalSkill(agentsHome);
+      await installStaleGlobalSkill(agentsHome);
 
       const captured = createCapturedCli({
         cwd: projectRoot,

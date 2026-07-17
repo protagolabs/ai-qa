@@ -756,12 +756,10 @@ describe("case promotion", () => {
       "ios-simulator",
       "web",
     ]);
-    expect(iosDraft.promotion.sources.web?.sourceRunId).toBe(
-      "run-web-source",
+    expect(iosDraft.promotion.sources.web?.sourceRunId).toBe("run-web-source");
+    expect(iosDraft.promotion.sources["ios-simulator"]?.sourceRunId).toBe(
+      "run-ios-source",
     );
-    expect(
-      iosDraft.promotion.sources["ios-simulator"]?.sourceRunId,
-    ).toBe("run-ios-source");
     const indexAfterMerge = parse(
       await readFile(
         join(projectRoot, ".ai-qa", "cases", "login", "case.yaml"),
@@ -807,9 +805,9 @@ describe("case promotion", () => {
     expect(replacement.promotion.sources.web?.sourceRunId).toBe(
       "run-web-replacement",
     );
-    expect(
-      replacement.promotion.sources["ios-simulator"]?.sourceRunId,
-    ).toBe("run-ios-source");
+    expect(replacement.promotion.sources["ios-simulator"]?.sourceRunId).toBe(
+      "run-ios-source",
+    );
     expect(replacement.variants.web?.steps[0]?.expectedState).toBe(
       "Authenticated dashboard is visible",
     );
@@ -1737,9 +1735,7 @@ describe("case promotion", () => {
       },
     });
 
-    expect(
-      draft.promotion.sources.web?.excludedActions,
-    ).toEqual([
+    expect(draft.promotion.sources.web?.excludedActions).toEqual([
       {
         actionId: extraActionId,
         reason: "Exploratory help detour is not part of login regression",
@@ -2022,7 +2018,13 @@ describe("case promotion", () => {
         confirmed.context,
       ),
     ).toBe(0);
-    expect(JSON.parse(confirmed.stdout.join(""))).toMatchObject({
+    const activationOutput = JSON.parse(confirmed.stdout.join("")) as {
+      caseId: string;
+      activeRevision: number;
+      contentHash: string;
+      activation: { confirmedBy: string; confirmedAt: string };
+    };
+    expect(activationOutput).toMatchObject({
       caseId: draft.caseId,
       activeRevision: draft.revision,
       contentHash: draft.contentHash,
@@ -2054,8 +2056,13 @@ describe("case promotion", () => {
         join(projectRoot, ".ai-qa", "cases", draft.caseId, "case.yaml"),
         "utf8",
       ),
-    ) as { revisions: Array<{ activation?: unknown }> };
-    expect(index.revisions[0]!.activation).toEqual(retryOutput.activation);
+    ) as {
+      revisions: Array<{
+        activation?: { confirmedBy: string; confirmedAt: string };
+      }>;
+    };
+    expect(retryOutput.activation.confirmedAt).toBe("2026-07-13T00:20:00.000Z");
+    expect(index.revisions[0]!.activation).toEqual(activationOutput.activation);
   });
 
   it("drafts and validates immutable revisions through the public case command", async () => {

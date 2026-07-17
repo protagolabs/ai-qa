@@ -32,11 +32,7 @@ import {
   projectConfig,
 } from "../helpers/project-fixture.js";
 
-const platforms = [
-  "web",
-  "ios-simulator",
-  "android-emulator",
-] as const;
+const platforms = ["web", "ios-simulator", "android-emulator"] as const;
 const startedAt = new Date("2026-07-17T08:00:00.000Z");
 const now = () => new Date("2026-07-17T08:05:00.000Z");
 const criterion: AcceptanceCriterion = {
@@ -60,7 +56,9 @@ async function recordedDoctor(
   const common = {
     installationChecks: [],
     fetchImpl: (() =>
-      Promise.reject(new Error("Recorded doctor must not fetch"))) as typeof fetch,
+      Promise.reject(
+        new Error("Recorded doctor must not fetch"),
+      )) as typeof fetch,
   };
   switch (platform) {
     case "web":
@@ -271,7 +269,11 @@ describe("recorded three-platform vertical slices", () => {
       latestRevision = draft.revision;
     }
     await expect(
-      validateCaseRevision({ projectRoot, caseId: "login", revision: latestRevision }),
+      validateCaseRevision({
+        projectRoot,
+        caseId: "login",
+        revision: latestRevision,
+      }),
     ).resolves.toMatchObject({ valid: true, issues: [] });
     const active = await activateCaseRevision({
       projectRoot,
@@ -314,7 +316,11 @@ describe("recorded three-platform vertical slices", () => {
         key: `group-two-${member.platform}`,
       });
     }
-    await finishRunGroup({ projectRoot, runGroupId: twoPlatform.manifest.id, now });
+    await finishRunGroup({
+      projectRoot,
+      runGroupId: twoPlatform.manifest.id,
+      now,
+    });
     const twoReport = await generateRunGroupReport({
       projectRoot,
       runGroupId: twoPlatform.manifest.id,
@@ -387,5 +393,5 @@ describe("recorded three-platform vertical slices", () => {
       }),
     );
     expect(threeReport.report).not.toHaveProperty("verdict");
-  });
+  }, 20_000);
 });

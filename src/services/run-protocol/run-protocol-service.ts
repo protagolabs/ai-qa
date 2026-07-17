@@ -4,7 +4,10 @@ import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
-import { controllerSchema, type Platform } from "../../core/platforms/schema.js";
+import {
+  controllerSchema,
+  type Platform,
+} from "../../core/platforms/schema.js";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import {
   actionPayloadSchema,
@@ -447,7 +450,10 @@ function requireFreshObservationAfterResume(
   }
 }
 
-function requireController(workOrder: WorkOrder, actualController: string): void {
+function requireController(
+  workOrder: WorkOrder,
+  actualController: string,
+): void {
   const expectedController = controllerForPlatform(workOrder.platform);
   if (actualController !== expectedController) {
     throw new AiQaError(

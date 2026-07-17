@@ -164,9 +164,7 @@ export class RunGroupRepository {
         );
       }
       if (
-        !snapshot.events.some(
-          (event) => event.payload.phase === "materialized",
-        )
+        !snapshot.events.some((event) => event.payload.phase === "materialized")
       ) {
         throw new AiQaError(
           "run_group.not_materialized",
@@ -327,7 +325,7 @@ function validateSnapshot(
     }
     if (
       canonicalJson(event.relatedIds) !==
-        canonicalJson(manifest.members.map((member) => member.runId))
+      canonicalJson(manifest.members.map((member) => member.runId))
     ) {
       throw new Error("run-group member links mismatch");
     }

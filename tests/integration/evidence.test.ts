@@ -25,7 +25,7 @@ import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
-import { WEB_CONTROLLER } from "../../src/core/tools.js";
+import { controllerForPlatform } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
@@ -175,11 +175,7 @@ describe("EvidenceRepository", () => {
         startedAt: fixedNow(),
       }),
     );
-    const protocol = new RunProtocolService(
-      projectRoot,
-      "run-ios",
-      fixedNow,
-    );
+    const protocol = new RunProtocolService(projectRoot, "run-ios", fixedNow);
     const capture = await protocol.planAction({
       idempotencyKey: "capture-ios-success",
       kind: "evidence-capture",
@@ -558,7 +554,7 @@ describe("EvidenceRepository", () => {
     const input = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: WEB_CONTROLLER,
+      sourceTool: controllerForPlatform("web"),
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: "event-capture-action",
@@ -585,7 +581,7 @@ describe("EvidenceRepository", () => {
     const input = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: WEB_CONTROLLER,
+      sourceTool: controllerForPlatform("web"),
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: "event-capture-action",
@@ -714,8 +710,7 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-run-id-"));
 
     expect(
-      () =>
-        new EvidenceRepository(projectRoot, "../outside", fixedNow, "web"),
+      () => new EvidenceRepository(projectRoot, "../outside", fixedNow, "web"),
     ).toThrow();
     await expect(access(join(projectRoot, ".ai-qa"))).rejects.toMatchObject({
       code: "ENOENT",
@@ -1030,7 +1025,7 @@ describe("registerEvidence", () => {
     const payload = {
       sourcePath: source,
       mediaType: "image/png",
-      sourceTool: WEB_CONTROLLER,
+      sourceTool: controllerForPlatform("web"),
       sensitivity: "internal" as const,
       evidenceKinds: ["post-action-screenshot"],
       captureActionId: planned.id,
@@ -1083,7 +1078,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: WEB_CONTROLLER,
+        sourceTool: controllerForPlatform("web"),
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,
@@ -1454,7 +1449,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: WEB_CONTROLLER,
+        sourceTool: controllerForPlatform("web"),
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,
@@ -1491,7 +1486,7 @@ describe("registerEvidence", () => {
       payload: {
         sourcePath: source,
         mediaType: "image/png",
-        sourceTool: WEB_CONTROLLER,
+        sourceTool: controllerForPlatform("web"),
         sensitivity: "internal" as const,
         evidenceKinds: ["post-action-screenshot"],
         captureActionId,

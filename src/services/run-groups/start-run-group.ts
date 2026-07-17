@@ -216,9 +216,7 @@ export async function startRunGroup(
       {
         runGroupId,
         causeCode:
-          error instanceof AiQaError
-            ? error.code
-            : "internal.unexpected_error",
+          error instanceof AiQaError ? error.code : "internal.unexpected_error",
       },
     );
   }

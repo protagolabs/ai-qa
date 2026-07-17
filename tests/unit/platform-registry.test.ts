@@ -40,13 +40,15 @@ describe("platform registry", () => {
   });
 
   it.each([
-    ["web"],
-    ["ios-simulator"],
-    ["android-emulator"],
-    ["web", "ios-simulator"],
-    ["web", "ios-simulator", "android-emulator"],
+    [["web"]],
+    [["ios-simulator"]],
+    [["android-emulator"]],
+    [["web", "ios-simulator"]],
+    [["web", "ios-simulator", "android-emulator"]],
   ] as const)("accepts configured subset %j", (platforms) => {
-    expect(projectConfigSchema.parse(projectConfigFor(platforms))).toBeDefined();
+    expect(
+      projectConfigSchema.parse(projectConfigFor(platforms)),
+    ).toBeDefined();
   });
 
   it("rejects empty and target/tool-mismatched platform sets", () => {

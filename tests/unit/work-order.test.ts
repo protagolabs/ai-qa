@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  controllerForPlatform,
-} from "../../src/core/platforms/registry.js";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import {
   createExploratoryWorkOrder,
@@ -43,7 +41,7 @@ describe("exploratory work orders", () => {
     ["web", "chrome-devtools-mcp"],
     ["ios-simulator", "pepper"],
     ["android-emulator", "appium"],
-  ] as const)("audits %s with %s", async (platform, controller) => {
+  ] as const)("audits %s with %s", (platform, controller) => {
     const workOrder = createExploratoryWorkOrder({
       platform,
       projectId: "sample-project",

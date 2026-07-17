@@ -9,9 +9,7 @@ import {
 } from "../../core/readiness/schema.js";
 import { cancelRunGroup } from "../../services/run-groups/cancel-run-group.js";
 import { finishRunGroup } from "../../services/run-groups/finish-run-group.js";
-import {
-  materializeRunGroup,
-} from "../../services/run-groups/materialize-run-group.js";
+import { materializeRunGroup } from "../../services/run-groups/materialize-run-group.js";
 import { startRunGroup } from "../../services/run-groups/start-run-group.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
 import type { CliContext } from "../context.js";
@@ -28,7 +26,7 @@ const optionsSchema = z
   .strict()
   .refine(
     (options) =>
-      (options.allActive === true) !== ((options.case?.length ?? 0) > 0),
+      (options.allActive === true) !== (options.case?.length ?? 0) > 0,
     {
       message: "Select either explicit --case values or --all-active",
       path: ["case"],

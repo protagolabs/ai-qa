@@ -138,9 +138,7 @@ function installationChecks(
   return checks.map((check): ReadinessCheck => ({
     code: check.code,
     status:
-      check.status === "pass" || check.status === "advisory"
-        ? "pass"
-        : "fail",
+      check.status === "pass" || check.status === "advisory" ? "pass" : "fail",
     message: check.message,
     category: "installation",
   }));

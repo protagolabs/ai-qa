@@ -11,8 +11,8 @@ import {
   type CaseRevision,
 } from "../../src/core/cases/schema.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
+import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
-import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
@@ -27,25 +27,33 @@ import {
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:01:00.000Z");
-const ready: WebDoctorResult = {
+const ready: PlatformReadiness = {
   platform: "web",
   status: "ready",
   checks: [
-    { code: "web.entry_url", status: "pass", message: "Configured" },
+    {
+      code: "web.entry_url",
+      status: "pass",
+      message: "Configured",
+      category: "environment",
+    },
     {
       code: "web.entry_page",
       status: "pass",
       message: "Entry page is ready",
+      category: "environment",
     },
     {
       code: "web.chrome_devtools_mcp",
       status: "pass",
       message: "Chrome DevTools MCP is ready",
+      category: "tool",
     },
     {
       code: "agent.global_skill",
       status: "pass",
       message: "Global skill is compatible",
+      category: "installation",
     },
   ],
 };
@@ -1249,7 +1257,7 @@ describe("pinned regression replay", () => {
   it("uses the gated config snapshot for a regression CLI preflight result", async () => {
     const fixture = await createActiveCase();
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-agents-"));
-    const notReady: WebDoctorResult = {
+    const notReady: PlatformReadiness = {
       ...ready,
       status: "not_ready",
       checks: ready.checks.map((check) =>
@@ -1416,10 +1424,7 @@ describe("pinned regression replay", () => {
         expectedCaseContentHash: workOrder.pinnedCase!.caseContentHash,
         actualCaseContentHash: calculateCaseContentHash(stored),
         expectedPlatformVariantHash: workOrder.pinnedCase!.platformVariantHash,
-        actualPlatformVariantHash: calculatePlatformVariantHash(
-          stored,
-          "web",
-        ),
+        actualPlatformVariantHash: calculatePlatformVariantHash(stored, "web"),
       },
     });
   });

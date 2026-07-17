@@ -31,10 +31,7 @@ export function resolveRunGroupPaths(
 ): RunGroupPaths {
   const validatedId = runGroupIdSchema.parse(runGroupId);
   const root = resolve(projectRoot, ".ai-qa", "run-groups");
-  const directory = requireStrictDescendant(
-    root,
-    resolve(root, validatedId),
-  );
+  const directory = requireStrictDescendant(root, resolve(root, validatedId));
   return {
     root,
     directory,

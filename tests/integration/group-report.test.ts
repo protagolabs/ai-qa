@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
+import { runGroupReportSchema } from "../../src/core/reports/group-schema.js";
 import { runGroupManifestSchema } from "../../src/core/run-groups/schema.js";
 import type { WorkOrder } from "../../src/core/runs/schema.js";
 import {
@@ -28,12 +29,8 @@ import {
 } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-17T00:00:00.000Z");
-const now = () => new Date("2026-07-17T00:10:00.000Z");
-const selectedPlatforms = [
-  "web",
-  "ios-simulator",
-  "android-emulator",
-] as const;
+const now = () => new Date("2026-07-17T00:05:00.000Z");
+const selectedPlatforms = ["web", "ios-simulator", "android-emulator"] as const;
 
 function controller(platform: "web" | "ios-simulator") {
   return platform === "web"
@@ -281,11 +278,7 @@ async function completeBlocked(
     observationId: observation.id,
     rationale: "The controller cannot establish whether login applied",
   });
-  const verdicts = new VerdictService(
-    fixture.projectRoot,
-    member.runId,
-    now,
-  );
+  const verdicts = new VerdictService(fixture.projectRoot, member.runId, now);
   const blocker = await verdicts.recordBlocker({
     subtype: "tool",
     condition: "Pepper stopped responding",
@@ -428,8 +421,10 @@ describe("aggregate run-group reports", () => {
       runGroupId: fixture.started.manifest.id,
       now,
     });
-    const json = JSON.parse(
-      await readFile(join(fixture.projectRoot, generated.jsonPath!), "utf8"),
+    const json = runGroupReportSchema.parse(
+      JSON.parse(
+        await readFile(join(fixture.projectRoot, generated.jsonPath!), "utf8"),
+      ),
     );
     const markdown = await readFile(
       join(fixture.projectRoot, generated.markdownPath!),
@@ -465,7 +460,9 @@ describe("aggregate run-group reports", () => {
       web.runId,
       "work-order.json",
     );
-    const workOrder = JSON.parse(await readFile(workOrderPath, "utf8")) as WorkOrder;
+    const workOrder = JSON.parse(
+      await readFile(workOrderPath, "utf8"),
+    ) as WorkOrder;
     await writeFile(
       workOrderPath,
       JSON.stringify({ ...workOrder, projectId: "tampered-project" }),
@@ -542,9 +539,9 @@ describe("run-group recording receipts", () => {
         references: [],
       },
     });
-    await expect(
-      readGroupRecordingStatus(input),
-    ).resolves.toEqual(first.status);
+    await expect(readGroupRecordingStatus(input)).resolves.toEqual(
+      first.status,
+    );
   });
 
   it("records an all-exclusion Project Skill group from its frozen manifest snapshot", async () => {

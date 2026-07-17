@@ -19,9 +19,7 @@ import {
 } from "../../src/services/skill-management/global-skill.js";
 import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import {
-  installedGlobalSkillReference,
-} from "../helpers/global-skill-fixture.js";
+import { installedGlobalSkillReference } from "../helpers/global-skill-fixture.js";
 
 const canonicalSkill = `---
 name: ai-qa
@@ -471,9 +469,7 @@ describe("syncGlobalSkill", () => {
     ).resolves.toMatchObject({ changed: true });
     await expectMissing(stale);
     expect(
-      (
-        await readdir(join(dirname(fixture.destination), "references"))
-      ).sort(),
+      (await readdir(join(dirname(fixture.destination), "references"))).sort(),
     ).toEqual([
       "android-emulator-controller.md",
       "ios-simulator-controller.md",

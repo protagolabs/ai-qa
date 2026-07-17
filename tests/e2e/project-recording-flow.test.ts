@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parse, stringify } from "yaml";
 import { runCli } from "../../src/cli/program.js";
-import type { ProjectConfigV2 } from "../../src/core/config/schema.js";
+import type { ProjectConfig } from "../../src/core/config/schema.js";
 import {
   recordingArtifactSchema,
   recordingEventSchema,
@@ -15,7 +15,7 @@ import type { WorkOrder } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
-  projectConfigV2,
+  projectConfig,
   projectRecordingReceipt,
   projectSkillSource,
 } from "../helpers/project-fixture.js";
@@ -136,8 +136,8 @@ async function installHostManagedProject(input: {
   fixture: TestProject;
   mode: "local-only" | "project-skill";
   procedure?: string;
-}): Promise<{ config: ProjectConfigV2; skill: string }> {
-  const config = projectConfigV2(input.mode);
+}): Promise<{ config: ProjectConfig; skill: string }> {
+  const config = projectConfig(["web"], input.mode);
   const skill = projectSkillSource(input.procedure);
   await expect(
     input.fixture.cli.run(["config", "validate", "--stdin-json"], config),
@@ -255,7 +255,7 @@ async function switchMode(
   fixture: TestProject,
   mode: "local-only" | "project-skill",
 ): Promise<void> {
-  const config = projectConfigV2(mode);
+  const config = projectConfig(["web"], mode);
   await expect(
     fixture.cli.run(["config", "validate", "--stdin-json"], config),
   ).resolves.toEqual({ status: "valid", config });
@@ -410,10 +410,10 @@ describe("project recording workflow CLI", () => {
       status: "recorded",
       references: [reference],
       recordedAt,
-      idempotencyKey: expect.stringMatching(
-        /^recording:sha256:[a-f0-9]{64}:v2$/u,
-      ),
     });
+    expect(journal[0]?.idempotencyKey).toMatch(
+      /^recording:sha256:[a-f0-9]{64}:v2$/u,
+    );
     const materialized = recordingArtifactSchema.parse(
       JSON.parse(
         await readFile(join(reportDirectory, "recording.json"), "utf8"),
@@ -433,7 +433,7 @@ describe("project recording workflow CLI", () => {
         join(fixture.projectRoot, ".ai-qa", "config.yaml"),
         "utf8",
       ),
-    ) as ProjectConfigV2;
+    ) as ProjectConfig;
     expect(storedConfig).toEqual(installed.config);
   });
 

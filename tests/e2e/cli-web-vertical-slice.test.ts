@@ -202,6 +202,7 @@ async function expectCoherentWebArtifacts(input: {
         contentHash: record.contentHash,
         path: record.projectRelativePath,
         evidenceKinds: record.evidenceKinds,
+        sourceTool: record.sourceTool,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   );
@@ -1024,5 +1025,4 @@ describe("Increment 1 Web vertical slice CLI", () => {
       cli.calls.filter((args) => args[0] === "report" && args[1] === "export"),
     ).toHaveLength(3);
   }, 20_000);
-
 });

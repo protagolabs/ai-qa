@@ -137,9 +137,7 @@ export async function prepareRegressionWorkOrder(
     schemaVersion: WORK_ORDER_SCHEMA_VERSION,
     protocolVersion: WORK_PROTOCOL_VERSION,
     runId: input.runId ?? createId("run"),
-    ...(input.runGroupId === undefined
-      ? {}
-      : { runGroupId: input.runGroupId }),
+    ...(input.runGroupId === undefined ? {} : { runGroupId: input.runGroupId }),
     kind: "regression",
     execution: input.execution,
     projectId: config.project.id,

@@ -25,10 +25,7 @@ import { sha256Canonical } from "../../src/core/canonical-json.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { controllerForPlatform } from "../../src/core/platforms/registry.js";
-import type {
-  Controller,
-  Platform,
-} from "../../src/core/platforms/schema.js";
+import type { Controller, Platform } from "../../src/core/platforms/schema.js";
 import { runReportSchema } from "../../src/core/reports/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -55,6 +52,7 @@ import {
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const eventNow = () => new Date("2026-07-13T00:10:00.000Z");
+const regressionEventNow = () => new Date("2026-07-13T00:05:00.000Z");
 const generatedNow = () => new Date("2026-07-13T00:20:00.000Z");
 
 function config(
@@ -278,7 +276,7 @@ async function completedRegressionRun(
   controller: Controller,
 ) {
   const project = await initializedProject(config({ platform }));
-  const cases = new CaseRepository(project.projectRoot, eventNow);
+  const cases = new CaseRepository(project.projectRoot, regressionEventNow);
   const revision = await cases.createDraft({
     schemaVersion: 1,
     caseId: "platform-report",
@@ -330,7 +328,7 @@ async function completedRegressionRun(
   const protocol = new RunProtocolService(
     project.projectRoot,
     workOrder.runId,
-    eventNow,
+    regressionEventNow,
   );
   const interaction = await protocol.planAction({
     idempotencyKey: "open-platform-state",
@@ -345,8 +343,21 @@ async function completedRegressionRun(
     phase: "completed",
     toolResult: { summary: "Platform state opened" },
   });
+  const observationAction = await protocol.planAction({
+    idempotencyKey: "observe-platform-state",
+    kind: "observation",
+    intent: "Observe the platform state",
+    tool: controller,
+    target: { description: "Platform state" },
+    stepId: "step-platform-state",
+  });
+  await protocol.completeAction({
+    actionId: observationAction.id,
+    phase: "completed",
+    toolResult: { summary: "Platform state observed" },
+  });
   const observation = await protocol.addObservation({
-    actionId: interaction.id,
+    actionId: observationAction.id,
     summary: "Platform state is visible",
     state: { visible: true },
   });
@@ -379,7 +390,7 @@ async function completedRegressionRun(
     },
     criterionIds: ["platform-state-visible"],
     observationIds: [observation.id],
-    now: eventNow,
+    now: regressionEventNow,
   });
   const assertion = await protocol.recordAssertion({
     criterionId: "platform-state-visible",
@@ -394,7 +405,7 @@ async function completedRegressionRun(
   await new VerdictService(
     project.projectRoot,
     workOrder.runId,
-    eventNow,
+    regressionEventNow,
   ).set({
     classification: "pass",
     summary: "Platform state verified",
@@ -410,7 +421,7 @@ async function completedRegressionRun(
   await finalizeRun({
     ...project,
     runId: workOrder.runId,
-    now: eventNow,
+    now: regressionEventNow,
   });
   const generated = await generateRunReport({
     ...project,
@@ -495,9 +506,7 @@ describe("generateRunReport", () => {
       integrity: { status: "verified" },
     });
     await expect(
-      access(
-        join(fixture.projectRoot, ".ai-qa/reports/runs/run-1"),
-      ),
+      access(join(fixture.projectRoot, ".ai-qa/reports/runs/run-1")),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 

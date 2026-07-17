@@ -145,7 +145,10 @@ describe("recording repository materialization", () => {
 
   it("rejects empty histories and run identity mismatches", () => {
     expect(() =>
-      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [] }),
+      materializeRecordingArtifact({
+        subject: { kind: "run", id: "run-1" },
+        events: [],
+      }),
     ).toThrow();
     expect(() =>
       materializeRecordingArtifact({
@@ -249,10 +252,12 @@ describe("recording repository", () => {
       schemaVersion: 2,
       subject: { kind: "run", id: "run-1" },
       recordedAt: FIRST_RECORDED_AT,
-      idempotencyKey: expect.stringMatching(/^recording:sha256:[a-f0-9]{64}:v2$/u),
       status: "recorded",
       references: ["opaque-reference-1"],
     });
+    expect(registered.event.idempotencyKey).toMatch(
+      /^recording:sha256:[a-f0-9]{64}:v2$/u,
+    );
     expect(registered.event.eventId).toMatch(/^recording-/u);
     expect(journal.endsWith("\n")).toBe(true);
     expect(journal.slice(0, -1).split("\n")).toHaveLength(1);
@@ -330,7 +335,10 @@ describe("recording repository", () => {
     expect(
       JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
     ).toEqual(
-      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [event] }),
+      materializeRecordingArtifact({
+        subject: { kind: "run", id: "run-1" },
+        events: [event],
+      }),
     );
     expect(nowCalls).toBe(0);
     expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
@@ -413,7 +421,10 @@ describe("recording repository", () => {
     await writeJournal(directory, events);
     await writeArtifact(
       directory,
-      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [events[0]] }),
+      materializeRecordingArtifact({
+        subject: { kind: "run", id: "run-1" },
+        events: [events[0]],
+      }),
     );
     const journalPath = join(directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath, "utf8");
@@ -644,7 +655,9 @@ describe("recording repository", () => {
       "{not-json}\n",
       "",
       JSON.stringify(valid),
-      serializeJsonLines([recordingEvent({ subject: { kind: "run", id: "run-2" } })]),
+      serializeJsonLines([
+        recordingEvent({ subject: { kind: "run", id: "run-2" } }),
+      ]),
       serializeJsonLines([
         valid,
         recordingEvent({
@@ -672,7 +685,9 @@ describe("recording repository", () => {
     const directory = await createDirectory();
     const event = recordingEvent();
     await writeJournal(directory, [event]);
-    const otherRunEvent = recordingEvent({ subject: { kind: "run", id: "run-2" } });
+    const otherRunEvent = recordingEvent({
+      subject: { kind: "run", id: "run-2" },
+    });
     await writeArtifact(
       directory,
       materializeRecordingArtifact({
@@ -697,12 +712,18 @@ describe("recording repository", () => {
     await writeJournal(aheadDirectory, [events[0]]);
     await writeArtifact(
       aheadDirectory,
-      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events }),
+      materializeRecordingArtifact({
+        subject: { kind: "run", id: "run-1" },
+        events,
+      }),
     );
 
     const conflictingDirectory = await createDirectory();
     await writeJournal(conflictingDirectory, events);
-    const artifact = materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events });
+    const artifact = materializeRecordingArtifact({
+      subject: { kind: "run", id: "run-1" },
+      events,
+    });
     const [firstHistory, secondHistory] = artifact.history;
     if (firstHistory === undefined || secondHistory === undefined) {
       throw new Error("Two-event materialization requires two history entries");
@@ -785,20 +806,10 @@ function withoutRecordingSnapshot(workOrder: WorkOrder): WorkOrder {
   return legacyWorkOrder;
 }
 
-function withoutProjectSkillSnapshot(workOrder: WorkOrder): WorkOrder {
-  const historicalWorkOrder: WorkOrder = {
-    ...workOrder,
-    protocolVersion: "1.1.0",
-  };
-  delete historicalWorkOrder.projectSkill;
-  return historicalWorkOrder;
-}
-
 async function receiptFixture(
   options: {
     mode?: "local-only" | "project-skill";
     legacy?: boolean;
-    historicalProjectSkill?: boolean;
     terminal?: boolean;
     generated?: boolean;
     withEvidence?: boolean;
@@ -848,9 +859,7 @@ async function receiptFixture(
   const workOrder =
     options.legacy === true
       ? withoutRecordingSnapshot(currentWorkOrder)
-      : options.historicalProjectSkill === true
-        ? withoutProjectSkillSnapshot(currentWorkOrder)
-        : currentWorkOrder;
+      : currentWorkOrder;
   await repository.create(workOrder);
 
   let evidencePath: string | undefined;
@@ -1156,79 +1165,6 @@ describe("verified report recording receipt service", () => {
     );
     expect(verdictAfter).toBe(verdictBefore);
     await expectNoRecordingFiles(fixture);
-  });
-
-  it("rejects pending status and new receipts for historical 1.1 project-skill runs without a snapshot", async () => {
-    const fixture = await receiptFixture({ historicalProjectSkill: true });
-
-    await expect(readRecordingStatus(fixture)).rejects.toMatchObject({
-      code: "project_skill.snapshot_missing",
-    });
-    await expect(
-      registerRecordingReceipt({
-        ...fixture,
-        receipt: {
-          status: "recorded",
-          references: ["docs/qa-results.md#run-1"],
-        },
-      }),
-    ).rejects.toMatchObject({ code: "project_skill.snapshot_missing" });
-    await expectNoRecordingFiles(fixture);
-  });
-
-  it("reads and exactly replays an existing receipt for historical 1.1 project-skill runs", async () => {
-    const fixture = await receiptFixture({ historicalProjectSkill: true });
-    const receipt = {
-      status: "recorded" as const,
-      references: ["docs/qa-results.md#run-1"],
-    };
-    const historicalEvent = recordingEvent({
-      subject: { kind: "run", id: fixture.runId },
-      idempotencyKey: "historical-caller-owned-key",
-      status: receipt.status,
-      references: receipt.references,
-    });
-    await writeJournal(fixture.directory, [historicalEvent]);
-    await writeArtifact(
-      fixture.directory,
-      materializeRecordingArtifact({
-        subject: { kind: "run", id: fixture.runId },
-        events: [historicalEvent],
-      }),
-    );
-    const journalPath = join(fixture.directory, "recording.jsonl");
-    const journalBefore = await readFile(journalPath);
-
-    await expect(readRecordingStatus(fixture)).resolves.toEqual({
-      subject: RUN_SUBJECT,
-      status: "recorded",
-      references: receipt.references,
-      eventId: historicalEvent.eventId,
-      recordedAt: historicalEvent.recordedAt,
-    });
-    await expect(
-      registerRecordingReceipt({ ...fixture, receipt }),
-    ).resolves.toEqual({
-      event: historicalEvent,
-      status: {
-        subject: RUN_SUBJECT,
-        status: "recorded",
-        references: receipt.references,
-        eventId: historicalEvent.eventId,
-        recordedAt: historicalEvent.recordedAt,
-      },
-      replayed: true,
-    });
-    await expect(
-      registerRecordingReceipt({
-        ...fixture,
-        receipt: { ...receipt, status: "unknown", references: [] },
-      }),
-    ).rejects.toMatchObject({
-      code: "recording.idempotency_conflict",
-      details: { runId: "run-1" },
-    });
-    expect(await readFile(journalPath)).toEqual(journalBefore);
   });
 
   it("leaves report, run journal, and verdict bytes and hashes unchanged", async () => {

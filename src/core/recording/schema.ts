@@ -2,11 +2,14 @@ import { z } from "zod";
 import { runGroupIdSchema } from "../run-groups/schema.js";
 import { runIdSchema } from "../runs/schema.js";
 
+const reportRunIdSchema = runIdSchema.refine(
+  (id) => !runGroupIdSchema.safeParse(id).success,
+  "Run report subjects require a run ID, not a run-group ID",
+);
+
 export const reportSubjectSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("run"), id: runIdSchema }).strict(),
-  z
-    .object({ kind: z.literal("run-group"), id: runGroupIdSchema })
-    .strict(),
+  z.object({ kind: z.literal("run"), id: reportRunIdSchema }).strict(),
+  z.object({ kind: z.literal("run-group"), id: runGroupIdSchema }).strict(),
 ]);
 
 export type ReportSubject = z.infer<typeof reportSubjectSchema>;

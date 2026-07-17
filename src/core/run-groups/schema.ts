@@ -137,8 +137,7 @@ export const runGroupManifestSchema = z
     const caseCells = new Map<
       string,
       Array<
-        | (typeof manifest.members)[number]
-        | (typeof manifest.exclusions)[number]
+        (typeof manifest.members)[number] | (typeof manifest.exclusions)[number]
       >
     >();
     for (const cell of [...manifest.members, ...manifest.exclusions]) {
