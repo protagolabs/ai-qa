@@ -34,7 +34,7 @@
    current Skill/reference content, README, and current validation guidance.
 3. Run the contract searches from Task 5 and correct any remaining current
    trust/default references.
-4. Run `pnpm --filter ai-qa run format -- --write` once.
+4. Run `pnpm format` once.
 5. Run `pnpm check` once. If it fails, rerun only the reported test file or
    failing validation command while fixing it, then rerun `pnpm check` once.
 6. Review the final diff inline and create one commit for the complete change.
@@ -671,7 +671,7 @@ Expected: only trust removal, resolver migration, explicit recording-choice Skil
 Run:
 
 ```bash
-pnpm --filter ai-qa run format -- --write
+pnpm format
 ```
 
 Expected: Prettier completes successfully. Review any formatter changes and keep them limited to affected files.

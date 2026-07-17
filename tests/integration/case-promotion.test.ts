@@ -97,11 +97,7 @@ async function createCompletedPassRun(
       startedAt,
     }),
   );
-  const protocol = new RunProtocolService(
-    projectRoot,
-    "run-source",
-    runNow,
-  );
+  const protocol = new RunProtocolService(projectRoot, "run-source", runNow);
   let unrelatedObservation:
     Awaited<ReturnType<RunProtocolService["addObservation"]>> | undefined;
   let unrelatedEvidence:
@@ -286,11 +282,7 @@ async function createCompletedPassRun(
     evidenceIds: [unrelatedEvidence?.id ?? evidence.id],
     stepId,
   });
-  const verdict = new VerdictService(
-    projectRoot,
-    "run-source",
-    runNow,
-  );
+  const verdict = new VerdictService(projectRoot, "run-source", runNow);
   const verdictEvent = await verdict.set({
     classification: "pass",
     summary: "Login is supported by observation and screenshot evidence",
@@ -355,11 +347,7 @@ async function createCompletedUnknownRun(): Promise<{
       startedAt,
     }),
   );
-  const protocol = new RunProtocolService(
-    projectRoot,
-    "run-unknown",
-    runNow,
-  );
+  const protocol = new RunProtocolService(projectRoot, "run-unknown", runNow);
   const planned = await protocol.planAction({
     idempotencyKey: "ambiguous-submit",
     kind: "interaction",
@@ -396,11 +384,7 @@ async function createCompletedUnknownRun(): Promise<{
     observationId: observation.id,
     rationale: "Fresh observation cannot prove whether submission applied",
   });
-  const verdict = new VerdictService(
-    projectRoot,
-    "run-unknown",
-    runNow,
-  );
+  const verdict = new VerdictService(projectRoot, "run-unknown", runNow);
   await verdict.set({
     classification: "not_verified",
     reasonCode: "unknown_action",
@@ -444,11 +428,7 @@ async function createStaleCompletedPassRun(): Promise<{
       startedAt,
     }),
   );
-  const protocol = new RunProtocolService(
-    projectRoot,
-    "run-source",
-    runNow,
-  );
+  const protocol = new RunProtocolService(projectRoot, "run-source", runNow);
   const initialObservationAction = await protocol.planAction({
     idempotencyKey: "observe-initial-login-state",
     kind: "observation",
@@ -1637,8 +1617,7 @@ describe("case promotion", () => {
   });
 
   it("requires exact activation confirmation through the public case command", async () => {
-    const { projectRoot, plannedActionId } =
-      await createCompletedPassRun();
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
     const draft = await draftCaseFromRun({
       projectRoot,
       runId: "run-source",
@@ -1738,8 +1717,7 @@ describe("case promotion", () => {
   });
 
   it("drafts and validates immutable revisions through the public case command", async () => {
-    const { projectRoot, plannedActionId } =
-      await createCompletedPassRun();
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
     const drafted = createCapturedCli({
       cwd: projectRoot,
       readStdin: () =>

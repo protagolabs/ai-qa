@@ -676,8 +676,7 @@ describe("registerEvidence", () => {
   });
 
   it("rejects forged protocol metadata before mutating evidence storage", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "forged-history.png");
     await writeFile(source, Buffer.from("forged-history-image"));
     const decisionPayload = {
@@ -790,8 +789,7 @@ describe("registerEvidence", () => {
   });
 
   it("rejects duplicate index records after an idempotent retry", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, Buffer.from("original-image"));
     const input = {
@@ -1005,8 +1003,7 @@ describe("registerEvidence", () => {
   });
 
   it("rejects an invalid typed observation before creating evidence storage", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const invalidObservation = await runRepository.journal("run-1").append({
@@ -1047,8 +1044,7 @@ describe("registerEvidence", () => {
   });
 
   it("persists strict valid criterion and observation citations", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const journal = runRepository.journal("run-1");
@@ -1127,8 +1123,7 @@ describe("registerEvidence", () => {
   });
 
   it("rejects a forged non-evidence idempotency collision before storage", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     await runRepository.journal("run-1").append({
@@ -1165,8 +1160,7 @@ describe("registerEvidence", () => {
   });
 
   it("coordinates concurrent same-key registrations into one record and event", async () => {
-    const { projectRoot, captureActionId, runRepository } =
-      await createRun();
+    const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const input = {

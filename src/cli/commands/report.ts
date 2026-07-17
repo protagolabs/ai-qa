@@ -27,9 +27,7 @@ async function reportInput(
   const projectOption = explicitProject(command);
   const project = await resolveProject({
     cwd: context.cwd,
-    ...(projectOption === undefined
-      ? {}
-      : { explicitProject: projectOption }),
+    ...(projectOption === undefined ? {} : { explicitProject: projectOption }),
   });
   return {
     projectRoot: project.projectRoot,

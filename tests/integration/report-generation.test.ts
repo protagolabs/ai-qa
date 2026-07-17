@@ -576,11 +576,7 @@ describe("generateRunReport", () => {
         startedAt,
       }),
     );
-    const verdicts = new VerdictService(
-      project.projectRoot,
-      "run-1",
-      eventNow,
-    );
+    const verdicts = new VerdictService(project.projectRoot, "run-1", eventNow);
     await expect(
       verdicts.set({
         classification: "not_verified",

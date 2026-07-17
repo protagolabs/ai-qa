@@ -154,11 +154,7 @@ async function startFixtureRun(fixture: RegressionFixture) {
   });
   return {
     workOrder,
-    protocol: new RunProtocolService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ),
+    protocol: new RunProtocolService(fixture.projectRoot, workOrder.runId, now),
   };
 }
 
@@ -315,11 +311,7 @@ describe("pinned regression replay", () => {
       criterionId: "account-visible",
       key: "account",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "Both required states are supported",
       criterionResults: [
@@ -383,11 +375,7 @@ describe("pinned regression replay", () => {
       criterionId: "account-visible",
       key: "missing-checkpoint-account",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "Criterion evidence exists but one pinned checkpoint is absent",
       criterionResults: [
@@ -460,11 +448,7 @@ describe("pinned regression replay", () => {
       criterionId: "account-visible",
       key: "violated-checkpoint-account",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "A violated assertion cannot provide the pinned checkpoint",
       criterionResults: [
@@ -522,11 +506,7 @@ describe("pinned regression replay", () => {
       evidenceIds: [first.evidence.id],
       stepId: "step-2-account-visible",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "The home assertion is attributed to the wrong pinned step",
       criterionResults: [
@@ -640,11 +620,7 @@ describe("pinned regression replay", () => {
       criterionId: "account-visible",
       key: "laundered-account",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "Records were appended late but their tool calls were stale",
       criterionResults: [
@@ -1313,11 +1289,7 @@ describe("pinned regression replay", () => {
       criterionId: "account-visible",
       key: "tamper-account",
     });
-    await new VerdictService(
-      fixture.projectRoot,
-      workOrder.runId,
-      now,
-    ).set({
+    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
       classification: "pass",
       summary: "Replay appears complete",
       criterionResults: [

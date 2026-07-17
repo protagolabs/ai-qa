@@ -634,9 +634,11 @@ Immediately before the approval question, include all four lines:
     expect.soft(guidance).not.toContain("ai-qa skill sync --project");
     expect.soft(guidance).not.toContain("ai-qa trust");
     expect.soft(guidance).not.toContain("repository trust");
-    expect.soft(guidance).not.toContain(
-      "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`",
-    );
+    expect
+      .soft(guidance)
+      .not.toContain(
+        "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`",
+      );
     expect.soft(guidance).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
   });
 

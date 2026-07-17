@@ -694,11 +694,7 @@ async function completePass(input: {
   requiredStep?: WorkOrder["requiredSteps"][number];
 }) {
   const recorded = await recordSuccessfulLogin(input);
-  await new VerdictService(
-    input.projectRoot,
-    input.workOrder.runId,
-    now,
-  ).set({
+  await new VerdictService(input.projectRoot, input.workOrder.runId, now).set({
     classification: "pass",
     summary: "Successful login is supported by UI observation and screenshot",
     criterionResults: criteria.map((criterion, index) => ({

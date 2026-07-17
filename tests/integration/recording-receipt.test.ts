@@ -851,11 +851,7 @@ async function receiptFixture(
 
   let evidencePath: string | undefined;
   if (options.withEvidence === true) {
-    const protocol = new RunProtocolService(
-      projectRoot,
-      "run-1",
-      RUN_NOW,
-    );
+    const protocol = new RunProtocolService(projectRoot, "run-1", RUN_NOW);
     const capture = await protocol.planAction({
       idempotencyKey: "capture-before-cancel",
       kind: "evidence-capture",

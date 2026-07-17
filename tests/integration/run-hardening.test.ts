@@ -188,7 +188,9 @@ describe("host-authorized exploratory start boundary", () => {
 
   it("does not use AI_QA_HOME as an authorization gate", async () => {
     const { projectRoot } = await initializeProject();
-    const alternateHome = await mkdtemp(join(tmpdir(), "ai-qa-alternate-home-"));
+    const alternateHome = await mkdtemp(
+      join(tmpdir(), "ai-qa-alternate-home-"),
+    );
     const captured = createCapturedCli({
       cwd: projectRoot,
       env: { AI_QA_HOME: alternateHome },
@@ -212,7 +214,9 @@ describe("host-authorized exploratory start boundary", () => {
       ),
     ).toBe(0);
     expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toHaveLength(1);
-    await expect(access(join(alternateHome, "trust.json"))).rejects.toMatchObject({
+    await expect(
+      access(join(alternateHome, "trust.json")),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
