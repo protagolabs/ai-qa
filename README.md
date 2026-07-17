@@ -97,7 +97,7 @@ ai-qa doctor --platform ios-simulator --json --stdin-json
 ai-qa doctor --platform android-emulator --json --stdin-json
 ```
 
-Before execution, ask the user which configured platform subset to run. A project may configure three platforms and run only one or two. For one platform:
+Before execution, ask the user which configured platform subset to run. A project may configure three platforms and run only one or two. Configuration never selects execution platforms. For one platform:
 
 ```bash
 ai-qa run start --kind exploratory --platform ios-simulator --execution local --stdin-json
@@ -116,9 +116,11 @@ ai-qa case activate login --revision <revision> --stdin-json
 
 Each draft adds or replaces only the source platform's immutable variant while retaining the other variants.
 
-## Explicit multi-platform RunGroups
+For exploratory QA on two or three selected platforms, start one explicit exploratory run per selected platform with the confirmed goal and acceptance criteria. Complete, report, and review those platform-owned runs independently; RunGroups do not start exploratory work.
 
-Repeat `--platform` for the exact requested subset. Configuration never selects all platforms implicitly.
+## Explicit multi-platform regression RunGroups
+
+Use a RunGroup only for regression cases. List the exact requested platform subset and select explicit cases or `--all-active`.
 
 ```bash
 # Two selected platforms

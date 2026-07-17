@@ -10,7 +10,11 @@ Immediately before confirmation, attest that config validation, Project Skill va
 
 ## Execution selection
 
-Ask which configured platform subset to execute for the current request. Accept any non-empty subset; do not infer it from configuration. One platform uses `run start`. Multiple platforms use `run-group start` with each `--platform` written explicitly. Real devices are unsupported.
+Ask which configured platform subset to execute for the current request. Accept any non-empty subset. Configuration never selects execution platforms. Real devices are unsupported.
+
+For exploration, multi-platform exploratory QA starts one explicit exploratory run per selected platform. Give each run the confirmed shared goal and acceptance criteria plus that platform's readiness. Finish, report, and review each platform run independently.
+
+For regression, one selected platform uses `run start --kind regression`. Multi-platform regression uses a RunGroup with every selected platform and either explicit case IDs or `--all-active`. RunGroups do not start exploratory work.
 
 ## Actions and evidence
 
@@ -31,7 +35,7 @@ Start exploratory work with `ai-qa run start --kind exploratory --platform <plat
 
 Draft a case from a complete reviewed exploratory run with `case draft --from-run`. Each draft adds or replaces only the source run's immutable platform variant while retaining other variants. Validate and explicitly activate the reviewed revision. Start regression with an explicit configured `--platform`; follow the pinned variant steps in order.
 
-For multiple platforms, use `run-group start --case <case-id> --platform <platform> ... --execution <local|ci> --stdin-json`. The selected subset is frozen. A missing selected variant becomes `coverage_gap`. Finish only after every child run is terminal.
+For multi-platform regression, use `run-group start --case <case-id> --platform <platform> ... --execution <local|ci> --stdin-json`, or replace explicit cases with `--all-active`. The selected subset is frozen. A missing selected variant becomes `coverage_gap`. Finish only after every child run is terminal.
 
 ## Reports and recording
 

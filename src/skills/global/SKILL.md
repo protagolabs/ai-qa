@@ -28,18 +28,20 @@ Read [shared-work-protocol.md](references/shared-work-protocol.md) for setup, li
 
 ## Execute selected platforms
 
-Before starting work, ask which configured platform subset the user wants now. Accept any non-empty subset of one, two, or three configured platforms. Configuration does not select execution platforms.
+Before starting work, ask which configured platform subset the user wants now. Accept any non-empty subset of one, two, or three configured platforms. Configuration never selects execution platforms.
 
 For each selected platform:
 
 1. Read its controller reference and obtain host-recorded readiness.
-2. Start a platform-owned exploratory run or regression. One run has one platform, work order, journal, evidence directory, verdict, and report.
+2. Start a platform-owned run. One run has one platform, work order, journal, evidence directory, verdict, and report.
 3. Follow the shared two-phase action and fresh post-action evidence chain. Invoke the controller only through the host, never through the CLI.
 4. Promote reviewed exploratory work incrementally into the matching immutable platform variant.
 
 Use [web-controller.md](references/web-controller.md) for Web, [ios-simulator-controller.md](references/ios-simulator-controller.md) for iOS Simulator, and [android-emulator-controller.md](references/android-emulator-controller.md) for Android Emulator.
 
-For multiple selected platforms, start a RunGroup with the explicit subset. Missing selected case variants are coverage gaps, not child runs. Generate and verify every child report before the aggregate report. An aggregate report preserves the complete matrix and never synthesizes a QA verdict.
+For exploratory work, multi-platform exploratory QA starts one explicit exploratory run per selected platform with the confirmed goal and acceptance criteria. Complete and report each run independently, then promote each reviewed platform variant incrementally.
+
+For regression, one selected platform starts one explicit regression run. Multi-platform regression uses a RunGroup with the explicit selected platforms and explicit cases or `--all-active`. Missing selected case variants are coverage gaps, not child runs. Generate and verify every child report before the aggregate report. An aggregate report preserves the complete matrix and never synthesizes a QA verdict.
 
 <!-- ai-qa:managed:end -->
 

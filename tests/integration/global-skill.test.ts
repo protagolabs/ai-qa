@@ -521,6 +521,17 @@ describe("bundled global skill 2.0", () => {
     expect.soft(skill).toContain("aiQaProtocolRange: ^2.0.0");
     expect.soft(skill).toContain("web, ios-simulator, and android-emulator");
     expect.soft(skill).toContain("ask which configured platform subset");
+    expect
+      .soft(guidance)
+      .toContain(
+        "multi-platform exploratory QA starts one explicit exploratory run per selected platform",
+      );
+    expect
+      .soft(guidance)
+      .toContain("Multi-platform regression uses a RunGroup");
+    expect
+      .soft(guidance)
+      .toContain("Configuration never selects execution platforms");
     expect.soft(skill).not.toContain("schema-v2");
     expect.soft(skill).not.toContain("automatically run all");
     for (const fact of [
