@@ -1,6 +1,13 @@
 # AI QA Host Authority and Explicit Recording Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution profile: single-pass inline.** Tasks 1–4 are the complete change
+> specification, not separate execution checkpoints. Apply all source, test,
+> Skill, and documentation edits in one implementation pass. Do not run the
+> per-task RED/GREEN commands or create per-task commits. After all edits are
+> complete, format once and run `pnpm check` once. Only rerun a focused test
+> file when the final check identifies a failure. Perform one final commit.
+> Do not dispatch implementation or review subagents unless the user explicitly
+> requests them.
 
 **Goal:** Remove AI QA's repository-trust authority layer and require an explicit user choice for `recordingPolicy.mode` during first-use configuration.
 
@@ -17,7 +24,24 @@
 - `project-skill` is valid only with an identified, user-confirmed existing procedure; tool availability is never a procedure.
 - Keep config validation, Project Skill validation, complete diff review, host write approval, and post-write doctor gates unchanged.
 - Historical design, plan, and captured evaluation documents remain historical records; update active source, current Skill/reference, tests, README, and current acceptance instructions.
-- Use failing tests before production changes and verify each failure is caused by the old trust/default behavior.
+- Update tests in the same implementation pass so they assert the new behavior;
+  a separate pre-implementation RED run is not required by this plan.
+
+## Fast Execution Order
+
+1. Read the task specifications and resolve all listed call sites before editing.
+2. Apply Tasks 1–4 as one coherent patch, including production code, tests,
+   current Skill/reference content, README, and current validation guidance.
+3. Run the contract searches from Task 5 and correct any remaining current
+   trust/default references.
+4. Run `pnpm --filter ai-qa run format -- --write` once.
+5. Run `pnpm check` once. If it fails, rerun only the reported test file or
+   failing validation command while fixing it, then rerun `pnpm check` once.
+6. Review the final diff inline and create one commit for the complete change.
+
+The detailed test and commit commands inside Tasks 1–4 document expected
+behavior and useful diagnostics. They are intentionally skipped during a
+normal successful execution under this profile.
 
 ---
 
@@ -619,7 +643,7 @@ git commit -m "docs: align setup with host authority"
 
 ---
 
-### Task 5: Format, Review, and Run the Full Quality Gate
+### Task 5: Run One Final Format, Review, and Quality Gate
 
 **Files:**
 
@@ -636,7 +660,7 @@ Run:
 
 ```bash
 git status --short
-git diff --stat HEAD~4
+git diff --stat
 git diff --check
 ```
 
@@ -652,9 +676,10 @@ pnpm --filter ai-qa run format -- --write
 
 Expected: Prettier completes successfully. Review any formatter changes and keep them limited to affected files.
 
-- [ ] **Step 3: Run the TypeScript/Node code-review workflow**
+- [ ] **Step 3: Review the complete diff inline once**
 
-Use the repository's `ts-task-gated`/`quality-gate` workflow and `.codex/agents/code_reviewer.toml`. Because execution mode is a user choice, do not dispatch a review subagent unless the user explicitly selected subagent-driven execution; otherwise perform the same correctness-focused review inline.
+Review the complete working-tree diff once. Do not run a separate review
+workflow or dispatch a review subagent unless the user explicitly requests it.
 
 Review specifically for:
 
@@ -664,7 +689,8 @@ Review specifically for:
 - current Skill wording that still silently selects `local-only`;
 - tests that merely remove assertions instead of proving host-authorized behavior.
 
-Fix confirmed findings, rerun the affected focused test, and record no speculative refactors.
+Fix confirmed findings without speculative refactors. Do not run tests at this
+step; validation is consolidated in Step 4.
 
 - [ ] **Step 4: Run the complete repository check**
 
@@ -674,7 +700,10 @@ Run:
 pnpm check
 ```
 
-Expected sequence and result: `format:check`, ESLint, TypeScript typecheck, full Vitest suite, and production build all PASS.
+Expected sequence and result: `format:check`, ESLint, TypeScript typecheck, full
+Vitest suite, and production build all PASS. If it fails, run only the failing
+test file or validation command while correcting the issue, then rerun
+`pnpm check` once.
 
 - [ ] **Step 5: Run final contract searches**
 
@@ -694,16 +723,14 @@ rg -n "ai-qa trust|When no existing result-management procedure exists, use `rec
 
 Expected: no matches.
 
-- [ ] **Step 6: Commit any review corrections**
+- [ ] **Step 6: Create the single implementation commit**
 
-If formatting or review changed tracked files:
+After the final check passes:
 
 ```bash
 git add src tests README.md docs/validation
-git commit -m "chore: validate host authority migration"
+git commit -m "refactor: move project authority to host"
 ```
-
-If no files changed, do not create an empty commit.
 
 - [ ] **Step 7: Report completion evidence**
 
