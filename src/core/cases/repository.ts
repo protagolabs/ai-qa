@@ -1,4 +1,4 @@
-import { open, readFile, rm } from "node:fs/promises";
+import { open, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { parse, stringify } from "yaml";
@@ -7,6 +7,7 @@ import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import {
   ensureProjectLocalDirectory,
+  requireProjectLocalDirectory,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import {
@@ -357,6 +358,26 @@ export class CaseRepository {
       );
     }
     return revision;
+  }
+
+  async listActive(): Promise<CaseRevision[]> {
+    const casesRoot = await requireProjectLocalDirectory(this.projectRoot, [
+      ".ai-qa",
+      "cases",
+    ]);
+    const entries = await readdir(casesRoot, { withFileTypes: true });
+    const caseIds = entries
+      .map((entry) => entry.name)
+      .filter((name) => caseIdSchema.safeParse(name).success)
+      .sort();
+    const active: CaseRevision[] = [];
+    for (const caseId of caseIds) {
+      const index = await this.readIndex(caseId);
+      if (index.activeRevision !== undefined) {
+        active.push(await this.readActive(caseId));
+      }
+    }
+    return active;
   }
 
   private paths(caseId: string): CasePaths {

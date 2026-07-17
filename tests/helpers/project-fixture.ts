@@ -98,8 +98,14 @@ export async function initializeTestProject(input: {
   await Promise.all([
     mkdir(join(input.projectRoot, ".ai-qa", "cases"), { recursive: true }),
     mkdir(join(input.projectRoot, ".ai-qa", "runs"), { recursive: true }),
+    mkdir(join(input.projectRoot, ".ai-qa", "run-groups"), {
+      recursive: true,
+    }),
     mkdir(join(input.projectRoot, ".ai-qa", "evidence"), { recursive: true }),
     mkdir(join(input.projectRoot, ".ai-qa", "reports", "runs"), {
+      recursive: true,
+    }),
+    mkdir(join(input.projectRoot, ".ai-qa", "reports", "groups"), {
       recursive: true,
     }),
     mkdir(join(input.projectRoot, ".agents", "skills", "ai-qa-project"), {

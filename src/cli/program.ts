@@ -13,6 +13,7 @@ import { registerObservationCommands } from "./commands/observation.js";
 import { registerRecoveryCommands } from "./commands/recovery.js";
 import { registerReportCommands } from "./commands/report.js";
 import { registerRunCommands } from "./commands/run.js";
+import { registerRunGroupCommands } from "./commands/run-group.js";
 import { registerSkillCommands } from "./commands/skill.js";
 import { registerVerdictCommands } from "./commands/verdict.js";
 import type { CliContext } from "./context.js";
@@ -43,6 +44,7 @@ export function createProgram(context: CliContext): Command {
   registerRecoveryCommands(program, context);
   registerReportCommands(program, context);
   registerRunCommands(program, context);
+  registerRunGroupCommands(program, context);
   registerSkillCommands(program, context, (exitCode) => {
     requestedExitCodes.set(program, exitCode);
   });

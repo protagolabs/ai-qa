@@ -110,6 +110,10 @@ const workOrderBaseSchema = z
     schemaVersion: z.literal(WORK_ORDER_SCHEMA_VERSION),
     protocolVersion: storedWorkProtocolVersionSchema,
     runId: runIdSchema,
+    runGroupId: z
+      .string()
+      .regex(/^run-group-[a-z0-9][a-z0-9-]{0,126}$/u)
+      .optional(),
     kind: z.enum(["exploratory", "regression"]),
     execution: z.enum(["local", "ci"]),
     projectId: z.string(),

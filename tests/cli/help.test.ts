@@ -73,6 +73,26 @@ describe("ai-qa CLI shell", () => {
     expect(help).not.toMatch(/^\s+generate\s/m);
   });
 
+  it("documents immutable run-group orchestration commands", async () => {
+    const captured = createCapturedCli();
+
+    expect(
+      await runCli(["run-group", "start", "--help"], captured.context),
+    ).toBe(0);
+    const startHelp = captured.stdout.join("");
+    expect(startHelp).toContain("--case <case-id...>");
+    expect(startHelp).toContain("--all-active");
+    expect(startHelp).toContain("--platform <platform...>");
+    expect(startHelp).toContain("--execution <execution>");
+    expect(startHelp).toContain("--stdin-json");
+
+    captured.stdout.length = 0;
+    expect(
+      await runCli(["run-group", "cancel", "--help"], captured.context),
+    ).toBe(0);
+    expect(captured.stdout.join("")).toContain("--reason <reason>");
+  });
+
   it("preserves the caller context identity in program output closures", async () => {
     const captured = createCapturedCli();
     let usedOriginalContext = false;

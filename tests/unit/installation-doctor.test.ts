@@ -227,6 +227,48 @@ describe("runInstallationDoctor", () => {
     expect(storage?.message).toContain(".ai-qa/cases");
   });
 
+  it.each([
+    [".ai-qa/run-groups", [".ai-qa", "run-groups"]],
+    [".ai-qa/reports/groups", [".ai-qa", "reports", "groups"]],
+  ] as const)(
+    "requires real contained group storage at %s",
+    async (relativePath, segments) => {
+      const { projectRoot, agentsHome } = await fixture();
+      await rm(join(projectRoot, ...segments), { recursive: true });
+
+      const result = await runInstallationDoctor({
+        projectRoot,
+        agentsHome,
+        sourcePath: bundledSourcePath(),
+      });
+
+      expect(result.status).toBe("not_ready");
+      const storage = check(result, "project.storage");
+      expect(storage).toMatchObject({ status: "fail" });
+      expect(storage?.message).toContain(relativePath);
+    },
+  );
+
+  it("rejects a symlinked run-group storage directory", async () => {
+    const { projectRoot, agentsHome } = await fixture();
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-groups-outside-"));
+    const groups = join(projectRoot, ".ai-qa", "run-groups");
+    await rm(groups, { recursive: true });
+    await symlink(outside, groups);
+
+    const result = await runInstallationDoctor({
+      projectRoot,
+      agentsHome,
+      sourcePath: bundledSourcePath(),
+    });
+
+    expect(result.status).toBe("not_ready");
+    expect(check(result, "project.storage")?.message).toContain(
+      ".ai-qa/run-groups",
+    );
+    expect(JSON.stringify(result)).not.toContain(outside);
+  });
+
   it("fails when a canonical storage directory is not writable", async () => {
     const { projectRoot, agentsHome } = await fixture();
     const evidence = join(projectRoot, ".ai-qa", "evidence");

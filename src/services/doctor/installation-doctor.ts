@@ -52,8 +52,10 @@ const projectSkillSegments = [
 const storageDirectories = [
   [".ai-qa", "cases"],
   [".ai-qa", "runs"],
+  [".ai-qa", "run-groups"],
   [".ai-qa", "evidence"],
   [".ai-qa", "reports", "runs"],
+  [".ai-qa", "reports", "groups"],
 ] as const;
 
 export async function runInstallationDoctor(

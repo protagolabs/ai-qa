@@ -8,8 +8,10 @@ import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { CaseRepository } from "../../core/cases/repository.js";
 import {
+  caseRevisionSchema,
   calculateCaseContentHash,
   calculatePlatformVariantHash,
+  type CaseRevision,
 } from "../../core/cases/schema.js";
 import type { Platform } from "../../core/platforms/schema.js";
 import { RunRepository } from "../../core/runs/repository.js";
@@ -52,6 +54,9 @@ export interface PrepareRegressionWorkOrderInput {
   execution: "local" | "ci";
   readiness: PlatformReadiness;
   now: () => Date;
+  runId?: string;
+  runGroupId?: string;
+  selectedRevision?: CaseRevision;
   preflightResult?: true;
   projectConfig?: ProjectConfig;
 }
@@ -91,10 +96,22 @@ export async function prepareRegressionWorkOrder(
       },
     );
   }
-  const revision = await new CaseRepository(
-    project.projectRoot,
-    input.now,
-  ).readActive(input.caseId);
+  const revision =
+    input.selectedRevision === undefined
+      ? await new CaseRepository(project.projectRoot, input.now).readActive(
+          input.caseId,
+        )
+      : caseRevisionSchema.parse(input.selectedRevision);
+  if (
+    revision.caseId !== input.caseId ||
+    calculateCaseContentHash(revision) !== revision.contentHash
+  ) {
+    throw new AiQaError(
+      "case.content_hash_mismatch",
+      "Selected case revision identity or content hash is invalid",
+      { caseId: input.caseId },
+    );
+  }
   const platformVariantHash = calculatePlatformVariantHash(
     revision,
     input.platform,
@@ -119,7 +136,10 @@ export async function prepareRegressionWorkOrder(
   const workOrder = workOrderSchema.parse({
     schemaVersion: WORK_ORDER_SCHEMA_VERSION,
     protocolVersion: WORK_PROTOCOL_VERSION,
-    runId: createId("run"),
+    runId: input.runId ?? createId("run"),
+    ...(input.runGroupId === undefined
+      ? {}
+      : { runGroupId: input.runGroupId }),
     kind: "regression",
     execution: input.execution,
     projectId: config.project.id,
