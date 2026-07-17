@@ -24,8 +24,8 @@ Doctor result: `status` is `uninitialized`; `requiredAction` is
 `configure-project`, blocking, with reason `project-config-missing`.
 
 Project facts: package metadata identifies Checkout Web and documents
-`http://127.0.0.1:4173`; authentication and test-data handling are not
-documented.
+`pnpm dev` as its startup command and `http://127.0.0.1:4173` as its Web URL;
+authentication and test-data handling are not documented.
 
 Required observables:
 

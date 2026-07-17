@@ -118,8 +118,10 @@ If the project has no existing result-management procedure, use
 `recordingPolicy.mode: local-only` and do not invent a provider. If it has one,
 use `project-skill` and put that exact arbitrary procedure, including match and
 rerun rules, in the Project Skill. Git tracking and commits are optional;
-GitHub and a Git remote are not assumed or required. Codex owns filesystem and
-tool permissions, authentication, and the final doctor run.
+GitHub and a Git remote are not assumed or required. Codex/host manages
+filesystem and tool permissions, executes approved authentication procedures,
+and invokes the final doctor. Unresolved target-project authentication and
+test-data requirements are confirmed during setup.
 
 ## Finish reporting and project recording
 
@@ -172,7 +174,7 @@ configured `report.json` and `report.md` paths. It deliberately excludes
 
 ## Typed workflow
 
-The user and agent first discuss the target, acceptance criteria, evidence policy, report formats, storage, and secret references. Only the complete user-confirmed configuration is submitted.
+The agent runs doctor first, derives unambiguous project facts and documented safe defaults, and asks only about unresolved or conflicting configuration values. Only a complete, user-confirmed configuration is submitted.
 
 1. Install/check the global product Skill explicitly with `ai-qa skill install --global` and `ai-qa skill check --global`.
 2. Confirm machine trust with `ai-qa trust confirm --project <target> --stdin-json`.
