@@ -586,6 +586,117 @@ describe("immutable run groups", () => {
     ).toEqual(["started", "materialized", "cancelled"]);
   });
 
+  it.each([
+    "directory-only",
+    "work-order-only",
+    "missing-start-journal",
+  ] as const)(
+    "ignores unrelated %s staging residue while resuming a frozen child",
+    async (residueKind) => {
+      const { projectRoot, cases } = await fixture(["web"]);
+      await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+      const create = vi
+        .spyOn(RunRepository.prototype, "create")
+        .mockRejectedValueOnce(new Error("injected pre-publication failure"));
+      await expect(
+        startRunGroup({
+          projectRoot,
+          selection: { mode: "explicit", caseIds: ["login"] },
+          platforms: ["web"],
+          execution: "local",
+          readiness: readinessByPlatform(["web"]),
+          now,
+        }),
+      ).rejects.toMatchObject({ code: "run_group.materialization_failed" });
+      create.mockRestore();
+
+      const [runGroupId] = await readdir(
+        join(projectRoot, ".ai-qa", "run-groups"),
+      );
+      const repository = new RunGroupRepository(projectRoot, now);
+      const manifest = await repository.readManifest(runGroupId!);
+      const member = manifest.members[0]!;
+      const residue = join(
+        projectRoot,
+        ".ai-qa",
+        "runs",
+        `.run-staging-${member.runId}-seeded-${residueKind}`,
+      );
+      await mkdir(residue);
+      if (residueKind !== "directory-only") {
+        await writeFile(
+          join(residue, "work-order.json"),
+          JSON.stringify(member.workOrder),
+          "utf8",
+        );
+      }
+      if (residueKind === "missing-start-journal") {
+        await writeFile(join(residue, "events.jsonl"), "{}\n", "utf8");
+      }
+
+      await expect(
+        materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
+      ).resolves.toMatchObject({ status: "materialized" });
+      await expect(
+        new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+      ).resolves.toEqual(member.workOrder);
+      expect((await readdir(residue)).sort()).toEqual(
+        residueKind === "directory-only"
+          ? []
+          : residueKind === "work-order-only"
+            ? ["work-order.json"]
+            : ["events.jsonl", "work-order.json"],
+      );
+      expect(
+        (await repository.readEvents(runGroupId!)).map(
+          (event) => event.payload.phase,
+        ),
+      ).toEqual(["started", "materialized"]);
+    },
+  );
+
+  it("preserves a malformed final child directory instead of replacing it", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const create = vi
+      .spyOn(RunRepository.prototype, "create")
+      .mockRejectedValueOnce(new Error("injected pre-publication failure"));
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["login"] },
+        platforms: ["web"],
+        execution: "local",
+        readiness: readinessByPlatform(["web"]),
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_group.materialization_failed" });
+    create.mockRestore();
+    const [runGroupId] = await readdir(
+      join(projectRoot, ".ai-qa", "run-groups"),
+    );
+    const manifest = await new RunGroupRepository(
+      projectRoot,
+      now,
+    ).readManifest(runGroupId!);
+    const finalDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      manifest.members[0]!.runId,
+    );
+    await mkdir(finalDirectory);
+    await writeFile(join(finalDirectory, "do-not-delete"), "preserve", "utf8");
+
+    await expect(
+      materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
+    ).rejects.toMatchObject({ code: "run_group.member_integrity_error" });
+    expect(await readdir(finalDirectory)).toEqual(["do-not-delete"]);
+    expect(await readFile(join(finalDirectory, "do-not-delete"), "utf8")).toBe(
+      "preserve",
+    );
+  });
+
   it.each(["revision", "caseContentHash"] as const)(
     "rejects a manifest with mixed case %s identity",
     async (field) => {

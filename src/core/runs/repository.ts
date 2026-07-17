@@ -1,14 +1,27 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+} from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import lockfile from "proper-lockfile";
+import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
+import { serializeJsonLines } from "../fs/json-lines.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
+import { createId } from "../ids.js";
 import { RunJournal } from "./journal.js";
 import { resolveRunPaths } from "./paths.js";
 import {
   deepFreezeWorkOrder,
+  runEventSchema,
   workOrderSchema,
   type RunEvent,
   type WorkOrder,
@@ -59,35 +72,31 @@ export class RunRepository {
     workOrder: WorkOrder,
   ): Promise<{ journal: RunJournal; workOrderHash: string }> {
     const validated = workOrderSchema.parse(workOrder);
-    const paths = resolveRunPaths(this.projectRoot, validated.runId);
-    await ensureProjectLocalDirectory(this.projectRoot, [".ai-qa", "runs"]);
-    try {
-      await mkdir(paths.directory, { mode: 0o700 });
-    } catch (error: unknown) {
-      if (isNodeError(error, "EEXIST")) {
-        throw new AiQaError("run.already_exists", "Run already exists", {
-          runId: validated.runId,
-        });
-      }
-      throw error;
+    resolveRunPaths(this.projectRoot, validated.runId);
+    const runsRoot = await ensureProjectLocalDirectory(this.projectRoot, [
+      ".ai-qa",
+      "runs",
+    ]);
+    const finalDirectory = resolve(runsRoot, validated.runId);
+    if (await pathExists(finalDirectory)) {
+      throw runAlreadyExists(validated.runId);
     }
-
+    const stagingDirectory = await mkdtemp(
+      resolve(runsRoot, `.run-staging-${validated.runId}-`),
+    );
     try {
-      const handle = await open(paths.workOrder, "wx", 0o600);
-      try {
-        await handle.writeFile(JSON.stringify(validated), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-
+      await ensureProjectLocalDirectory(this.projectRoot, [
+        ".ai-qa",
+        "runs",
+        basename(stagingDirectory),
+      ]);
       const workOrderHash = sha256Canonical(validated);
-      const journal = await RunJournal.create(
-        this.projectRoot,
-        validated.runId,
-        this.now,
-      );
-      await journal.append({
+      const started = runEventSchema.parse({
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: createId("event"),
+        runId: validated.runId,
+        sequence: 1,
+        timestamp: this.now().toISOString(),
         type: "run",
         actor: "ai-qa",
         platform: validated.platform,
@@ -96,17 +105,45 @@ export class RunRepository {
         payload: { phase: "started", workOrderHash },
         relatedIds: [],
       });
+      await writeSyncedFile(
+        resolve(stagingDirectory, "work-order.json"),
+        JSON.stringify(validated),
+      );
+      await writeSyncedFile(
+        resolve(stagingDirectory, "events.jsonl"),
+        serializeJsonLines([started]),
+      );
+      await syncDirectoryWhereSupported(stagingDirectory);
+      const journal = RunJournal.open(
+        this.projectRoot,
+        validated.runId,
+        this.now,
+      );
+      const release = await lockfile.lock(runsRoot, {
+        realpath: false,
+        retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+      });
+      try {
+        if (await pathExists(finalDirectory)) {
+          throw runAlreadyExists(validated.runId);
+        }
+        try {
+          await rename(stagingDirectory, finalDirectory);
+        } catch (error: unknown) {
+          if (await pathExists(finalDirectory)) {
+            throw runAlreadyExists(validated.runId);
+          }
+          throw error;
+        }
+      } finally {
+        await release();
+      }
       return { journal, workOrderHash };
     } catch (error: unknown) {
       try {
-        await rm(paths.directory, { recursive: true, force: true });
+        await rm(stagingDirectory, { recursive: true, force: true });
       } catch {
-        // Preserve the original creation failure.
-      }
-      if (isNodeError(error, "EEXIST")) {
-        throw new AiQaError("run.already_exists", "Run already exists", {
-          runId: validated.runId,
-        });
+        // Preserve the original staging or publication failure.
       }
       throw error;
     }
@@ -155,6 +192,54 @@ export class RunRepository {
     resolveRunPaths(this.projectRoot, runId);
     return RunJournal.open(this.projectRoot, runId, this.now);
   }
+}
+
+async function writeSyncedFile(path: string, content: string): Promise<void> {
+  const handle = await open(path, "wx", 0o600);
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDirectoryWhereSupported(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch (error: unknown) {
+    if (!isUnsupportedDirectorySync(error)) throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
+function runAlreadyExists(runId: string): AiQaError {
+  return new AiQaError("run.already_exists", "Run already exists", { runId });
+}
+
+function isUnsupportedDirectorySync(error: unknown): boolean {
+  return [
+    "EBADF",
+    "EINVAL",
+    "EISDIR",
+    "ENOSYS",
+    "ENOTSUP",
+    "EOPNOTSUPP",
+    "EPERM",
+  ].some((code) => isNodeError(error, code));
 }
 
 function workOrderIntegrityError(runId: string): AiQaError {

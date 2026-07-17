@@ -267,6 +267,52 @@ describe("host-authorized exploratory start boundary", () => {
 });
 
 describe("strict work-order integrity", () => {
+  it("atomically publishes only complete final run directories", async () => {
+    const { projectRoot } = await initializeProject();
+    const runsRoot = join(projectRoot, ".ai-qa", "runs");
+    const residue = join(runsRoot, ".run-staging-run-residue-seeded");
+    await mkdir(residue);
+
+    await new RunRepository(projectRoot, fixedNow).create(makeWorkOrder());
+
+    expect((await readdir(runsRoot)).sort()).toEqual([
+      ".run-staging-run-residue-seeded",
+      "run-1",
+    ]);
+    expect((await readdir(runDirectory(projectRoot))).sort()).toEqual([
+      "events.jsonl",
+      "work-order.json",
+    ]);
+    await expect(
+      new RunRepository(projectRoot, fixedNow).readVerifiedWorkOrder("run-1"),
+    ).resolves.toEqual(makeWorkOrder());
+  });
+
+  it("publishes one complete run for concurrent same-ID creators and cleans the loser staging directory", async () => {
+    const { projectRoot } = await initializeProject();
+    const workOrder = makeWorkOrder();
+    const results = await Promise.allSettled([
+      new RunRepository(projectRoot, fixedNow).create(workOrder),
+      new RunRepository(projectRoot, fixedNow).create(workOrder),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    expect(
+      results.find((result) => result.status === "rejected"),
+    ).toMatchObject({ reason: { code: "run.already_exists" } });
+    expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toEqual([
+      "run-1",
+    ]);
+    await expect(
+      new RunRepository(projectRoot, fixedNow).readVerifiedWorkOrder("run-1"),
+    ).resolves.toEqual(workOrder);
+  });
+
   it("preserves run.not_found for a missing work order", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-missing-order-"));
     const repository = new RunRepository(projectRoot, fixedNow);
