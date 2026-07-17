@@ -158,7 +158,7 @@ export function registerRunCommands(
               ? ("pass" as const)
               : ("fail" as const),
           message: `Global skill status: ${globalSkill.status}`,
-          category: "tool" as const,
+          category: "installation" as const,
         },
       ];
       const verifiedReadiness: PlatformReadiness & { platform: "web" } = {
