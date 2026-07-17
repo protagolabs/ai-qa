@@ -2,12 +2,19 @@ import type { Command } from "commander";
 import { AiQaError } from "../../core/errors.js";
 import { recordingReceiptInputSchema } from "../../core/recording/schema.js";
 import {
+  exportProjectLocalGroupReport,
+  generateRunGroupReport,
+  type GeneratedRunGroupReport,
+} from "../../services/report-generation/generate-group-report.js";
+import {
   exportProjectLocalRunReport,
   generateRunReport,
   type GeneratedRunReport,
 } from "../../services/report-generation/generate-run-report.js";
 import {
+  readGroupRecordingStatus,
   readRecordingStatus,
+  registerGroupRecordingReceipt,
   registerRecordingReceipt,
 } from "../../services/report-generation/recording-receipt.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
@@ -17,6 +24,23 @@ import { readJsonInput, writeJson } from "../io.js";
 function explicitProject(command: Command): string | undefined {
   const value: unknown = command.optsWithGlobals().project;
   return typeof value === "string" ? value : undefined;
+}
+
+async function groupReportInput(
+  command: Command,
+  context: CliContext,
+  runGroupId: string,
+) {
+  const projectOption = explicitProject(command);
+  const project = await resolveProject({
+    cwd: context.cwd,
+    ...(projectOption === undefined ? {} : { explicitProject: projectOption }),
+  });
+  return {
+    projectRoot: project.projectRoot,
+    runGroupId,
+    now: context.now,
+  };
 }
 
 async function reportInput(
@@ -36,7 +60,7 @@ async function reportInput(
   };
 }
 
-function pathsOnly(report: GeneratedRunReport): {
+function pathsOnly(report: GeneratedRunReport | GeneratedRunGroupReport): {
   jsonPath?: string;
   markdownPath?: string;
 } {
@@ -110,6 +134,71 @@ export function registerReportCommands(
       context,
       await readRecordingStatus(
         await reportInput(recordingStatusCommand, context, runId),
+      ),
+    );
+  });
+
+  const groupGenerateCommand = reportCommand
+    .command("group-generate <group-id>")
+    .description("generate configured project-local run-group report formats");
+  groupGenerateCommand.action(async (runGroupId: string) => {
+    const generated = await generateRunGroupReport(
+      await groupReportInput(groupGenerateCommand, context, runGroupId),
+    );
+    writeJson(context, pathsOnly(generated));
+  });
+
+  const groupExportCommand = reportCommand
+    .command("group-export <group-id>")
+    .description("export an already generated run-group report")
+    .requiredOption("--adapter <adapter>", "report storage adapter");
+  groupExportCommand.action(
+    async (runGroupId: string, options: { adapter: string }) => {
+      if (options.adapter !== "project-local") {
+        throw new AiQaError(
+          "adapter.unsupported_in_increment_1",
+          "Increment 1 supports only the project-local report adapter",
+          { adapter: options.adapter },
+        );
+      }
+      writeJson(
+        context,
+        await exportProjectLocalGroupReport(
+          await groupReportInput(groupExportCommand, context, runGroupId),
+        ),
+      );
+    },
+  );
+
+  const groupReceiptCommand = reportCommand
+    .command("group-receipt <group-id>")
+    .description("register a host-provided project group-recording receipt")
+    .requiredOption("--stdin-json", "read recording receipt from stdin");
+  groupReceiptCommand.action(async (runGroupId: string) => {
+    const registered = await registerGroupRecordingReceipt({
+      ...(await groupReportInput(groupReceiptCommand, context, runGroupId)),
+      receipt: await readJsonInput(context, recordingReceiptInputSchema),
+    });
+    writeJson(context, {
+      eventId: registered.event.eventId,
+      status: registered.event.status,
+      references: registered.event.references,
+      replayed: registered.replayed,
+    });
+  });
+
+  const groupRecordingStatusCommand = reportCommand
+    .command("group-recording-status <group-id>")
+    .description("read verified project group-recording status");
+  groupRecordingStatusCommand.action(async (runGroupId: string) => {
+    writeJson(
+      context,
+      await readGroupRecordingStatus(
+        await groupReportInput(
+          groupRecordingStatusCommand,
+          context,
+          runGroupId,
+        ),
       ),
     );
   });

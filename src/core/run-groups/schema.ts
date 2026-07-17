@@ -4,6 +4,7 @@ import { caseIdSchema } from "../cases/schema.js";
 import { platformSchema } from "../platforms/schema.js";
 import {
   eventIdSchema,
+  projectSkillSnapshotSchema,
   runIdSchema,
   workOrderSchema,
 } from "../runs/schema.js";
@@ -59,12 +60,36 @@ export const runGroupManifestSchema = z
     selectionMode: z.enum(["explicit", "all-active"]),
     selectedPlatforms: z.array(platformSchema).min(1),
     createdAt: z.string().datetime(),
+    recordingPolicy: z
+      .object({ mode: z.enum(["local-only", "project-skill"]) })
+      .strict(),
+    projectSkill: projectSkillSnapshotSchema.optional(),
     members: z.array(runGroupMemberSchema),
     exclusions: z.array(runGroupExclusionSchema),
     maximumBudget: maximumBudgetSchema,
   })
   .strict()
   .superRefine((manifest, context) => {
+    if (
+      manifest.recordingPolicy.mode === "local-only" &&
+      manifest.projectSkill !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectSkill"],
+        message: "Local-only run groups cannot freeze a Project Skill",
+      });
+    }
+    if (
+      manifest.recordingPolicy.mode === "project-skill" &&
+      manifest.projectSkill === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectSkill"],
+        message: "Project-skill run groups require a frozen Project Skill",
+      });
+    }
     if (
       new Set(manifest.selectedPlatforms).size !==
       manifest.selectedPlatforms.length
@@ -160,6 +185,9 @@ export const runGroupManifestSchema = z
         workOrder.projectId !== manifest.projectId ||
         workOrder.execution !== manifest.execution ||
         workOrder.platform !== member.platform ||
+        workOrder.recordingPolicy?.mode !== manifest.recordingPolicy.mode ||
+        canonicalJson(workOrder.projectSkill ?? null) !==
+          canonicalJson(manifest.projectSkill ?? null) ||
         pinned === undefined ||
         pinned.caseId !== member.caseId ||
         pinned.revision !== member.revision ||

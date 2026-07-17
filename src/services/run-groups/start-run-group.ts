@@ -23,6 +23,7 @@ import {
 } from "../../core/run-groups/schema.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
 import { resolveProject } from "../project-root/resolve-project.js";
+import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { prepareRegressionWorkOrder } from "../run-protocol/start-regression-run.js";
 import { materializeRunGroup } from "./materialize-run-group.js";
 
@@ -113,6 +114,10 @@ export async function startRunGroup(
   }
 
   const cases = new CaseRepository(project.projectRoot, input.now);
+  const projectSkill =
+    config.recordingPolicy.mode === "project-skill"
+      ? await readProjectSkillSnapshot(project.projectRoot)
+      : undefined;
   const revisions =
     selection.mode === "explicit"
       ? await Promise.all(
@@ -187,6 +192,8 @@ export async function startRunGroup(
     selectionMode: selection.mode,
     selectedPlatforms: platforms,
     createdAt: createdAt.toISOString(),
+    recordingPolicy: config.recordingPolicy,
+    ...(projectSkill === undefined ? {} : { projectSkill }),
     members,
     exclusions,
     maximumBudget,

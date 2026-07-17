@@ -90,6 +90,32 @@ export class RunGroupRepository {
     return (await this.readVerifiedSnapshot(runGroupIdInput)).events;
   }
 
+  async readLocked<T>(
+    runGroupIdInput: string,
+    operation: (snapshot: {
+      manifest: RunGroupManifest;
+      events: RunGroupEvent[];
+    }) => Promise<T>,
+  ): Promise<T> {
+    const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
+    const paths = resolveRunGroupPaths(this.projectRoot, runGroupId);
+    await requireProjectLocalRegularFile(this.projectRoot, [
+      ".ai-qa",
+      "run-groups",
+      runGroupId,
+      "events.jsonl",
+    ]);
+    const release = await lockfile.lock(paths.events, {
+      realpath: false,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+    });
+    try {
+      return await operation(await this.readVerifiedSnapshot(runGroupId));
+    } finally {
+      await release();
+    }
+  }
+
   async transition(
     runGroupIdInput: string,
     phase: "completed" | "cancelled",

@@ -1,19 +1,20 @@
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { canonicalJson } from "../canonical-json.js";
+import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
 import { isJsonValue } from "../json-value.js";
-import { runIdSchema } from "../runs/schema.js";
 import {
   recordingArtifactSchema,
   recordingEventSchema,
   recordingReceiptInputSchema,
+  reportSubjectSchema,
   type RecordingArtifact,
   type RecordingEvent,
   type RecordingReceiptInput,
+  type ReportSubject,
 } from "./schema.js";
 
 interface RecordingPaths {
@@ -54,8 +55,8 @@ function receiptPayload(event: RecordingEvent): RecordingReceiptInput {
   };
 }
 
-function idempotencyKeyForRun(runId: string): string {
-  return `recording:${runId}:v1`;
+function idempotencyKeyForSubject(subject: ReportSubject): string {
+  return `recording:${sha256Canonical(subject)}:v2`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,13 +65,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function rawArtifactContradictsJournal(input: {
   rawArtifact: unknown;
-  runId: string;
+  subject: ReportSubject;
   events: readonly RecordingEvent[];
 }): boolean {
   if (!isRecord(input.rawArtifact)) return false;
   if (
-    typeof input.rawArtifact.runId === "string" &&
-    input.rawArtifact.runId !== input.runId
+    isRecord(input.rawArtifact.subject) &&
+    canonicalJson(input.rawArtifact.subject) !== canonicalJson(input.subject)
   ) {
     return true;
   }
@@ -98,26 +99,30 @@ function rawArtifactContradictsJournal(input: {
 }
 
 export function materializeRecordingArtifact(input: {
-  runId: string;
+  subject: ReportSubject;
   events: readonly RecordingEvent[];
 }): RecordingArtifact {
-  const runId = runIdSchema.parse(input.runId);
+  const subject = reportSubjectSchema.parse(input.subject);
   if (input.events.length === 0) {
     throw new TypeError(
       "Recording materialization requires at least one event",
     );
   }
   const events = input.events.map((event) => recordingEventSchema.parse(event));
-  if (events.some((event) => event.runId !== runId)) {
-    throw new TypeError("Recording event run identity mismatch");
+  if (
+    events.some(
+      (event) => canonicalJson(event.subject) !== canonicalJson(subject),
+    )
+  ) {
+    throw new TypeError("Recording event subject identity mismatch");
   }
   const current = events.at(-1);
   if (current === undefined) {
     throw new TypeError("Recording materialization requires a current event");
   }
   return recordingArtifactSchema.parse({
-    schemaVersion: 1,
-    runId,
+    schemaVersion: 2,
+    subject,
     current: {
       eventId: current.eventId,
       status: current.status,
@@ -133,10 +138,14 @@ export function classifyRecordingMaterialization(input: {
   artifact: RecordingArtifact;
 }): "current" | "recoverable" | "conflict" {
   const expected = materializeRecordingArtifact({
-    runId: input.events[0]?.runId ?? input.artifact.runId,
+    subject: input.events[0]?.subject ?? input.artifact.subject,
     events: input.events,
   });
-  if (input.artifact.runId !== expected.runId) return "conflict";
+  if (
+    canonicalJson(input.artifact.subject) !== canonicalJson(expected.subject)
+  ) {
+    return "conflict";
+  }
   if (canonicalJson(input.artifact) === canonicalJson(expected)) {
     return "current";
   }
@@ -153,13 +162,13 @@ export function classifyRecordingMaterialization(input: {
 
 export class RecordingRepository {
   private readonly directory: string;
-  private readonly runId: string;
+  private readonly subject: ReportSubject;
   private readonly now: () => Date;
   private readonly paths: RecordingPaths;
 
-  constructor(directory: string, runId: string, now: () => Date) {
+  constructor(directory: string, subject: ReportSubject, now: () => Date) {
     this.directory = resolve(directory);
-    this.runId = runIdSchema.parse(runId);
+    this.subject = reportSubjectSchema.parse(subject);
     this.now = now;
     this.paths = {
       journal: resolve(this.directory, "recording.jsonl"),
@@ -188,7 +197,7 @@ export class RecordingRepository {
 
     const events = this.parseJournal(journalContent);
     const expected = materializeRecordingArtifact({
-      runId: this.runId,
+      subject: this.subject,
       events,
     });
     if (artifactContent === undefined) {
@@ -206,7 +215,7 @@ export class RecordingRepository {
     if (
       rawArtifactContradictsJournal({
         rawArtifact,
-        runId: this.runId,
+        subject: this.subject,
         events,
       })
     ) {
@@ -218,7 +227,11 @@ export class RecordingRepository {
       return { state: "present", events, artifact: expected };
     }
     const artifact = parsedArtifact.data;
-    if (artifact.runId !== this.runId) throw this.integrityError();
+    if (
+      canonicalJson(artifact.subject) !== canonicalJson(this.subject)
+    ) {
+      throw this.integrityError();
+    }
 
     const classification = classifyRecordingMaterialization({
       events,
@@ -259,21 +272,21 @@ export class RecordingRepository {
       throw new AiQaError(
         "recording.idempotency_conflict",
         "Recording receipt was already registered with a different payload",
-        { runId: this.runId },
+        subjectDetails(this.subject),
       );
     }
 
     const event = recordingEventSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       eventId: createId("recording"),
-      runId: this.runId,
+      subject: this.subject,
       recordedAt: this.now().toISOString(),
-      idempotencyKey: idempotencyKeyForRun(this.runId),
+      idempotencyKey: idempotencyKeyForSubject(this.subject),
       ...receipt,
     });
     const nextEvents = [...events, event];
     const artifact = materializeRecordingArtifact({
-      runId: this.runId,
+      subject: this.subject,
       events: nextEvents,
     });
     await writeJsonLines(this.paths.journal, nextEvents);
@@ -294,7 +307,7 @@ export class RecordingRepository {
       const idempotencyKeys = new Set<string>();
       for (const event of events) {
         if (
-          event.runId !== this.runId ||
+          canonicalJson(event.subject) !== canonicalJson(this.subject) ||
           eventIds.has(event.eventId) ||
           idempotencyKeys.has(event.idempotencyKey)
         ) {
@@ -340,9 +353,17 @@ export class RecordingRepository {
     return new AiQaError(
       "recording.integrity_error",
       "Recording journal and materialized view failed integrity verification",
-      { runId: this.runId },
+      subjectDetails(this.subject),
     );
   }
+}
+
+function subjectDetails(subject: ReportSubject):
+  | { runId: string }
+  | { runGroupId: string } {
+  return subject.kind === "run"
+    ? { runId: subject.id }
+    : { runGroupId: subject.id };
 }
 
 function isNodeError(error: unknown, code: string): boolean {

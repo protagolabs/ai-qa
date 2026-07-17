@@ -1,5 +1,15 @@
 import { z } from "zod";
+import { runGroupIdSchema } from "../run-groups/schema.js";
 import { runIdSchema } from "../runs/schema.js";
+
+export const reportSubjectSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), id: runIdSchema }).strict(),
+  z
+    .object({ kind: z.literal("run-group"), id: runGroupIdSchema })
+    .strict(),
+]);
+
+export type ReportSubject = z.infer<typeof reportSubjectSchema>;
 
 export const recordingIdempotencyKeySchema = z
   .string()
@@ -84,9 +94,9 @@ export const recordingEventSchema = z
   .object({
     ...receiptPayloadFields,
     idempotencyKey: recordingIdempotencyKeySchema,
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     eventId: recordingEventIdSchema,
-    runId: runIdSchema,
+    subject: reportSubjectSchema,
     recordedAt: z.string().datetime(),
   })
   .strict()
@@ -96,8 +106,8 @@ export type RecordingEvent = z.infer<typeof recordingEventSchema>;
 
 export const recordingArtifactSchema = z
   .object({
-    schemaVersion: z.literal(1),
-    runId: runIdSchema,
+    schemaVersion: z.literal(2),
+    subject: reportSubjectSchema,
     current: z
       .object({
         eventId: recordingEventIdSchema,

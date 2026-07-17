@@ -48,7 +48,7 @@ interface GeneratedReportPaths {
 }
 
 interface RecordingStatus {
-  runId: string;
+  subject: { kind: "run"; id: string };
   status:
     "pending" | "not_applicable" | "recorded" | "not_recorded" | "unknown";
   references: string[];
@@ -281,7 +281,7 @@ describe("project recording workflow CLI", () => {
       run.runId,
     ]);
     expect(status).toEqual({
-      runId: run.runId,
+      subject: { kind: "run", id: run.runId },
       status: "not_applicable",
       references: [],
     });
@@ -327,7 +327,11 @@ describe("project recording workflow CLI", () => {
         "recording-status",
         run.runId,
       ]),
-    ).toEqual({ runId: run.runId, status: "pending", references: [] });
+    ).toEqual({
+      subject: { kind: "run", id: run.runId },
+      status: "pending",
+      references: [],
+    });
 
     const qaResultsPath = join(fixture.projectRoot, procedureTarget);
     await mkdir(join(fixture.projectRoot, "docs"), { recursive: true });
@@ -373,7 +377,7 @@ describe("project recording workflow CLI", () => {
         run.runId,
       ]),
     ).toEqual({
-      runId: run.runId,
+      subject: { kind: "run", id: run.runId },
       status: "recorded",
       references: [reference],
       eventId: recorded.eventId,
@@ -402,11 +406,13 @@ describe("project recording workflow CLI", () => {
       .map((line) => recordingEventSchema.parse(JSON.parse(line)));
     expect(journal).toHaveLength(1);
     expect(journal[0]).toMatchObject({
-      runId: run.runId,
+      subject: { kind: "run", id: run.runId },
       status: "recorded",
       references: [reference],
       recordedAt,
-      idempotencyKey: `recording:${run.runId}:v1`,
+      idempotencyKey: expect.stringMatching(
+        /^recording:sha256:[a-f0-9]{64}:v2$/u,
+      ),
     });
     const materialized = recordingArtifactSchema.parse(
       JSON.parse(
@@ -513,7 +519,11 @@ describe("project recording workflow CLI", () => {
         "recording-status",
         nextRun.runId,
       ]),
-    ).toEqual({ runId: nextRun.runId, status: "pending", references: [] });
+    ).toEqual({
+      subject: { kind: "run", id: nextRun.runId },
+      status: "pending",
+      references: [],
+    });
   });
 
   it("freezes historical recording modes across both config switch directions", async () => {
@@ -533,7 +543,7 @@ describe("project recording workflow CLI", () => {
         firstLocalRun.runId,
       ]),
     ).toEqual({
-      runId: firstLocalRun.runId,
+      subject: { kind: "run", id: firstLocalRun.runId },
       status: "not_applicable",
       references: [],
     });
@@ -550,7 +560,7 @@ describe("project recording workflow CLI", () => {
         projectSkillRun.runId,
       ]),
     ).toEqual({
-      runId: projectSkillRun.runId,
+      subject: { kind: "run", id: projectSkillRun.runId },
       status: "pending",
       references: [],
     });

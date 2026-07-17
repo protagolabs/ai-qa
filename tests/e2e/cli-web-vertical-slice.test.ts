@@ -1095,7 +1095,7 @@ describe("Increment 1 Web vertical slice CLI", () => {
     ]);
     await cli.run(["report", "generate", run.runId]);
     expect(await cli.run(["report", "recording-status", run.runId])).toEqual({
-      runId: run.runId,
+      subject: { kind: "run", id: run.runId },
       status: "not_applicable",
       references: [],
     });

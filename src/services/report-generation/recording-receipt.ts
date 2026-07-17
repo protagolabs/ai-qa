@@ -4,8 +4,14 @@ import {
   recordingReceiptInputSchema,
   type RecordingEvent,
   type RecordingReceiptInput,
+  type ReportSubject,
 } from "../../core/recording/schema.js";
+import type { ProjectSkillSnapshot } from "../../core/runs/schema.js";
 import { assertCurrentProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
+import {
+  withVerifiedGeneratedRunGroupReport,
+  type GroupReportOperationInput,
+} from "./generate-group-report.js";
 import {
   withVerifiedGeneratedRunReport,
   type ReportOperationInput,
@@ -13,22 +19,30 @@ import {
 
 export type RecordingStatusView =
   | {
-      runId: string;
+      subject: ReportSubject;
       status: "not_applicable";
       references: [];
     }
   | {
-      runId: string;
+      subject: ReportSubject;
       status: "pending";
       references: [];
     }
   | {
-      runId: string;
+      subject: ReportSubject;
       status: "recorded" | "not_recorded" | "unknown";
       references: string[];
       eventId: string;
       recordedAt: string;
     };
+
+interface VerifiedRecordingSubject {
+  subject: ReportSubject;
+  projectRoot: string;
+  directory: string;
+  recordingMode: "local-only" | "project-skill";
+  projectSkill?: ProjectSkillSnapshot;
+}
 
 export async function registerRecordingReceipt(
   input: ReportOperationInput & { receipt: RecordingReceiptInput },
@@ -37,56 +51,148 @@ export async function registerRecordingReceipt(
   status: RecordingStatusView;
   replayed: boolean;
 }> {
-  return withVerifiedGeneratedRunReport(input, async (verified) => {
-    if (verified.recordingMode !== "project-skill") {
-      throw new AiQaError(
-        "recording.not_applicable",
-        "Recording receipts are not applicable to this run",
-        { runId: input.runId },
-      );
-    }
-    const repository = new RecordingRepository(
-      verified.directory,
-      input.runId,
-      input.now,
-    );
-    if (verified.projectSkill === undefined) {
-      return replayHistoricalReceipt({
-        repository,
-        runId: input.runId,
-        receipt: input.receipt,
-      });
-    }
-    await assertCurrentProjectSkillSnapshot({
-      projectRoot: verified.projectRoot,
-      snapshot: verified.projectSkill,
-    });
-    const registered = await repository.registerUnlocked(input.receipt);
-    const current = registered.artifact.history.at(-1);
-    if (current === undefined) throw recordingIntegrityError(input.runId);
-    return {
-      event: registered.event,
-      status: statusFromReceipt(input.runId, current),
-      replayed: registered.replayed,
-    };
-  });
+  return registerSubjectRecordingReceipt(
+    { kind: "run", id: input.runId },
+    input.receipt,
+    input.now,
+    (operation) =>
+      withVerifiedGeneratedRunReport(input, (verified) =>
+        operation({
+          subject: { kind: "run", id: input.runId },
+          projectRoot: verified.projectRoot,
+          directory: verified.directory,
+          recordingMode: verified.recordingMode,
+          ...(verified.projectSkill === undefined
+            ? {}
+            : { projectSkill: verified.projectSkill }),
+        }),
+      ),
+  );
+}
+
+export async function registerGroupRecordingReceipt(
+  input: GroupReportOperationInput & { receipt: RecordingReceiptInput },
+): Promise<{
+  event: RecordingEvent;
+  status: RecordingStatusView;
+  replayed: boolean;
+}> {
+  return registerSubjectRecordingReceipt(
+    { kind: "run-group", id: input.runGroupId },
+    input.receipt,
+    input.now,
+    (operation) =>
+      withVerifiedGeneratedRunGroupReport(input, (verified) =>
+        operation({
+          subject: { kind: "run-group", id: input.runGroupId },
+          projectRoot: verified.projectRoot,
+          directory: verified.directory,
+          recordingMode: verified.recordingMode,
+          ...(verified.projectSkill === undefined
+            ? {}
+            : { projectSkill: verified.projectSkill }),
+        }),
+      ),
+  );
 }
 
 export async function readRecordingStatus(
   input: ReportOperationInput,
 ): Promise<RecordingStatusView> {
-  return withVerifiedGeneratedRunReport(input, async (verified) => {
+  return readSubjectRecordingStatus(input.now, (operation) =>
+    withVerifiedGeneratedRunReport(input, (verified) =>
+      operation({
+        subject: { kind: "run", id: input.runId },
+        projectRoot: verified.projectRoot,
+        directory: verified.directory,
+        recordingMode: verified.recordingMode,
+        ...(verified.projectSkill === undefined
+          ? {}
+          : { projectSkill: verified.projectSkill }),
+      }),
+    ),
+  );
+}
+
+export async function readGroupRecordingStatus(
+  input: GroupReportOperationInput,
+): Promise<RecordingStatusView> {
+  return readSubjectRecordingStatus(input.now, (operation) =>
+    withVerifiedGeneratedRunGroupReport(input, (verified) =>
+      operation({
+        subject: { kind: "run-group", id: input.runGroupId },
+        projectRoot: verified.projectRoot,
+        directory: verified.directory,
+        recordingMode: verified.recordingMode,
+        ...(verified.projectSkill === undefined
+          ? {}
+          : { projectSkill: verified.projectSkill }),
+      }),
+    ),
+  );
+}
+
+async function registerSubjectRecordingReceipt(
+  subject: ReportSubject,
+  receipt: RecordingReceiptInput,
+  now: () => Date,
+  withVerified: <T>(
+    operation: (verified: VerifiedRecordingSubject) => Promise<T>,
+  ) => Promise<T>,
+): Promise<{
+  event: RecordingEvent;
+  status: RecordingStatusView;
+  replayed: boolean;
+}> {
+  return withVerified(async (verified) => {
+    if (verified.recordingMode !== "project-skill") {
+      throw new AiQaError(
+        "recording.not_applicable",
+        "Recording receipts are not applicable to this report subject",
+        subjectDetails(subject),
+      );
+    }
+    const repository = new RecordingRepository(
+      verified.directory,
+      subject,
+      now,
+    );
+    if (verified.projectSkill === undefined) {
+      return replayHistoricalReceipt({ repository, subject, receipt });
+    }
+    await assertCurrentProjectSkillSnapshot({
+      projectRoot: verified.projectRoot,
+      snapshot: verified.projectSkill,
+    });
+    const registered = await repository.registerUnlocked(receipt);
+    const current = registered.artifact.history.at(-1);
+    if (current === undefined) throw recordingIntegrityError(subject);
+    return {
+      event: registered.event,
+      status: statusFromReceipt(subject, current),
+      replayed: registered.replayed,
+    };
+  });
+}
+
+async function readSubjectRecordingStatus(
+  now: () => Date,
+  withVerified: <T>(
+    operation: (verified: VerifiedRecordingSubject) => Promise<T>,
+  ) => Promise<T>,
+): Promise<RecordingStatusView> {
+  return withVerified(async (verified) => {
     if (verified.recordingMode !== "project-skill") {
       return {
-        runId: input.runId,
+        subject: verified.subject,
         status: "not_applicable",
         references: [],
       };
     }
     const repository = new RecordingRepository(
       verified.directory,
-      input.runId,
-      input.now,
+      verified.subject,
+      now,
     );
     if (verified.projectSkill !== undefined) {
       await assertCurrentProjectSkillSnapshot({
@@ -97,19 +203,23 @@ export async function readRecordingStatus(
     const state = await repository.readOrRecoverUnlocked();
     if (state.state === "missing") {
       if (verified.projectSkill === undefined) {
-        throw projectSkillSnapshotMissing(input.runId);
+        throw projectSkillSnapshotMissing(verified.subject);
       }
-      return { runId: input.runId, status: "pending", references: [] };
+      return {
+        subject: verified.subject,
+        status: "pending",
+        references: [],
+      };
     }
     const event = state.events.at(-1);
-    if (event === undefined) throw recordingIntegrityError(input.runId);
+    if (event === undefined) throw recordingIntegrityError(verified.subject);
     return statusFromEvent(event);
   });
 }
 
 async function replayHistoricalReceipt(input: {
   repository: RecordingRepository;
-  runId: string;
+  subject: ReportSubject;
   receipt: RecordingReceiptInput;
 }): Promise<{
   event: RecordingEvent;
@@ -119,27 +229,27 @@ async function replayHistoricalReceipt(input: {
   const receipt = recordingReceiptInputSchema.parse(input.receipt);
   const state = await input.repository.readOrRecoverUnlocked();
   if (state.state === "missing") {
-    throw projectSkillSnapshotMissing(input.runId);
+    throw projectSkillSnapshotMissing(input.subject);
   }
   const registered = await input.repository.registerUnlocked(receipt);
   const current = registered.artifact.history.at(-1);
-  if (current === undefined) throw recordingIntegrityError(input.runId);
+  if (current === undefined) throw recordingIntegrityError(input.subject);
   return {
     event: registered.event,
-    status: statusFromReceipt(input.runId, current),
+    status: statusFromReceipt(input.subject, current),
     replayed: registered.replayed,
   };
 }
 
 function statusFromReceipt(
-  runId: string,
+  subject: ReportSubject,
   receipt: Pick<
     RecordingEvent,
     "eventId" | "status" | "references" | "recordedAt"
   >,
 ): RecordingStatusView {
   return {
-    runId,
+    subject,
     status: receipt.status,
     references: receipt.references,
     eventId: receipt.eventId,
@@ -148,21 +258,29 @@ function statusFromReceipt(
 }
 
 function statusFromEvent(event: RecordingEvent): RecordingStatusView {
-  return statusFromReceipt(event.runId, event);
+  return statusFromReceipt(event.subject, event);
 }
 
-function recordingIntegrityError(runId: string): AiQaError {
+function recordingIntegrityError(subject: ReportSubject): AiQaError {
   return new AiQaError(
     "recording.integrity_error",
     "Recording journal has no current event",
-    { runId },
+    subjectDetails(subject),
   );
 }
 
-function projectSkillSnapshotMissing(runId: string): AiQaError {
+function projectSkillSnapshotMissing(subject: ReportSubject): AiQaError {
   return new AiQaError(
     "project_skill.snapshot_missing",
-    "Historical project-skill run has no frozen Project Skill snapshot",
-    { runId },
+    "Historical project-skill report subject has no frozen Project Skill snapshot",
+    subjectDetails(subject),
   );
+}
+
+function subjectDetails(subject: ReportSubject):
+  | { runId: string }
+  | { runGroupId: string } {
+  return subject.kind === "run"
+    ? { runId: subject.id }
+    : { runGroupId: subject.id };
 }

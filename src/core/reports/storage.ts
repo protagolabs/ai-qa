@@ -2,10 +2,15 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { AiQaError } from "../errors.js";
+import { runGroupIdSchema } from "../run-groups/schema.js";
 import { runIdSchema } from "../runs/schema.js";
 
 type RunReportFilename =
   "report.json" | "report.md" | "recording.jsonl" | "recording.json";
+
+type ReportSubject =
+  | { kind: "run"; id: string }
+  | { kind: "run-group"; id: string };
 
 export async function resolveRunReportDirectory(input: {
   projectRoot: string;
@@ -13,9 +18,39 @@ export async function resolveRunReportDirectory(input: {
   create: boolean;
 }): Promise<string> {
   const runId = runIdSchema.parse(input.runId);
+  return resolveReportDirectory({
+    projectRoot: input.projectRoot,
+    subject: { kind: "run", id: runId },
+    create: input.create,
+  });
+}
+
+export async function resolveGroupReportDirectory(input: {
+  projectRoot: string;
+  runGroupId: string;
+  create: boolean;
+}): Promise<string> {
+  const runGroupId = runGroupIdSchema.parse(input.runGroupId);
+  return resolveReportDirectory({
+    projectRoot: input.projectRoot,
+    subject: { kind: "run-group", id: runGroupId },
+    create: input.create,
+  });
+}
+
+async function resolveReportDirectory(input: {
+  projectRoot: string;
+  subject: ReportSubject;
+  create: boolean;
+}): Promise<string> {
   const canonicalProjectRoot = await realpath(input.projectRoot);
   let directory = canonicalProjectRoot;
-  for (const segment of [".ai-qa", "reports", "runs", runId]) {
+  for (const segment of [
+    ".ai-qa",
+    "reports",
+    input.subject.kind === "run" ? "runs" : "groups",
+    input.subject.id,
+  ]) {
     directory = resolve(directory, segment);
     if (input.create) {
       try {
@@ -38,7 +73,7 @@ export async function resolveRunReportDirectory(input: {
         throw new AiQaError(
           "report.not_generated",
           "Configured project-local report output has not been generated",
-          { runId },
+          reportDetails(input.subject),
         );
       }
       if (error instanceof AiQaError && error.code === "report.not_generated") {
@@ -47,11 +82,26 @@ export async function resolveRunReportDirectory(input: {
       throw new AiQaError(
         "report.storage_integrity_error",
         "Report storage must stay in real project-local directories",
-        { runId, path: directory },
+        { ...reportDetails(input.subject), path: directory },
       );
     }
   }
   return directory;
+}
+
+export async function requireGroupReportRegularFile(input: {
+  directory: string;
+  filename: RunReportFilename;
+  runGroupId: string;
+  missingCode: "report.not_generated" | "recording.not_found";
+}): Promise<string> {
+  const runGroupId = runGroupIdSchema.parse(input.runGroupId);
+  return requireReportRegularFile({
+    directory: input.directory,
+    filename: input.filename,
+    subject: { kind: "run-group", id: runGroupId },
+    missingCode: input.missingCode,
+  });
 }
 
 export async function requireRunReportRegularFile(input: {
@@ -61,8 +111,22 @@ export async function requireRunReportRegularFile(input: {
   missingCode: "report.not_generated" | "recording.not_found";
 }): Promise<string> {
   const runId = runIdSchema.parse(input.runId);
+  return requireReportRegularFile({
+    directory: input.directory,
+    filename: input.filename,
+    subject: { kind: "run", id: runId },
+    missingCode: input.missingCode,
+  });
+}
+
+async function requireReportRegularFile(input: {
+  directory: string;
+  filename: RunReportFilename;
+  subject: ReportSubject;
+  missingCode: "report.not_generated" | "recording.not_found";
+}): Promise<string> {
   const path = resolve(input.directory, input.filename);
-  const projectRelativePath = `.ai-qa/reports/runs/${runId}/${input.filename}`;
+  const projectRelativePath = `.ai-qa/reports/${input.subject.kind === "run" ? "runs" : "groups"}/${input.subject.id}/${input.filename}`;
   try {
     const stats = await lstat(path);
     if (
@@ -73,7 +137,7 @@ export async function requireRunReportRegularFile(input: {
       throw new AiQaError(
         "report.storage_integrity_error",
         "Report artifacts must be real project-local files",
-        { runId, path: projectRelativePath },
+        { ...reportDetails(input.subject), path: projectRelativePath },
       );
     }
   } catch (error: unknown) {
@@ -84,13 +148,13 @@ export async function requireRunReportRegularFile(input: {
         input.missingCode === "report.not_generated"
           ? "Configured project-local report output has not been generated"
           : "Run recording has not been generated",
-        { runId, path: projectRelativePath },
+        { ...reportDetails(input.subject), path: projectRelativePath },
       );
     }
     throw new AiQaError(
       "report.storage_integrity_error",
       "Report artifact integrity verification failed",
-      { runId, path: projectRelativePath },
+      { ...reportDetails(input.subject), path: projectRelativePath },
     );
   }
   return path;
@@ -109,6 +173,16 @@ export async function withRunReportLock<T>(
   } finally {
     await release();
   }
+}
+
+export const withGroupReportLock = withRunReportLock;
+
+function reportDetails(subject: ReportSubject):
+  | { runId: string }
+  | { runGroupId: string } {
+  return subject.kind === "run"
+    ? { runId: subject.id }
+    : { runGroupId: subject.id };
 }
 
 function isNodeError(error: unknown, code: string): boolean {

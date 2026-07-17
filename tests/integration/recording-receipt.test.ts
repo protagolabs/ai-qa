@@ -50,14 +50,15 @@ import {
 
 const FIRST_RECORDED_AT = "2026-07-15T01:00:00.000Z";
 const SECOND_RECORDED_AT = "2026-07-15T01:05:00.000Z";
+const RUN_SUBJECT = { kind: "run", id: "run-1" } as const;
 
 function recordingEvent(
   overrides: Partial<RecordingEvent> = {},
 ): RecordingEvent {
   return recordingEventSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: "recording-00000000-0000-0000-0000-000000000001",
-    runId: "run-1",
+    subject: RUN_SUBJECT,
     recordedAt: FIRST_RECORDED_AT,
     idempotencyKey: "receipt-1",
     status: "recorded",
@@ -117,13 +118,13 @@ describe("recording repository materialization", () => {
   it("materializes journal order, final current state, and deterministic time", () => {
     const events = twoEvents();
     const artifact = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events,
     });
 
     expect(artifact).toEqual({
-      schemaVersion: 1,
-      runId: "run-1",
+      schemaVersion: 2,
+      subject: { kind: "run", id: "run-1" },
       current: {
         eventId: events[1].eventId,
         status: events[1].status,
@@ -144,12 +145,12 @@ describe("recording repository materialization", () => {
 
   it("rejects empty histories and run identity mismatches", () => {
     expect(() =>
-      materializeRecordingArtifact({ runId: "run-1", events: [] }),
+      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [] }),
     ).toThrow();
     expect(() =>
       materializeRecordingArtifact({
-        runId: "run-1",
-        events: [recordingEvent({ runId: "run-2" })],
+        subject: { kind: "run", id: "run-1" },
+        events: [recordingEvent({ subject: { kind: "run", id: "run-2" } })],
       }),
     ).toThrow();
   });
@@ -157,11 +158,11 @@ describe("recording repository materialization", () => {
   it("classifies current, lagging, derived-only, ahead, and conflicting views", () => {
     const events = twoEvents();
     const current = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events,
     });
     const lagging = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [events[0]],
     });
     const derivedOnlyDifference: RecordingArtifact = {
@@ -202,14 +203,14 @@ describe("recording repository materialization", () => {
   it("classifies a different artifact run identity as conflict", () => {
     const events = twoEvents();
     const artifact = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events,
     });
 
     expect(
       classifyRecordingMaterialization({
         events,
-        artifact: { ...artifact, runId: "run-2" },
+        artifact: { ...artifact, subject: { kind: "run", id: "run-2" } },
       }),
     ).toBe("conflict");
   });
@@ -220,7 +221,7 @@ describe("recording repository", () => {
     const directory = await createDirectory();
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -233,7 +234,7 @@ describe("recording repository", () => {
     const directory = await createDirectory();
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -245,10 +246,10 @@ describe("recording repository", () => {
 
     expect(registered.replayed).toBe(false);
     expect(registered.event).toMatchObject({
-      schemaVersion: 1,
-      runId: "run-1",
+      schemaVersion: 2,
+      subject: { kind: "run", id: "run-1" },
       recordedAt: FIRST_RECORDED_AT,
-      idempotencyKey: "recording:run-1:v1",
+      idempotencyKey: expect.stringMatching(/^recording:sha256:[a-f0-9]{64}:v2$/u),
       status: "recorded",
       references: ["opaque-reference-1"],
     });
@@ -275,7 +276,7 @@ describe("recording repository", () => {
       await symlink(outsidePath, join(directory, filename));
       const repository = new RecordingRepository(
         directory,
-        "run-1",
+        RUN_SUBJECT,
         () => new Date(FIRST_RECORDED_AT),
       );
 
@@ -311,7 +312,7 @@ describe("recording repository", () => {
     const journalBefore = await readFile(journalPath, "utf8");
     const journalStatBefore = await stat(journalPath);
     let nowCalls = 0;
-    const repository = new RecordingRepository(directory, "run-1", () => {
+    const repository = new RecordingRepository(directory, RUN_SUBJECT, () => {
       nowCalls += 1;
       return new Date(SECOND_RECORDED_AT);
     });
@@ -322,14 +323,14 @@ describe("recording repository", () => {
       state: "present",
       events: [event],
       artifact: materializeRecordingArtifact({
-        runId: "run-1",
+        subject: { kind: "run", id: "run-1" },
         events: [event],
       }),
     });
     expect(
       JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
     ).toEqual(
-      materializeRecordingArtifact({ runId: "run-1", events: [event] }),
+      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [event] }),
     );
     expect(nowCalls).toBe(0);
     expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
@@ -346,7 +347,7 @@ describe("recording repository", () => {
     expect(retry).toEqual({
       event,
       artifact: materializeRecordingArtifact({
-        runId: "run-1",
+        subject: { kind: "run", id: "run-1" },
         events: [event],
       }),
       replayed: true,
@@ -356,12 +357,12 @@ describe("recording repository", () => {
     expect((await stat(journalPath)).ino).toBe(journalStatBefore.ino);
   });
 
-  it("reads and recovers a legacy unknown event with references", async () => {
+  it("reads and recovers a stored unknown event with references", async () => {
     const directory = await createDirectory();
     const event: RecordingEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       eventId: "recording-00000000-0000-0000-0000-000000000003",
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       recordedAt: FIRST_RECORDED_AT,
       idempotencyKey: "legacy-unknown-receipt",
       status: "unknown",
@@ -372,12 +373,12 @@ describe("recording repository", () => {
     const journalBefore = await readFile(journalPath, "utf8");
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(SECOND_RECORDED_AT),
     );
     const expectedArtifact: RecordingArtifact = {
-      schemaVersion: 1,
-      runId: "run-1",
+      schemaVersion: 2,
+      subject: { kind: "run", id: "run-1" },
       current: {
         eventId: event.eventId,
         status: event.status,
@@ -412,20 +413,20 @@ describe("recording repository", () => {
     await writeJournal(directory, events);
     await writeArtifact(
       directory,
-      materializeRecordingArtifact({ runId: "run-1", events: [events[0]] }),
+      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events: [events[0]] }),
     );
     const journalPath = join(directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath, "utf8");
     const journalInode = (await stat(journalPath)).ino;
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date("2099-01-01T00:00:00.000Z"),
     );
 
     const recovered = await repository.readOrRecoverUnlocked();
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events,
     });
 
@@ -448,11 +449,11 @@ describe("recording repository", () => {
     await writeFile(join(directory, "recording.json"), "{");
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date("2099-01-01T00:00:00.000Z"),
     );
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
 
@@ -471,7 +472,7 @@ describe("recording repository", () => {
     const event = recordingEvent();
     await writeJournal(directory, [event]);
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
     const [entry] = expected.history;
@@ -484,7 +485,7 @@ describe("recording repository", () => {
     });
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date("2099-01-01T00:00:00.000Z"),
     );
 
@@ -503,19 +504,19 @@ describe("recording repository", () => {
     const event = recordingEvent();
     await writeJournal(directory, [event]);
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
     const contradictory = {
       ...expected,
-      runId: "run-2",
+      subject: { kind: "run", id: "run-2" },
       materializedAt: "not-a-datetime",
     };
     const bytes = `${JSON.stringify(contradictory, null, 2)}\n`;
     await writeRawArtifact(directory, contradictory);
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -532,7 +533,7 @@ describe("recording repository", () => {
     const event = recordingEvent();
     await writeJournal(directory, [event]);
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
     const ahead = {
@@ -543,7 +544,7 @@ describe("recording repository", () => {
     await writeRawArtifact(directory, ahead);
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -560,7 +561,7 @@ describe("recording repository", () => {
     const event = recordingEvent();
     await writeJournal(directory, [event]);
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
     const [entry] = expected.history;
@@ -574,7 +575,7 @@ describe("recording repository", () => {
     await writeRawArtifact(directory, contradictory);
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -591,7 +592,7 @@ describe("recording repository", () => {
     const event = recordingEvent();
     await writeJournal(directory, [event]);
     const expected = materializeRecordingArtifact({
-      runId: "run-1",
+      subject: { kind: "run", id: "run-1" },
       events: [event],
     });
     const canonicalBytes = `${JSON.stringify(expected, null, 2)}\n`;
@@ -605,7 +606,7 @@ describe("recording repository", () => {
     await writeFile(join(directory, "recording.json"), unsafeBytes);
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -622,13 +623,13 @@ describe("recording repository", () => {
     await writeArtifact(
       directory,
       materializeRecordingArtifact({
-        runId: "run-1",
+        subject: { kind: "run", id: "run-1" },
         events: [recordingEvent()],
       }),
     );
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -643,7 +644,7 @@ describe("recording repository", () => {
       "{not-json}\n",
       "",
       JSON.stringify(valid),
-      serializeJsonLines([recordingEvent({ runId: "run-2" })]),
+      serializeJsonLines([recordingEvent({ subject: { kind: "run", id: "run-2" } })]),
       serializeJsonLines([
         valid,
         recordingEvent({
@@ -658,7 +659,7 @@ describe("recording repository", () => {
       await writeFile(join(directory, "recording.jsonl"), content);
       const repository = new RecordingRepository(
         directory,
-        "run-1",
+        RUN_SUBJECT,
         () => new Date(FIRST_RECORDED_AT),
       );
       await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
@@ -671,17 +672,17 @@ describe("recording repository", () => {
     const directory = await createDirectory();
     const event = recordingEvent();
     await writeJournal(directory, [event]);
-    const otherRunEvent = recordingEvent({ runId: "run-2" });
+    const otherRunEvent = recordingEvent({ subject: { kind: "run", id: "run-2" } });
     await writeArtifact(
       directory,
       materializeRecordingArtifact({
-        runId: "run-2",
+        subject: { kind: "run", id: "run-2" },
         events: [otherRunEvent],
       }),
     );
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
 
@@ -696,12 +697,12 @@ describe("recording repository", () => {
     await writeJournal(aheadDirectory, [events[0]]);
     await writeArtifact(
       aheadDirectory,
-      materializeRecordingArtifact({ runId: "run-1", events }),
+      materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events }),
     );
 
     const conflictingDirectory = await createDirectory();
     await writeJournal(conflictingDirectory, events);
-    const artifact = materializeRecordingArtifact({ runId: "run-1", events });
+    const artifact = materializeRecordingArtifact({ subject: { kind: "run", id: "run-1" }, events });
     const [firstHistory, secondHistory] = artifact.history;
     if (firstHistory === undefined || secondHistory === undefined) {
       throw new Error("Two-event materialization requires two history entries");
@@ -714,7 +715,7 @@ describe("recording repository", () => {
     for (const directory of [aheadDirectory, conflictingDirectory]) {
       const repository = new RecordingRepository(
         directory,
-        "run-1",
+        RUN_SUBJECT,
         () => new Date(FIRST_RECORDED_AT),
       );
       await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
@@ -727,7 +728,7 @@ describe("recording repository", () => {
     const directory = await createDirectory();
     const repository = new RecordingRepository(
       directory,
-      "run-1",
+      RUN_SUBJECT,
       () => new Date(FIRST_RECORDED_AT),
     );
     const receipt = {
@@ -735,7 +736,9 @@ describe("recording repository", () => {
       references: ["ref-a", "ref-b"],
     };
     const first = await repository.registerUnlocked(receipt);
-    expect(first.event.idempotencyKey).toBe("recording:run-1:v1");
+    expect(first.event.idempotencyKey).toMatch(
+      /^recording:sha256:[a-f0-9]{64}:v2$/u,
+    );
     const journalPath = join(directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath, "utf8");
     const journalInode = (await stat(journalPath)).ino;
@@ -928,7 +931,7 @@ describe("verified report recording receipt service", () => {
     await rm(join(fixture.projectRoot, PROJECT_SKILL_RELATIVE_PATH));
 
     await expect(readRecordingStatus(fixture)).resolves.toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "not_applicable",
       references: [],
     });
@@ -948,7 +951,7 @@ describe("verified report recording receipt service", () => {
     const fixture = await receiptFixture();
 
     await expect(readRecordingStatus(fixture)).resolves.toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "pending",
       references: [],
     });
@@ -1068,7 +1071,7 @@ describe("verified report recording receipt service", () => {
 
     expect(first.replayed).toBe(false);
     expect(first.status).toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "recorded",
       references: opaqueReferences,
       eventId: first.event.eventId,
@@ -1180,7 +1183,7 @@ describe("verified report recording receipt service", () => {
       references: ["docs/qa-results.md#run-1"],
     };
     const historicalEvent = recordingEvent({
-      runId: fixture.runId,
+      subject: { kind: "run", id: fixture.runId },
       idempotencyKey: "historical-caller-owned-key",
       status: receipt.status,
       references: receipt.references,
@@ -1189,7 +1192,7 @@ describe("verified report recording receipt service", () => {
     await writeArtifact(
       fixture.directory,
       materializeRecordingArtifact({
-        runId: fixture.runId,
+        subject: { kind: "run", id: fixture.runId },
         events: [historicalEvent],
       }),
     );
@@ -1197,7 +1200,7 @@ describe("verified report recording receipt service", () => {
     const journalBefore = await readFile(journalPath);
 
     await expect(readRecordingStatus(fixture)).resolves.toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "recorded",
       references: receipt.references,
       eventId: historicalEvent.eventId,
@@ -1208,7 +1211,7 @@ describe("verified report recording receipt service", () => {
     ).resolves.toEqual({
       event: historicalEvent,
       status: {
-        runId: "run-1",
+        subject: RUN_SUBJECT,
         status: "recorded",
         references: receipt.references,
         eventId: historicalEvent.eventId,
@@ -1354,7 +1357,7 @@ describe("verified report recording receipt service", () => {
       );
 
       await expect(readRecordingStatus(fixture)).resolves.toEqual({
-        runId: "run-1",
+        subject: RUN_SUBJECT,
         status: "not_applicable",
         references: [],
       });
@@ -1404,7 +1407,7 @@ describe("report recording receipt CLI", () => {
       ),
     ).toBe(0);
     expect(JSON.parse(captured.stdout.pop()!)).toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "pending",
       references: [],
     });
@@ -1451,7 +1454,7 @@ describe("report recording receipt CLI", () => {
       ),
     ).toBe(0);
     expect(JSON.parse(captured.stdout.pop()!)).toEqual({
-      runId: "run-1",
+      subject: RUN_SUBJECT,
       status: "recorded",
       references: ["docs/qa-results.md#run-1"],
       eventId: receiptOutput.eventId,

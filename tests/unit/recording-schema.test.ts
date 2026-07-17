@@ -6,12 +6,13 @@ import {
   recordingIdempotencyKeySchema,
   recordingReceiptInputSchema,
   recordingReferenceSchema,
+  reportSubjectSchema,
 } from "../../src/core/recording/schema.js";
 
 const validEvent = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   eventId: "recording-00000000-0000-0000-0000-000000000001",
-  runId: "run-1",
+  subject: { kind: "run", id: "run-1" },
   recordedAt: "2026-07-15T01:00:00.000Z",
   idempotencyKey: "receipt-1",
   status: "recorded",
@@ -19,6 +20,36 @@ const validEvent = {
 } as const;
 
 describe("recording repository schemas", () => {
+  it("accepts only strict run and run-group recording subjects", () => {
+    expect(reportSubjectSchema.parse({ kind: "run", id: "run-1" })).toEqual({
+      kind: "run",
+      id: "run-1",
+    });
+    expect(
+      reportSubjectSchema.parse({
+        kind: "run-group",
+        id: "run-group-release-matrix",
+      }),
+    ).toEqual({ kind: "run-group", id: "run-group-release-matrix" });
+    expect(
+      reportSubjectSchema.safeParse({ kind: "run", id: "run-group-wrong" })
+        .success,
+    ).toBe(false);
+    expect(
+      reportSubjectSchema.safeParse({
+        kind: "run-group",
+        id: "run-1",
+      }).success,
+    ).toBe(false);
+    expect(
+      reportSubjectSchema.safeParse({
+        kind: "run",
+        id: "run-1",
+        runId: "run-1",
+      }).success,
+    ).toBe(false);
+  });
+
   it("enforces the exact idempotency-key alphabet and length boundaries", () => {
     expect(recordingIdempotencyKeySchema.safeParse("").success).toBe(false);
     expect(recordingIdempotencyKeySchema.safeParse("a").success).toBe(true);
@@ -211,8 +242,8 @@ describe("recording repository schemas", () => {
       references: validEvent.references,
     };
     const artifact = {
-      schemaVersion: 1,
-      runId: "run-1",
+      schemaVersion: 2,
+      subject: { kind: "run", id: "run-1" },
       current: {
         eventId: validEvent.eventId,
         status: validEvent.status,
@@ -239,8 +270,8 @@ describe("recording repository schemas", () => {
       references: validEvent.references,
     };
     const artifact = {
-      schemaVersion: 1,
-      runId: "run-1",
+      schemaVersion: 2,
+      subject: { kind: "run", id: "run-1" },
       current: {
         eventId: validEvent.eventId,
         status: validEvent.status,
