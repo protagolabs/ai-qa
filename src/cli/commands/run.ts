@@ -53,13 +53,15 @@ const doctorCheckSchema = z
   })
   .strict();
 
-const webReadinessSchema = z
-  .object({
-    platform: z.literal("web"),
-    status: z.enum(["ready", "not_ready"]),
-    checks: z.array(doctorCheckSchema),
-  })
-  .strict();
+const webReadinessSchema = z.object({
+  platform: z.literal("web"),
+  status: z.enum(["ready", "not_ready"]),
+  checks: z.array(doctorCheckSchema),
+});
+
+const exploratoryStartInputSchema = exploratoryRunInputSchema.extend({
+  readiness: webReadinessSchema,
+});
 
 function aiQaHome(context: CliContext): string {
   return context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
@@ -112,7 +114,7 @@ export function registerRunCommands(
       const config = await readProjectConfig(resolved.projectRoot);
       const suppliedExploratory =
         parsedOptions.kind === "exploratory"
-          ? await readJsonInput(context, exploratoryRunInputSchema)
+          ? await readJsonInput(context, exploratoryStartInputSchema)
           : undefined;
       const suppliedRegression =
         parsedOptions.kind === "regression"

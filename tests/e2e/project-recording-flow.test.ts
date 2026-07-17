@@ -219,6 +219,7 @@ async function startAndCancelWebRun(fixture: TestProject): Promise<WorkOrder> {
       readiness,
     },
   );
+  expect(run.readiness).not.toHaveProperty("requiredAction");
   await fixture.cli.run([
     "run",
     "cancel",
