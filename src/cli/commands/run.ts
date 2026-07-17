@@ -53,14 +53,28 @@ const doctorCheckSchema = z
   })
   .strict();
 
-const webReadinessSchema = z.object({
+const webReadinessFields = {
   platform: z.literal("web"),
   status: z.enum(["ready", "not_ready"]),
   checks: z.array(doctorCheckSchema),
-});
+};
+
+const webReadinessSchema = z.object(webReadinessFields).strict();
+
+const doctorReadinessInputSchema = z
+  .object({
+    ...webReadinessFields,
+    requiredAction: z.null().optional(),
+  })
+  .strict()
+  .transform(({ platform, status, checks }) => ({
+    platform,
+    status,
+    checks,
+  }));
 
 const exploratoryStartInputSchema = exploratoryRunInputSchema.extend({
-  readiness: webReadinessSchema,
+  readiness: doctorReadinessInputSchema,
 });
 
 function aiQaHome(context: CliContext): string {
@@ -118,7 +132,7 @@ export function registerRunCommands(
           : undefined;
       const suppliedRegression =
         parsedOptions.kind === "regression"
-          ? await readJsonInput(context, webReadinessSchema)
+          ? await readJsonInput(context, doctorReadinessInputSchema)
           : undefined;
       const readiness =
         parsedOptions.kind === "exploratory"
