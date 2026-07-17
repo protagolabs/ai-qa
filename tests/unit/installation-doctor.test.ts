@@ -17,8 +17,7 @@ import { syncGlobalSkill } from "../../src/services/skill-management/global-skil
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
   initializeTestProject,
-  projectConfigV1,
-  projectConfigV2,
+  projectConfig,
 } from "../helpers/project-fixture.js";
 
 const projectSkillPath = ".agents/skills/ai-qa-project/SKILL.md";
@@ -38,7 +37,7 @@ async function installCurrentGlobalSkill(agentsHome: string): Promise<void> {
 }
 
 async function fixture(input?: {
-  config?: ReturnType<typeof projectConfigV2>;
+  config?: ReturnType<typeof projectConfig>;
   installGlobalSkill?: boolean;
 }): Promise<{ projectRoot: string; agentsHome: string }> {
   const projectRoot = await mkdtemp(
@@ -47,7 +46,7 @@ async function fixture(input?: {
   const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-unit-agents-"));
   await initializeTestProject({
     projectRoot,
-    config: input?.config ?? projectConfigV2(),
+    config: input?.config ?? projectConfig(),
   });
   if (input?.installGlobalSkill !== false) {
     await installCurrentGlobalSkill(agentsHome);
@@ -109,10 +108,10 @@ describe("runInstallationDoctor", () => {
   });
 
   it.each(["local-only", "project-skill"] as const)(
-    "requires a regular Project Skill for initialized config v2 mode %s",
+    "requires a regular Project Skill for initialized config v3 mode %s",
     async (mode) => {
       const { projectRoot, agentsHome } = await fixture({
-        config: projectConfigV2(mode),
+        config: projectConfig(["web"], mode),
       });
       await rm(join(projectRoot, projectSkillPath));
 
@@ -130,11 +129,14 @@ describe("runInstallationDoctor", () => {
     },
   );
 
-  it("keeps a missing Project Skill advisory for stored config v1", async () => {
+  it("rejects a stored schema-v2 config as invalid", async () => {
     const { projectRoot, agentsHome } = await fixture();
     await writeFile(
       join(projectRoot, ".ai-qa", "config.yaml"),
-      stringify(projectConfigV1(), { sortMapEntries: true }),
+      stringify(
+        { ...projectConfig(), schemaVersion: 2 },
+        { sortMapEntries: true },
+      ),
       "utf8",
     );
     await rm(join(projectRoot, projectSkillPath));
@@ -145,10 +147,13 @@ describe("runInstallationDoctor", () => {
       sourcePath: bundledSourcePath(),
     });
 
-    expect(result.status).toBe("ready");
+    expect(result.status).toBe("not_ready");
+    const config = check(result, "project.config");
+    expect(config).toMatchObject({ status: "fail" });
+    expect(config?.message).toContain("schema-v3");
     const projectSkill = check(result, "agent.project_skill");
-    expect(projectSkill).toMatchObject({ status: "advisory" });
-    expect(projectSkill?.message).toContain(projectSkillPath);
+    expect(projectSkill).toMatchObject({ status: "missing" });
+    expect(projectSkill?.message).toContain("configuration is invalid");
   });
 
   it("fails a symlinked Project Skill without exposing absolute paths", async () => {
@@ -279,6 +284,7 @@ describe("runInstallationDoctor", () => {
     expect(
       result.checks.every((candidate) => candidate.status === "pass"),
     ).toBe(true);
+    expect(check(result, "project.config")?.message).toContain("schema v3");
     expect(await projectFiles(projectRoot)).toEqual(before);
     expect(JSON.stringify(result)).not.toContain(projectRoot);
     expect(JSON.stringify(result)).not.toContain(dirname(projectRoot));

@@ -1,46 +1,66 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stringify } from "yaml";
-import type {
-  ProjectConfigV1,
-  ProjectConfigV2,
-} from "../../src/core/config/schema.js";
+import type { ProjectConfig } from "../../src/core/config/schema.js";
+import type { Platform } from "../../src/core/platforms/schema.js";
 import type { RecordingReceiptInput } from "../../src/core/recording/schema.js";
 
-function projectFields() {
+export function projectConfig(
+  platforms: readonly Platform[] = ["web"],
+  mode: "local-only" | "project-skill" = "local-only",
+): ProjectConfig {
+  const targets: ProjectConfig["targets"] = {};
+  const tools: ProjectConfig["tools"] = {};
+
+  for (const platform of platforms) {
+    switch (platform) {
+      case "web":
+        targets.web = { entryUrl: "http://127.0.0.1:3000" };
+        tools.web = { controller: "chrome-devtools-mcp" };
+        break;
+      case "ios-simulator":
+        targets["ios-simulator"] = {
+          bundleId: "com.example.sample",
+          simulator: { selection: "booted" },
+        };
+        tools["ios-simulator"] = { controller: "pepper" };
+        break;
+      case "android-emulator":
+        targets["android-emulator"] = {
+          appPackage: "com.example.sample",
+          appActivity: ".MainActivity",
+          emulator: { selection: "running" },
+        };
+        tools["android-emulator"] = {
+          controller: "appium",
+          automationName: "uiautomator2",
+          endpoint: "http://127.0.0.1:4723",
+        };
+        break;
+    }
+  }
+
   return {
+    schemaVersion: 3,
     project: { id: "sample-web", name: "Sample Web" },
-    targets: { web: { entryUrl: "http://127.0.0.1:3000" } },
+    targets,
     environments: {},
-    tools: { web: { controller: "chrome-devtools-mcp" as const } },
+    tools,
     evidencePolicy: {
-      screenshots: "required" as const,
-      defaultSensitivity: "internal" as const,
+      screenshots: "required",
+      defaultSensitivity: "internal",
       retentionDays: 30,
     },
     reportPolicy: {
-      formats: ["markdown", "json"] as ("markdown" | "json")[],
+      formats: ["markdown", "json"],
       audience: "engineering",
-      detail: "full" as const,
+      detail: "full",
     },
-    storagePolicy: { adapter: "project-local" as const },
-    gitPolicy: { config: "track" as const, artifacts: "ignore" as const },
-    ciPolicy: { nonPassExit: "failure" as const },
-    secretReferences: { login: "QA_TEST_PASSWORD" },
-  };
-}
-
-export function projectConfigV1(): ProjectConfigV1 {
-  return { schemaVersion: 1, ...projectFields() };
-}
-
-export function projectConfigV2(
-  mode: "local-only" | "project-skill" = "local-only",
-): ProjectConfigV2 {
-  return {
-    schemaVersion: 2,
-    ...projectFields(),
     recordingPolicy: { mode },
+    storagePolicy: { adapter: "project-local" },
+    gitPolicy: { config: "track", artifacts: "ignore" },
+    ciPolicy: { nonPassExit: "failure" },
+    secretReferences: { login: "QA_TEST_PASSWORD" },
   };
 }
 
@@ -72,7 +92,7 @@ export function projectRecordingReceipt(input: {
 
 export async function initializeTestProject(input: {
   projectRoot: string;
-  config?: ProjectConfigV2;
+  config?: ProjectConfig;
   projectSkill?: string;
 }): Promise<void> {
   await Promise.all([
@@ -89,7 +109,7 @@ export async function initializeTestProject(input: {
   await Promise.all([
     writeFile(
       join(input.projectRoot, ".ai-qa", "config.yaml"),
-      stringify(input.config ?? projectConfigV2(), { sortMapEntries: true }),
+      stringify(input.config ?? projectConfig(), { sortMapEntries: true }),
       "utf8",
     ),
     writeFile(

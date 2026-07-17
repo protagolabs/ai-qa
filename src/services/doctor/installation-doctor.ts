@@ -3,7 +3,7 @@ import { access, lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { satisfies } from "semver";
 import { readStoredProjectConfig } from "../../core/config/repository.js";
-import type { StoredProjectConfig } from "../../core/config/schema.js";
+import type { ProjectConfig } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { checkGlobalSkill } from "../skill-management/global-skill.js";
 
@@ -97,7 +97,7 @@ export async function runInstallationDoctor(
       {
         code: "project.config",
         status: "fail",
-        message: `Configuration ${configPath} is not a readable regular schema-compatible file`,
+        message: `Configuration ${configPath} is not a readable regular schema-v3 file`,
       },
       {
         code: "agent.project_skill",
@@ -114,7 +114,7 @@ export async function runInstallationDoctor(
     status: "pass",
     message: `Configuration ${configPath} is readable (schema v${storedConfig.config.schemaVersion})`,
   });
-  checks.push(await projectSkillCheck(input.projectRoot, storedConfig.config));
+  checks.push(await projectSkillCheck(input.projectRoot));
   checks.push(await storageCheck(input.projectRoot));
   return {
     status: checks.some((check) => check.status === "fail")
@@ -160,7 +160,7 @@ async function globalSkillCheck(
 }
 
 type ConfigInspection =
-  | { state: "regular"; config: StoredProjectConfig }
+  | { state: "regular"; config: ProjectConfig }
   | { state: "missing" }
   | { state: "invalid" };
 
@@ -184,7 +184,6 @@ async function readConfig(projectRoot: string): Promise<ConfigInspection> {
 
 async function projectSkillCheck(
   projectRoot: string,
-  config: StoredProjectConfig,
 ): Promise<InstallationCheck> {
   const state = await inspectRegularFile(projectRoot, projectSkillSegments);
   if (state === "regular") {
@@ -192,13 +191,6 @@ async function projectSkillCheck(
       code: "agent.project_skill",
       status: "pass",
       message: `Project Skill ${projectSkillPath} is a regular file`,
-    };
-  }
-  if (state === "missing" && config.schemaVersion === 1) {
-    return {
-      code: "agent.project_skill",
-      status: "advisory",
-      message: `Stored schema v1 has no Project Skill at ${projectSkillPath}`,
     };
   }
   return {
