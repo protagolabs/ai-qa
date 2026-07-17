@@ -832,14 +832,13 @@ describe("registerEvidence", () => {
   });
 
   it("validates malformed work-order state before mutating evidence storage", async () => {
-    const projectRoot = await mkdtemp(
-      join(tmpdir(), "ai-qa-evidence-untrusted-"),
-    );
+    const { projectRoot } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const runRoot = join(projectRoot, ".ai-qa", "runs", "run-1");
-    await mkdir(runRoot, { recursive: true });
-    await writeFile(join(runRoot, "work-order.json"), "{");
+    await writeFile(
+      join(projectRoot, ".ai-qa", "runs", "run-1", "work-order.json"),
+      "{",
+    );
 
     await expect(
       registerEvidence({
