@@ -86,7 +86,6 @@ interface CliHarness {
 function createHarness(input: {
   projectRoot: string;
   machineHome: string;
-  aiQaHome: string;
   agentsHome: string;
 }): CliHarness {
   const calls: string[][] = [];
@@ -98,7 +97,6 @@ function createHarness(input: {
         cwd: input.projectRoot,
         homeDir: input.machineHome,
         env: {
-          AI_QA_HOME: input.aiQaHome,
           AI_QA_AGENTS_HOME: input.agentsHome,
         },
         now: fixedNow,
@@ -800,28 +798,21 @@ describe("Increment 1 Web vertical slice CLI", () => {
   it("drives every public command through exploration and two pinned passes", async () => {
     const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-cli-e2e-"));
     const projectRoot = join(machineHome, "target-project");
-    const aiQaHome = join(machineHome, "ai-qa-home");
     const agentsHome = join(machineHome, "agents-home");
     await mkdir(projectRoot, { recursive: true });
     const cli = createHarness({
       projectRoot,
       machineHome,
-      aiQaHome,
       agentsHome,
     });
 
     await cli.run(["skill", "install", "--global"]);
-    await cli.run(
-      ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
-      { confirmed: true },
-    );
     const projectConfig = config();
     await expect(
       cli.run(["config", "validate", "--stdin-json"], projectConfig),
     ).resolves.toEqual({ status: "valid", config: projectConfig });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: projectConfig,
     });
     const doctor = await cli.run<WorkOrder["readiness"]>(
@@ -1048,10 +1039,9 @@ describe("Increment 1 Web vertical slice CLI", () => {
   it("keeps an existing v1 project local-only without rewriting it", async () => {
     const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-cli-v1-e2e-"));
     const projectRoot = join(machineHome, "target-project");
-    const aiQaHome = join(machineHome, "ai-qa-home");
     const agentsHome = join(machineHome, "agents-home");
     const legacyConfig = stringify(projectConfigV1());
-    await initializeTestProject({ projectRoot, aiQaHome });
+    await initializeTestProject({ projectRoot });
     await Promise.all([
       writeFile(join(projectRoot, ".ai-qa", "config.yaml"), legacyConfig),
       rm(join(projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md")),
@@ -1059,14 +1049,9 @@ describe("Increment 1 Web vertical slice CLI", () => {
     const cli = createHarness({
       projectRoot,
       machineHome,
-      aiQaHome,
       agentsHome,
     });
     await cli.run(["skill", "install", "--global"]);
-    await cli.run(
-      ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
-      { confirmed: true },
-    );
     const doctor = await cli.run<WorkOrder["readiness"]>(
       ["doctor", "--platform", "web", "--json", "--stdin-json"],
       {

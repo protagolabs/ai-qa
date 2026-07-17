@@ -15,7 +15,7 @@ import {
   type AppendRunEvent,
   type RunEvent,
 } from "../../core/runs/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -25,7 +25,6 @@ import {
 
 export async function resumeRun(input: {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   now: () => Date;
 }): Promise<{
@@ -34,18 +33,17 @@ export async function resumeRun(input: {
   requiresFreshObservation: true;
 }> {
   const runId = runIdSchema.parse(input.runId);
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const repository = new RunRepository(project.projectRoot, input.now);
   const journal = repository.journal(runId);
 
   const first = await journal.appendPrepared(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
     const evidence = await new EvidenceRepository(
-      trusted.projectRoot,
+      project.projectRoot,
       runId,
       input.now,
     ).verifyAll();
@@ -65,7 +63,7 @@ export async function resumeRun(input: {
     await journal.appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(runId);
       const evidence = await new EvidenceRepository(
-        trusted.projectRoot,
+        project.projectRoot,
         runId,
         input.now,
       ).verifyAll();
@@ -93,7 +91,6 @@ export async function resumeRun(input: {
 
 export async function cancelRun(input: {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   reason: string;
   now: () => Date;
@@ -110,12 +107,11 @@ export async function cancelRun(input: {
       "Cancel reason is required",
     );
   }
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const repository = new RunRepository(project.projectRoot, input.now);
   const journal = repository.journal(runId);
   await journal.readLocked(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
@@ -125,8 +121,7 @@ export async function cancelRun(input: {
   });
 
   const verdictService = new VerdictService(
-    trusted.projectRoot,
-    input.aiQaHome,
+    project.projectRoot,
     runId,
     input.now,
   );

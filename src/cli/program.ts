@@ -14,7 +14,6 @@ import { registerRecoveryCommands } from "./commands/recovery.js";
 import { registerReportCommands } from "./commands/report.js";
 import { registerRunCommands } from "./commands/run.js";
 import { registerSkillCommands } from "./commands/skill.js";
-import { registerTrustCommands } from "./commands/trust.js";
 import { registerVerdictCommands } from "./commands/verdict.js";
 import type { CliContext } from "./context.js";
 
@@ -47,7 +46,6 @@ export function createProgram(context: CliContext): Command {
   registerSkillCommands(program, context, (exitCode) => {
     requestedExitCodes.set(program, exitCode);
   });
-  registerTrustCommands(program, context);
   registerVerdictCommands(program, context);
   return program;
 }

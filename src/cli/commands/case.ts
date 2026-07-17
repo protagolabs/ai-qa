@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { Command } from "commander";
 import { z } from "zod";
 import {
@@ -7,7 +6,7 @@ import {
   draftCaseInputSchema,
   validateCaseRevision,
 } from "../../services/case-promotion/draft-case.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -28,7 +27,7 @@ export function registerCaseCommands(
     .requiredOption("--from-run <run-id>", "completed exploratory run ID")
     .requiredOption("--stdin-json", "read reviewed case draft from stdin");
   draftCommand.action(async (options: { fromRun: string }) => {
-    const projectRoot = await trustedProjectRoot(draftCommand, context);
+    const projectRoot = await resolveProjectRoot(draftCommand, context);
     const input = await readJsonInput(context, draftCaseInputSchema);
     const draftInput = {
       ...input,
@@ -59,7 +58,7 @@ export function registerCaseCommands(
     .requiredOption("--revision <revision>", "case revision number");
   validateCommand.action(
     async (caseId: string, options: { revision: string }) => {
-      const projectRoot = await trustedProjectRoot(validateCommand, context);
+      const projectRoot = await resolveProjectRoot(validateCommand, context);
       writeJson(
         context,
         await validateCaseRevision({
@@ -77,7 +76,7 @@ export function registerCaseCommands(
     .requiredOption("--stdin-json", "read exact user review confirmation");
   activateCommand.action(
     async (caseId: string, options: { revision: string }) => {
-      const projectRoot = await trustedProjectRoot(activateCommand, context);
+      const projectRoot = await resolveProjectRoot(activateCommand, context);
       const body = await readJsonInput(context, activationInputSchema);
       const revision = revisionOptionSchema.parse(options.revision);
       const confirmedAt = context.now().toISOString();
@@ -98,18 +97,16 @@ export function registerCaseCommands(
   );
 }
 
-async function trustedProjectRoot(
+async function resolveProjectRoot(
   command: Command,
   context: CliContext,
 ): Promise<string> {
-  const aiQaHome = context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
   const projectOption: unknown = command.optsWithGlobals().project;
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome,
     ...(typeof projectOption === "string"
       ? { explicitProject: projectOption }
       : {}),
   });
-  return trusted.projectRoot;
+  return project.projectRoot;
 }

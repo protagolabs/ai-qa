@@ -31,7 +31,7 @@ import {
   type CriterionResult,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validatePassEvidenceFreshness } from "./evidence-semantics.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
@@ -50,21 +50,19 @@ export interface FinalizeRunResult {
 
 export async function finalizeRun(input: {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   now: () => Date;
 }): Promise<FinalizeRunResult> {
   const runId = runIdSchema.parse(input.runId);
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const repository = new RunRepository(project.projectRoot, input.now);
   return repository.journal(runId).appendPrepared(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
     const evidence = await new EvidenceRepository(
-      trusted.projectRoot,
+      project.projectRoot,
       runId,
       input.now,
     ).verifyAll();
@@ -118,7 +116,7 @@ export async function finalizeRun(input: {
 
     if (workOrder.kind === "regression") {
       await validatePinnedRegressionCase(
-        trusted.projectRoot,
+        project.projectRoot,
         workOrder,
         input.now,
       );

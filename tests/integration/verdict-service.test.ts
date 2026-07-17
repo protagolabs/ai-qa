@@ -10,19 +10,11 @@ import {
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 
 const now = () => new Date("2026-07-13T00:00:00.000Z");
 
 async function createRun() {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-verdict-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-verdict-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: now(),
-  });
   const repository = new RunRepository(projectRoot, now);
   await repository.create(
     createExploratoryWorkOrder({
@@ -48,9 +40,8 @@ async function createRun() {
   );
   return {
     projectRoot,
-    aiQaHome,
     repository,
-    service: new VerdictService(projectRoot, aiQaHome, "run-1", now),
+    service: new VerdictService(projectRoot, "run-1", now),
   };
 }
 
@@ -231,24 +222,16 @@ describe("VerdictService", () => {
     expect(revised.payload).toMatchObject({ supersedes: initial.id });
   });
 
-  it("checks machine trust before malformed project state", async () => {
+  it("validates malformed work-order state without an AI QA trust prerequisite", async () => {
     const { projectRoot } = await createRun();
     await writeFile(
       resolveRunPaths(projectRoot, "run-1").workOrder,
       "not-json",
       "utf8",
     );
-    const untrustedHome = await mkdtemp(
-      join(tmpdir(), "ai-qa-verdict-untrusted-home-"),
-    );
-    const service = new VerdictService(
-      projectRoot,
-      untrustedHome,
-      "run-1",
-      now,
-    );
+    const service = new VerdictService(projectRoot, "run-1", now);
     await expect(service.effectiveVerdict()).rejects.toMatchObject({
-      code: "trust.not_trusted",
+      code: "work_order.integrity_error",
     });
   });
 

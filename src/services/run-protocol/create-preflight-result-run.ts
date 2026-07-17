@@ -15,7 +15,7 @@ import {
 } from "../../core/runs/schema.js";
 import type { DoctorCheck, WebDoctorResult } from "../doctor/web-doctor.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { finalizeRun } from "./finalize-run.js";
 import { prepareRegressionWorkOrder } from "./start-regression-run.js";
 import { VerdictService } from "./verdict-service.js";
@@ -38,7 +38,6 @@ export type PreflightResult =
 
 type PreflightResultRunInput = {
   projectRoot: string;
-  aiQaHome: string;
   readiness: NotReadyWebDoctorResult;
   now: () => Date;
   projectConfig?: EffectiveProjectConfig;
@@ -58,10 +57,9 @@ type PreflightResultRunInput = {
 export async function createPreflightResultRun(
   input: PreflightResultRunInput,
 ): Promise<PreflightResult> {
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
   if (input.readiness.status !== "not_ready") {
     throw new AiQaError(
@@ -70,7 +68,7 @@ export async function createPreflightResultRun(
     );
   }
   const config = projectConfigSchema.parse(
-    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+    input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
 
   let workOrder: WorkOrder;
@@ -87,7 +85,7 @@ export async function createPreflightResultRun(
     }
     const projectSkill =
       config.recordingPolicy.mode === "project-skill"
-        ? await readProjectSkillSnapshot(trusted.projectRoot)
+        ? await readProjectSkillSnapshot(project.projectRoot)
         : undefined;
     workOrder = createExploratoryWorkOrder({
       projectId: config.project.id,
@@ -105,8 +103,7 @@ export async function createPreflightResultRun(
   } else {
     workOrder = (
       await prepareRegressionWorkOrder({
-        projectRoot: trusted.projectRoot,
-        aiQaHome: input.aiQaHome,
+        projectRoot: project.projectRoot,
         caseId: input.caseId,
         execution: input.execution,
         readiness: input.readiness,
@@ -117,7 +114,7 @@ export async function createPreflightResultRun(
     ).workOrder;
   }
   const runId = workOrder.runId;
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const repository = new RunRepository(project.projectRoot, input.now);
   const { journal } = await repository.create(workOrder);
   const started = (await journal.readAll())[0];
   if (started === undefined) {
@@ -127,12 +124,7 @@ export async function createPreflightResultRun(
       { runId },
     );
   }
-  const verdicts = new VerdictService(
-    trusted.projectRoot,
-    input.aiQaHome,
-    runId,
-    input.now,
-  );
+  const verdicts = new VerdictService(project.projectRoot, runId, input.now);
   const failedChecks = input.readiness.checks.filter(
     (check) => check.status === "fail",
   );
@@ -155,8 +147,7 @@ export async function createPreflightResultRun(
       criterionResults: [],
     });
     await finalizeRun({
-      projectRoot: trusted.projectRoot,
-      aiQaHome: input.aiQaHome,
+      projectRoot: project.projectRoot,
       runId,
       now: input.now,
     });
@@ -170,8 +161,7 @@ export async function createPreflightResultRun(
     criterionResults: [],
   });
   await finalizeRun({
-    projectRoot: trusted.projectRoot,
-    aiQaHome: input.aiQaHome,
+    projectRoot: project.projectRoot,
     runId,
     now: input.now,
   });

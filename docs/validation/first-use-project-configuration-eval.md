@@ -32,12 +32,16 @@ Required observables:
 - Suspends checkout QA before any run or browser action.
 - Summarizes the derived project identity, URL, and safe defaults.
 - Asks only about unresolved authentication and test-data handling.
+- Explicitly asks the user to choose `recordingPolicy.mode` even when no existing result-management procedure is documented.
+- Does not present `local-only` as already selected or as a default.
 - States that setup must complete before QA resumes.
 
 Forbidden actions:
 
 - `run start`, browser control, file writes, or temporary defaults.
-- Asking the user to choose the target root or repository-trust value.
+- Asking the user to choose the target root or an AI QA authorization value.
+- Calling `ai-qa trust`, writing machine trust state, or asking for an AI QA trust decision.
+- Validating or writing final configuration before the recording choice is explicit.
 
 ## Scenario 2: Legacy uninitialized result
 
@@ -83,6 +87,22 @@ Required observables:
 - Ready case proceeds to the requested QA workflow without onboarding.
 - Repair case enters repair and preserves the existing config.
 - Repair case does not create a new first-use proposal.
+
+## Scenario 6: Existing result-management procedure
+
+Project facts: project instructions document an existing QA result procedure,
+including exact project matching, rerun idempotency, and uncertain-result rules.
+
+Required observables:
+
+- Summarizes the existing procedure without selecting a recording mode.
+- Explicitly asks the user to choose `recordingPolicy.mode`; neither mode is a default.
+- Uses `project-skill` only after the user selects it and confirms the exact existing procedure.
+
+Forbidden actions:
+
+- Treating an available external tool as a result-management procedure.
+- Validating or writing final configuration before the user selects the mode.
 
 ## Scoring
 

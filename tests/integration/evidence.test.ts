@@ -27,26 +27,16 @@ import {
 } from "../../src/core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
 
-async function createTrustedRun(selectedAiQaHome?: string): Promise<{
+async function createRun(): Promise<{
   projectRoot: string;
-  aiQaHome: string;
   runRepository: RunRepository;
   captureActionId: string;
 }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-project-"));
-  const aiQaHome =
-    selectedAiQaHome ?? (await mkdtemp(join(tmpdir(), "ai-qa-evidence-home-")));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: fixedNow(),
-  });
   const runRepository = new RunRepository(projectRoot, fixedNow);
   await runRepository.create(
     createExploratoryWorkOrder({
@@ -101,7 +91,6 @@ async function createTrustedRun(selectedAiQaHome?: string): Promise<{
   });
   return {
     projectRoot,
-    aiQaHome,
     runRepository,
     captureActionId: planned.id,
   };
@@ -622,14 +611,13 @@ describe("EvidenceRepository", () => {
 
 describe("registerEvidence", () => {
   it("preserves run.not_found when evidence targets a missing run", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "missing-run.png");
     await writeFile(source, Buffer.from("missing-run-image"));
 
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-missing",
         payload: {
           sourcePath: source,
@@ -655,7 +643,7 @@ describe("registerEvidence", () => {
   });
 
   it("treats a missing journal in an existing run as partial corruption", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "partial-run.png");
     await writeFile(source, Buffer.from("partial-run-image"));
     await rm(join(projectRoot, ".ai-qa", "runs", "run-1", "events.jsonl"));
@@ -663,7 +651,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -689,8 +676,8 @@ describe("registerEvidence", () => {
   });
 
   it("rejects forged protocol metadata before mutating evidence storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "forged-history.png");
     await writeFile(source, Buffer.from("forged-history-image"));
     const decisionPayload = {
@@ -721,7 +708,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -744,7 +730,7 @@ describe("registerEvidence", () => {
   });
 
   it("repairs an indexed registration by appending one typed evidence event", async () => {
-    const { projectRoot, aiQaHome, runRepository } = await createTrustedRun();
+    const { projectRoot, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, Buffer.from("original-image"));
     const planned = (await runRepository.journal("run-1").readAll()).find(
@@ -775,7 +761,6 @@ describe("registerEvidence", () => {
 
     const registered = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload,
       criterionIds: ["authenticated-home-visible"],
@@ -784,7 +769,6 @@ describe("registerEvidence", () => {
     });
     const retried = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload,
       criterionIds: ["authenticated-home-visible"],
@@ -806,13 +790,12 @@ describe("registerEvidence", () => {
   });
 
   it("rejects duplicate index records after an idempotent retry", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, Buffer.from("original-image"));
     const input = {
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath: source,
@@ -848,11 +831,10 @@ describe("registerEvidence", () => {
     ).toHaveLength(1);
   });
 
-  it("enforces machine trust before reading malformed run state", async () => {
+  it("validates malformed work-order state before mutating evidence storage", async () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-evidence-untrusted-"),
     );
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-evidence-home-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const runRoot = join(projectRoot, ".ai-qa", "runs", "run-1");
@@ -862,7 +844,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -877,14 +858,14 @@ describe("registerEvidence", () => {
         observationIds: [],
         now: fixedNow,
       }),
-    ).rejects.toMatchObject({ code: "trust.not_trusted" });
+    ).rejects.toMatchObject({ code: "work_order.integrity_error" });
     await expect(
       access(join(projectRoot, ".ai-qa", "evidence")),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects a completed interaction as an evidence capture action", async () => {
-    const { projectRoot, aiQaHome, runRepository } = await createTrustedRun();
+    const { projectRoot, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const journal = runRepository.journal("run-1");
@@ -920,7 +901,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -942,14 +922,13 @@ describe("registerEvidence", () => {
   });
 
   it("rejects an unknown criterion before creating evidence storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
 
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -971,14 +950,13 @@ describe("registerEvidence", () => {
   });
 
   it("rejects a dangling observation before creating evidence storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
 
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -1000,14 +978,13 @@ describe("registerEvidence", () => {
   });
 
   it("rejects a wrong-type observation citation before evidence storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
 
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -1029,8 +1006,8 @@ describe("registerEvidence", () => {
   });
 
   it("rejects an invalid typed observation before creating evidence storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const invalidObservation = await runRepository.journal("run-1").append({
@@ -1050,7 +1027,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -1072,8 +1048,8 @@ describe("registerEvidence", () => {
   });
 
   it("persists strict valid criterion and observation citations", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const journal = runRepository.journal("run-1");
@@ -1122,7 +1098,6 @@ describe("registerEvidence", () => {
 
     const record = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath: source,
@@ -1153,8 +1128,8 @@ describe("registerEvidence", () => {
   });
 
   it("rejects a forged non-evidence idempotency collision before storage", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     await runRepository.journal("run-1").append({
@@ -1170,7 +1145,6 @@ describe("registerEvidence", () => {
     await expect(
       registerEvidence({
         projectRoot,
-        aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: source,
@@ -1192,13 +1166,12 @@ describe("registerEvidence", () => {
   });
 
   it("coordinates concurrent same-key registrations into one record and event", async () => {
-    const { projectRoot, aiQaHome, captureActionId, runRepository } =
-      await createTrustedRun();
+    const { projectRoot, captureActionId, runRepository } =
+      await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const input = {
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath: source,
@@ -1231,12 +1204,11 @@ describe("registerEvidence", () => {
   });
 
   it("rejects a non-strict existing evidence event without adding files", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
     const input = {
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath: source,
@@ -1285,12 +1257,11 @@ describe("registerEvidence", () => {
 
 describe("evidence add CLI", () => {
   it("returns one path-safe run.not_found error for a missing run", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+    const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "missing-run-cli.png");
     await writeFile(source, Buffer.from("missing-run-cli-image"));
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () =>
         Promise.resolve(
           JSON.stringify({
@@ -1337,12 +1308,11 @@ describe("evidence add CLI", () => {
     expect(captured.stderr[0]?.toLowerCase()).not.toContain("path");
   });
 
-  it("resolves a relative source and registers it through the trusted command", async () => {
-    const { projectRoot, aiQaHome, captureActionId } = await createTrustedRun();
+  it("resolves a relative source and registers it through the host-authorized command", async () => {
+    const { projectRoot, captureActionId } = await createRun();
     await writeFile(join(projectRoot, "screen.png"), "original-image");
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () =>
         Promise.resolve(
           JSON.stringify({
@@ -1385,8 +1355,7 @@ describe("evidence add CLI", () => {
 
   it("uses the default machine home and rejects another project's .ai-qa source", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "ai-qa-cli-home-"));
-    const aiQaHome = join(homeDir, ".ai-qa");
-    const { projectRoot, captureActionId } = await createTrustedRun(aiQaHome);
+    const { projectRoot, captureActionId } = await createRun();
     const otherProject = await mkdtemp(join(tmpdir(), "ai-qa-other-project-"));
     const otherState = join(otherProject, ".ai-qa");
     await mkdir(otherState, { recursive: true });

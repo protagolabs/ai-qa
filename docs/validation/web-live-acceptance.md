@@ -36,9 +36,9 @@ This is the release-gate procedure for Increment 1. It is not satisfied by the a
 - Every screenshot reverified as `sha256:fe6b5805ff9ade7a3bb96a5478ad3da8d2f301f4039decc36d8c4f5ddb664fd8`; the identical hash is expected because the fixture rendered identical deterministic authenticated state.
 - Each run has exact one-to-one evidence-index/event parity, and every Markdown report contains its JSON report's exact `integrity.verifiedAt` timestamp.
 - Visual inspection confirmed that the screenshot shows `Authenticated home` and `Current account: qa@example.test` without the password.
-- The fixture password value is absent from project state and reports. Trust exists only at `/private/tmp/ai-qa-machine.0jP1NE/ai-qa/trust.json`; the only fixture `.ai-qa` directory is `fixtures/web-app/.ai-qa/`.
+- The fixture password value is absent from project state and reports. AI QA creates or reads no repository authorization file; the only fixture `.ai-qa` directory is `fixtures/web-app/.ai-qa/`.
 
-## Host-managed Project Skill 1.2 acceptance addendum
+## Host-managed Project Skill acceptance addendum
 
 The live proof above records the Increment 1 browser run at its stated commit.
 It does not prove the later host-owned initialization and recording lifecycle.
@@ -104,7 +104,7 @@ Acceptance checklist and test evidence:
       artifact directly:
 
   ```bash
-  rg -n "aiQaSkillVersion: 1.2.0|aiQaProtocolRange: \^1.2.0|aiQaRecordingReceipt: true" \
+  rg -n "aiQaSkillVersion: 1.4.0|aiQaProtocolRange: \^1.2.0|aiQaRecordingReceipt: true" \
     dist/skills/global/SKILL.md
   ```
 
@@ -183,7 +183,6 @@ PACK_DIR="$(mktemp -d)"
 PREFIX="$(mktemp -d)"
 MACHINE_HOME="$(mktemp -d)"
 AGENTS_HOME="$MACHINE_HOME/agents"
-AI_QA_HOME="$MACHINE_HOME/ai-qa"
 pnpm pack --pack-destination "$PACK_DIR"
 npm install --global --prefix "$PREFIX" "$PACK_DIR/ai-qa-0.0.0.tgz"
 AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill install --global
@@ -195,7 +194,7 @@ The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm
 ## Current replay ordered execution
 
 1. Start the fixture and confirm `/health` returns `ok`. Keep its terminal open for the complete run.
-2. Use the isolated CLI with `AI_QA_HOME` and `AI_QA_AGENTS_HOME` set to the paths above. Explicitly confirm trust for `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): run doctor, discuss requirements, draft the schema-v2 config (including `recordingPolicy.mode: local-only`) and ordinary fixture Project Skill in scratch space with `skill-creator`, validate them separately, display both complete diffs, obtain one confirmation, write both files through the host, and run doctor again. Never pass the historical bare schema-v1 block above to the current CLI.
+2. Use the isolated CLI with `AI_QA_AGENTS_HOME` set to the path above and host-granted access to `fixtures/web-app`. Then follow [Initialize a target project](../../README.md#initialize-a-target-project): run doctor, discuss requirements, explicitly choose `recordingPolicy.mode: local-only` as the user decision, draft the schema-v2 config and ordinary fixture Project Skill in scratch space with `skill-creator`, validate them separately, display both complete diffs, obtain one confirmation, write both files through the host, and run doctor again. Neither recording mode is a default. Never pass the historical bare schema-v1 block above to the current CLI.
 3. Activate the installed `ai-qa` skill. Use Chrome DevTools MCP to open the entry URL, confirm that the login fixture is rendered, and supply that observation to `doctor --platform web --json --stdin-json`.
 4. Start one exploratory run with the two stable criterion IDs above.
 5. For every Chrome DevTools MCP call—including navigation, DOM observation, form interaction, and screenshot capture—first record `action plan` with `tool: "chrome-devtools-mcp"`, invoke MCP, then record `action complete`. Retain the login interaction's returned `payload.stepId`; use it for the fresh authenticated observation action, the later evidence-capture action, and the satisfied assertions. The interaction terminal result must precede the fresh observation, and the fresh observation must precede screenshot capture.
@@ -206,7 +205,7 @@ The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm
 10. Start a new regression run and execute every pinned Web step exactly, in order. Record two-phase MCP calls, fresh observations, real screenshot evidence, assertions, and an evidence-supported `pass`; finish it.
 11. Repeat step 10 with a second fresh run ID. The two regression passes must be consecutive and must pin the same active revision, case content hash, and Web variant hash.
 12. Generate JSON and Markdown reports for the exploratory run and both regression runs. For each run, execute `ai-qa report export <run-id> --adapter project-local` and confirm the exported paths match the generated paths and the Markdown contains the JSON report's exact `integrity.verifiedAt` timestamp.
-13. Inspect the project tree and the isolated machine home. Trust must exist only under `$AI_QA_HOME`; every target record must exist only under `fixtures/web-app/.ai-qa/`.
+13. Inspect the project tree and the isolated machine home. Prove that no `$AI_QA_HOME/trust.json` is created or read; every target record must exist only under `fixtures/web-app/.ai-qa/`.
 
 ## Required proof
 
@@ -217,6 +216,6 @@ The explicit skill command must create `$AGENTS_HOME/skills/ai-qa/SKILL.md`. npm
 - Every planned/terminal action tool and every evidence `sourceTool` is exactly `chrome-devtools-mcp`; evidence-index IDs are unique and have exact one-to-one canonical parity with typed evidence events.
 - Three project-local JSON/Markdown pairs under `.ai-qa/reports/runs/<run-id>/`.
 - The installed isolated global skill path and compatible check result.
-- No trust state anywhere under `fixtures/web-app`, no `.ai-qa/` state outside `fixtures/web-app`, and no credential value in project or report files.
+- No AI QA repository authorization state anywhere, no `.ai-qa/` state outside `fixtures/web-app`, and no credential value in project or report files.
 
 If Chrome DevTools MCP, screenshot capture, evidence validation, or any required state becomes unavailable after a run starts, record the typed non-pass result. Cancel only with `ai-qa run cancel <run-id> --reason <reason>`; never submit `not_verified/cancelled` through `verdict set` or `verdict revise`, and never attach criterion results to cancellation. Do not relabel the outcome as pass and do not substitute HTTP, Playwright, mocked events, a generic browser, or another Chrome controller.

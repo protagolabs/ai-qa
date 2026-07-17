@@ -40,7 +40,6 @@ import { startExploratoryRun } from "../../src/services/run-protocol/start-explo
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
@@ -545,14 +544,12 @@ function serializeRunEvents(events: readonly RunEvent[]): string {
 
 async function recordSuccessfulLogin(input: {
   projectRoot: string;
-  aiQaHome: string;
   workOrder: WorkOrder;
   prefix: string;
   requiredStep?: WorkOrder["requiredSteps"][number];
 }): Promise<{ interactionId: string; proof: RunProof }> {
   const protocol = new RunProtocolService(
     input.projectRoot,
-    input.aiQaHome,
     input.workOrder.runId,
     now,
   );
@@ -645,7 +642,6 @@ async function recordSuccessfulLogin(input: {
   await writeFile(sourcePath, Buffer.from([137, 80, 78, 71, 1, 2, 3, 4]));
   const evidence = await registerEvidence({
     projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
     runId: input.workOrder.runId,
     payload: {
       sourcePath,
@@ -693,7 +689,6 @@ async function recordSuccessfulLogin(input: {
 
 async function completePass(input: {
   projectRoot: string;
-  aiQaHome: string;
   workOrder: WorkOrder;
   prefix: string;
   requiredStep?: WorkOrder["requiredSteps"][number];
@@ -701,7 +696,6 @@ async function completePass(input: {
   const recorded = await recordSuccessfulLogin(input);
   await new VerdictService(
     input.projectRoot,
-    input.aiQaHome,
     input.workOrder.runId,
     now,
   ).set({
@@ -716,7 +710,6 @@ async function completePass(input: {
   });
   const completed = await finalizeRun({
     projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
     runId: input.workOrder.runId,
     now,
   });
@@ -725,13 +718,11 @@ async function completePass(input: {
 
 async function replayActiveCase(input: {
   projectRoot: string;
-  aiQaHome: string;
   revision: CaseRevision;
   ordinal: number;
 }) {
   const workOrder = await startRegressionRun({
     projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
     caseId: input.revision.caseId,
     execution: "local",
     readiness: ready,
@@ -745,13 +736,11 @@ async function replayActiveCase(input: {
   });
   const report = await generateRunReport({
     projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
     runId: workOrder.runId,
     now,
   });
   const exported = await exportProjectLocalRunReport({
     projectRoot: input.projectRoot,
-    aiQaHome: input.aiQaHome,
     runId: workOrder.runId,
     now,
   });
@@ -759,13 +748,13 @@ async function replayActiveCase(input: {
 }
 
 describe("Increment 1 Web vertical slice services", () => {
-  it("packages the 1.3 global skill first-use capability", async () => {
+  it("packages the 1.4 global skill first-use capability", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       "utf8",
     );
 
-    expect(skill).toContain("aiQaSkillVersion: 1.3.0");
+    expect(skill).toContain("aiQaSkillVersion: 1.4.0");
     expect(skill).toContain("aiQaProtocolRange: ^1.2.0");
     expect(skill).toContain("aiQaRecordingReceipt: true");
   });
@@ -798,7 +787,6 @@ describe("Increment 1 Web vertical slice services", () => {
 
   it("promotes an evidence-backed exploration and passes the pinned replay twice", async () => {
     const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-e2e-machine-"));
-    const aiQaHome = join(machineHome, "ai-qa-home");
     const agentsHome = join(machineHome, "agents-home");
     const projectRoot = join(machineHome, "target-project");
     await mkdir(projectRoot, { recursive: true });
@@ -807,17 +795,10 @@ describe("Increment 1 Web vertical slice services", () => {
       sourcePath: join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       confirmManagedReplacement: false,
     });
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: startedAt,
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config: config() });
+    await initializeTestProject({ projectRoot, config: config() });
 
     const exploratory = await startExploratoryRun({
       projectRoot,
-      aiQaHome,
       payload: {
         goal: "Verify successful login",
         acceptanceCriteria: criteria,
@@ -827,19 +808,16 @@ describe("Increment 1 Web vertical slice services", () => {
     });
     const exploratoryResult = await completePass({
       projectRoot,
-      aiQaHome,
       workOrder: exploratory,
       prefix: "exploratory",
     });
     const exploratoryReport = await generateRunReport({
       projectRoot,
-      aiQaHome,
       runId: exploratory.runId,
       now,
     });
     const exploratoryExport = await exportProjectLocalRunReport({
       projectRoot,
-      aiQaHome,
       runId: exploratory.runId,
       now,
     });
@@ -901,7 +879,6 @@ describe("Increment 1 Web vertical slice services", () => {
       replays.push(
         await replayActiveCase({
           projectRoot,
-          aiQaHome,
           revision: active,
           ordinal,
         }),

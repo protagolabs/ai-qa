@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import type { Command } from "commander";
 import { AiQaError } from "../../core/errors.js";
 import { verdictPayloadSchema } from "../../core/verdicts/schema.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { VerdictService } from "../../services/run-protocol/verdict-service.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput } from "../io.js";
@@ -62,14 +61,12 @@ async function createVerdictService(
   context: CliContext,
   runId: string,
 ): Promise<VerdictService> {
-  const home = context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
   const projectOption: unknown = command.optsWithGlobals().project;
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome: home,
     ...(typeof projectOption === "string"
       ? { explicitProject: projectOption }
       : {}),
   });
-  return new VerdictService(trusted.projectRoot, home, runId, context.now);
+  return new VerdictService(project.projectRoot, runId, context.now);
 }

@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { Command } from "commander";
 import { AiQaError } from "../../core/errors.js";
 import { recordingReceiptInputSchema } from "../../core/recording/schema.js";
@@ -11,13 +10,9 @@ import {
   readRecordingStatus,
   registerRecordingReceipt,
 } from "../../services/report-generation/recording-receipt.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
-
-function aiQaHome(context: CliContext): string {
-  return context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
-}
 
 function explicitProject(command: Command): string | undefined {
   const value: unknown = command.optsWithGlobals().project;
@@ -29,16 +24,15 @@ async function reportInput(
   context: CliContext,
   runId: string,
 ) {
-  const home = aiQaHome(context);
-  const project = explicitProject(command);
-  const trusted = await resolveTrustedProject({
+  const projectOption = explicitProject(command);
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome: home,
-    ...(project === undefined ? {} : { explicitProject: project }),
+    ...(projectOption === undefined
+      ? {}
+      : { explicitProject: projectOption }),
   });
   return {
-    projectRoot: trusted.projectRoot,
-    aiQaHome: home,
+    projectRoot: project.projectRoot,
     runId,
     now: context.now,
   };

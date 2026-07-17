@@ -13,22 +13,20 @@ import {
   type WorkOrder,
 } from "../../core/runs/schema.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 
 export async function startExploratoryRun(input: {
   projectRoot: string;
-  aiQaHome: string;
   payload: ExploratoryRunInput;
   now: () => Date;
   projectConfig?: EffectiveProjectConfig;
 }): Promise<WorkOrder> {
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
   const config = projectConfigSchema.parse(
-    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+    input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   const payload = exploratoryRunInputSchema.parse(input.payload);
   if (payload.readiness.status !== "ready") {
@@ -39,7 +37,7 @@ export async function startExploratoryRun(input: {
   }
   const projectSkill =
     config.recordingPolicy.mode === "project-skill"
-      ? await readProjectSkillSnapshot(trusted.projectRoot)
+      ? await readProjectSkillSnapshot(project.projectRoot)
       : undefined;
   const workOrder = createExploratoryWorkOrder({
     projectId: config.project.id,
@@ -53,6 +51,6 @@ export async function startExploratoryRun(input: {
     ...(projectSkill === undefined ? {} : { projectSkill }),
     startedAt: input.now(),
   });
-  await new RunRepository(trusted.projectRoot, input.now).create(workOrder);
+  await new RunRepository(project.projectRoot, input.now).create(workOrder);
   return workOrder;
 }

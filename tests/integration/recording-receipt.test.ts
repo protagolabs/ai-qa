@@ -42,7 +42,6 @@ import {
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
@@ -804,16 +803,8 @@ async function receiptFixture(
 ): Promise<ReceiptFixture> {
   const mode = options.mode ?? "project-skill";
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-receipt-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-receipt-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: RUN_STARTED_AT,
-  });
   await initializeTestProject({
     projectRoot,
-    aiQaHome,
     config: projectConfigV2(mode),
   });
   const projectSkillPath = join(projectRoot, PROJECT_SKILL_RELATIVE_PATH);
@@ -862,7 +853,6 @@ async function receiptFixture(
   if (options.withEvidence === true) {
     const protocol = new RunProtocolService(
       projectRoot,
-      aiQaHome,
       "run-1",
       RUN_NOW,
     );
@@ -882,7 +872,6 @@ async function receiptFixture(
     await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
     const evidence = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath,
@@ -903,7 +892,6 @@ async function receiptFixture(
   if (options.terminal !== false) {
     await cancelRun({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       reason: "Receipt boundary fixture completed",
       now: RUN_NOW,
@@ -912,14 +900,12 @@ async function receiptFixture(
   if (options.generated !== false && options.terminal !== false) {
     await generateRunReport({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       now: REPORT_NOW,
     });
   }
   return {
     projectRoot,
-    aiQaHome,
     runId: "run-1",
     now: RECEIPT_NOW,
     directory: join(projectRoot, ".ai-qa/reports/runs/run-1"),
@@ -1395,7 +1381,6 @@ describe("report recording receipt CLI", () => {
     let stdinReads = 0;
     const captured = createCapturedCli({
       cwd: "/outside-project",
-      env: { AI_QA_HOME: fixture.aiQaHome },
       homeDir: "/unused-home",
       now: RECEIPT_NOW,
       readStdin: () => {
@@ -1483,7 +1468,6 @@ describe("report recording receipt CLI", () => {
     const fixture = await receiptFixture({ generated: false });
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now: RECEIPT_NOW,
     });
 

@@ -18,7 +18,6 @@ import {
   planActionInputSchema,
   RunProtocolService,
 } from "../../src/services/run-protocol/run-protocol-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
@@ -27,23 +26,15 @@ interface MutableClock {
   current: Date;
 }
 
-async function createTrustedRun(): Promise<{
+async function createRun(): Promise<{
   projectRoot: string;
-  aiQaHome: string;
   repository: RunRepository;
   service: RunProtocolService;
   clock: MutableClock;
 }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-protocol-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-protocol-home-"));
   const clock = { current: fixedNow() };
   const now = () => new Date(clock.current);
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: fixedNow(),
-  });
   const repository = new RunRepository(projectRoot, now);
   await repository.create(
     createExploratoryWorkOrder({
@@ -69,8 +60,7 @@ async function createTrustedRun(): Promise<{
   );
   return {
     projectRoot,
-    aiQaHome,
-    service: new RunProtocolService(projectRoot, aiQaHome, "run-1", now),
+    service: new RunProtocolService(projectRoot, "run-1", now),
     repository,
     clock,
   };
@@ -79,7 +69,7 @@ async function createTrustedRun(): Promise<{
 async function createSmallBudgetRun(input: {
   maxToolCalls: number;
   maxRecoveryActions: number;
-}): Promise<Awaited<ReturnType<typeof createTrustedRun>>> {
+}): Promise<Awaited<ReturnType<typeof createRun>>> {
   const existing = createExploratoryWorkOrder({
     projectId: "sample-web",
     runId: "run-1",
@@ -133,30 +123,15 @@ async function createSmallBudgetRun(input: {
   const replacementRoot = await mkdtemp(
     join(tmpdir(), "ai-qa-protocol-budget-project-"),
   );
-  const replacementHome = await mkdtemp(
-    join(tmpdir(), "ai-qa-protocol-budget-home-"),
-  );
-  await confirmProjectTrust({
-    projectRoot: replacementRoot,
-    aiQaHome: replacementHome,
-    confirmed: true,
-    now: fixedNow(),
-  });
   const clock = { current: fixedNow() };
   const now = () => new Date(clock.current);
   const repository = new RunRepository(replacementRoot, now);
   await repository.create(replacement);
   return {
     projectRoot: replacementRoot,
-    aiQaHome: replacementHome,
     repository,
     clock,
-    service: new RunProtocolService(
-      replacementRoot,
-      replacementHome,
-      "run-1",
-      now,
-    ),
+    service: new RunProtocolService(replacementRoot, "run-1", now),
   };
 }
 
@@ -201,7 +176,7 @@ describe("typed run protocol", () => {
   });
 
   it("plans an action and requires a fresh observation to resolve an unknown result", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const planned = await service.planAction({
       idempotencyKey: "click-login",
       kind: "interaction",
@@ -274,7 +249,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects cross-step recovery observations without authorizing retry", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const action = await service.planAction({
       idempotencyKey: "cross-step-unknown",
       kind: "interaction",
@@ -332,7 +307,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects recovery backed by a pre-unknown observation action", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const observationAction = await service.planAction({
       idempotencyKey: "observe-before-temporal-unknown",
       kind: "observation",
@@ -392,7 +367,7 @@ describe("typed run protocol", () => {
   });
 
   it("makes action planning and completion idempotent and rejects conflicts", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const reserved = await service.recordDecision({
       kind: "semantic",
       rationale: "Reserve a plan key adversarially",
@@ -459,7 +434,7 @@ describe("typed run protocol", () => {
   });
 
   it("serializes concurrent action retries to one plan and terminal event", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const input = {
       idempotencyKey: "concurrent-plan",
       kind: "interaction" as const,
@@ -494,28 +469,20 @@ describe("typed run protocol", () => {
     ).toHaveLength(1);
   });
 
-  it("validates trust before malformed project state and strictly parses input", async () => {
-    const { projectRoot, service } = await createTrustedRun();
+  it("validates malformed work-order state and strictly parses input", async () => {
+    const { projectRoot, service } = await createRun();
     const paths = resolveRunPaths(projectRoot, "run-1");
     await writeFile(paths.workOrder, "not-json", "utf8");
-    const untrustedHome = await mkdtemp(
-      join(tmpdir(), "ai-qa-protocol-untrusted-home-"),
-    );
-    const untrusted = new RunProtocolService(
-      projectRoot,
-      untrustedHome,
-      "run-1",
-      fixedNow,
-    );
+    const malformed = new RunProtocolService(projectRoot, "run-1", fixedNow);
     await expect(
-      untrusted.planAction({
+      malformed.planAction({
         idempotencyKey: "must-not-read",
         kind: "interaction",
         intent: "Do not read malformed state",
         tool: "chrome-devtools-mcp",
         target: { description: "Page" },
       }),
-    ).rejects.toMatchObject({ code: "trust.not_trusted" });
+    ).rejects.toMatchObject({ code: "work_order.integrity_error" });
 
     await expect(
       service.planAction({
@@ -602,7 +569,7 @@ describe("typed run protocol", () => {
   });
 
   it("validates and persists a plan with one locked append timestamp", async () => {
-    const { projectRoot, aiQaHome } = await createTrustedRun();
+    const { projectRoot } = await createRun();
     let clockReads = 0;
     const crossingClock = () => {
       clockReads += 1;
@@ -610,12 +577,7 @@ describe("typed run protocol", () => {
         ? new Date("2026-07-13T00:29:59.999Z")
         : new Date("2026-07-13T00:30:00.000Z");
     };
-    const service = new RunProtocolService(
-      projectRoot,
-      aiQaHome,
-      "run-1",
-      crossingClock,
-    );
+    const service = new RunProtocolService(projectRoot, "run-1", crossingClock);
     const planned = await service.planAction({
       idempotencyKey: "deadline-crossing-plan",
       kind: "interaction",
@@ -635,7 +597,7 @@ describe("typed run protocol", () => {
   });
 
   it("requires a completed observation action and preserves its step", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const action = await service.planAction({
       idempotencyKey: "observe-page",
       kind: "observation",
@@ -702,7 +664,7 @@ describe("typed run protocol", () => {
   });
 
   it("requires criterion, observation, and evidence citations for assertions", async () => {
-    const { projectRoot, aiQaHome, service } = await createTrustedRun();
+    const { projectRoot, service } = await createRun();
     const observation = await addCurrentObservation(service, "assert-observe");
     const capture = await service.planAction({
       idempotencyKey: "capture-proof",
@@ -721,7 +683,6 @@ describe("typed run protocol", () => {
     await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
     const evidence = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-1",
       payload: {
         sourcePath,
@@ -777,7 +738,7 @@ describe("typed run protocol", () => {
   });
 
   it("records strict semantic decisions idempotently", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const input = {
       kind: "semantic" as const,
       rationale: "The navigation completed successfully",
@@ -792,7 +753,7 @@ describe("typed run protocol", () => {
   });
 
   it("requires a later strict observation and makes recovery resolution immutable", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const oldObservation = await addCurrentObservation(service, "old-observe");
     const action = await service.planAction({
       idempotencyKey: "ambiguous-submit",
@@ -858,7 +819,7 @@ describe("typed run protocol", () => {
   });
 
   it("consumes not_applied permission and tracks unknown recovery attempts on the original step", async () => {
-    const { service } = await createTrustedRun();
+    const { service } = await createRun();
     const original = await service.planAction({
       idempotencyKey: "original-ambiguous-action",
       kind: "interaction",
@@ -943,7 +904,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects schema-valid orphan observations before they can support assertions", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const forged = await repository.journal("run-1").append({
       type: "observation",
       actor: "agent",
@@ -972,7 +933,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects forged cross-step recovery history before retry", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const action = await service.planAction({
       idempotencyKey: "forged-cross-step-unknown",
       kind: "interaction",
@@ -1032,7 +993,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects forged recovery history backed by a pre-unknown observation action", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const observationAction = await service.planAction({
       idempotencyKey: "forge-observation-before-temporal-unknown",
       kind: "observation",
@@ -1096,7 +1057,7 @@ describe("typed run protocol", () => {
   });
 
   it("excludes applied recovery backed by a pre-unknown observation action", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const observationAction = await service.planAction({
       idempotencyKey: "effective-observation-before-temporal-unknown",
       kind: "observation",
@@ -1151,7 +1112,7 @@ describe("typed run protocol", () => {
   });
 
   it("excludes applied recovery when a schema-valid observation plan follows its terminal", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     const action = await service.planAction({
       idempotencyKey: "ordered-recovery-interaction",
       kind: "interaction",
@@ -1211,7 +1172,7 @@ describe("typed run protocol", () => {
   });
 
   it("rejects malformed typed events before appending more protocol state", async () => {
-    const { service, repository } = await createTrustedRun();
+    const { service, repository } = await createRun();
     await repository.journal("run-1").append({
       type: "action",
       actor: "agent",
@@ -1233,7 +1194,7 @@ describe("typed run protocol", () => {
   });
 
   it("exposes typed CLI output for protocol commands", async () => {
-    const { projectRoot, aiQaHome } = await createTrustedRun();
+    const { projectRoot } = await createRun();
     let body = JSON.stringify({
       idempotencyKey: "cli-observe",
       kind: "observation",
@@ -1243,7 +1204,6 @@ describe("typed run protocol", () => {
     });
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () => Promise.resolve(body),
     });
     expect(

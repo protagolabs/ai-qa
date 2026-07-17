@@ -24,7 +24,7 @@ import {
 } from "../../schemas/versions.js";
 import type { WebDoctorResult } from "../doctor/web-doctor.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 
 export function calculateRegressionBudget(
   requiredStepCount: number,
@@ -45,7 +45,6 @@ export function calculateRegressionBudget(
 
 interface PrepareRegressionWorkOrderInput {
   projectRoot: string;
-  aiQaHome: string;
   caseId: string;
   execution: "local" | "ci";
   readiness: WebDoctorResult;
@@ -57,17 +56,16 @@ interface PrepareRegressionWorkOrderInput {
 export async function prepareRegressionWorkOrder(
   input: PrepareRegressionWorkOrderInput,
 ): Promise<{ projectRoot: string; workOrder: WorkOrder }> {
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
   const config = projectConfigSchema.parse(
-    input.projectConfig ?? (await readProjectConfig(trusted.projectRoot)),
+    input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   const readiness = readinessSchema.parse(input.readiness);
   const revision = await new CaseRepository(
-    trusted.projectRoot,
+    project.projectRoot,
     input.now,
   ).readActive(input.caseId);
   const startedAt = input.now();
@@ -83,7 +81,7 @@ export async function prepareRegressionWorkOrder(
   }));
   const projectSkill =
     config.recordingPolicy.mode === "project-skill"
-      ? await readProjectSkillSnapshot(trusted.projectRoot)
+      ? await readProjectSkillSnapshot(project.projectRoot)
       : undefined;
   const workOrder = workOrderSchema.parse({
     schemaVersion: WORK_ORDER_SCHEMA_VERSION,
@@ -116,7 +114,7 @@ export async function prepareRegressionWorkOrder(
     },
   });
   return {
-    projectRoot: trusted.projectRoot,
+    projectRoot: project.projectRoot,
     workOrder: deepFreezeWorkOrder(workOrder) as WorkOrder,
   };
 }

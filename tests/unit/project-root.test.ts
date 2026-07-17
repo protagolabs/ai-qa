@@ -2,9 +2,18 @@ import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolveProject } from "../../src/services/project-root/resolve-project.js";
 import { resolveProjectRoot } from "../../src/services/project-root/resolve-project-root.js";
 
 describe("resolveProjectRoot", () => {
+  it("resolves a host-authorized project without machine trust input", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-host-project-"));
+
+    await expect(
+      resolveProject({ cwd: root, explicitProject: root }),
+    ).resolves.toEqual({ projectRoot: await realpath(root) });
+  });
+
   it("lets explicit --project select a nested project over an ancestor config", async () => {
     const root = await mkdtemp(join(tmpdir(), "ai-qa-root-"));
     const nested = join(root, "packages", "app");

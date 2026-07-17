@@ -24,7 +24,6 @@ import { writeProjectConfig } from "../../src/core/config/repository.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
@@ -443,19 +442,11 @@ describe("RunRepository", () => {
 describe("exploratory run start", () => {
   it("requires supplied ready doctor status before creating a run", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, config });
 
     await expect(
       startExploratoryRun({
         projectRoot,
-        aiQaHome,
         payload: {
           ...readyPayload,
           readiness: { ...readyPayload.readiness, status: "not_ready" },
@@ -467,23 +458,14 @@ describe("exploratory run start", () => {
 
   it("freezes the Project Skill bytes in exploratory work orders", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: { ...config, recordingPolicy: { mode: "project-skill" } },
     });
     await installProjectSkillSource(projectRoot);
 
     const workOrder = await startExploratoryRun({
       projectRoot,
-      aiQaHome,
       payload: readyPayload,
       now: () => new Date("2026-07-13T00:00:00.000Z"),
     });
@@ -493,17 +475,9 @@ describe("exploratory run start", () => {
 
   it("freezes the Project Skill bytes in regression work orders", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: now(),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: { ...config, recordingPolicy: { mode: "project-skill" } },
     });
     await installProjectSkillSource(projectRoot);
@@ -511,7 +485,6 @@ describe("exploratory run start", () => {
 
     const workOrder = await startRegressionRun({
       projectRoot,
-      aiQaHome,
       caseId: "login-success",
       execution: "local",
       readiness: { platform: "web", status: "ready", checks: [] },
@@ -523,7 +496,6 @@ describe("exploratory run start", () => {
 
   it("freezes the Project Skill bytes in not-ready preflight work orders", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
     const readiness = {
       platform: "web" as const,
@@ -536,22 +508,14 @@ describe("exploratory run start", () => {
         },
       ],
     };
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: now(),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: { ...config, recordingPolicy: { mode: "project-skill" } },
     });
     await installProjectSkillSource(projectRoot);
 
     const result = await createPreflightResultRun({
       projectRoot,
-      aiQaHome,
       kind: "exploratory",
       exploratoryPayload: { ...readyPayload, readiness },
       execution: "local",
@@ -568,7 +532,6 @@ describe("exploratory run start", () => {
 
   it("blocks project-skill preflight before run creation when the target Skill is missing", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
     const readiness = {
       platform: "web" as const,
@@ -581,15 +544,8 @@ describe("exploratory run start", () => {
         },
       ],
     };
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: now(),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: { ...config, recordingPolicy: { mode: "project-skill" } },
     });
     await rm(join(projectRoot, projectSkillRelativePath));
@@ -597,7 +553,6 @@ describe("exploratory run start", () => {
     await expect(
       createPreflightResultRun({
         projectRoot,
-        aiQaHome,
         kind: "exploratory",
         exploratoryPayload: { ...readyPayload, readiness },
         execution: "local",
@@ -612,14 +567,7 @@ describe("exploratory run start", () => {
 
   it("keeps legacy config v1 local-only without requiring a target Skill", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, config });
     await writeFile(
       join(projectRoot, ".ai-qa", "config.yaml"),
       stringify(projectConfigV1(), { sortMapEntries: true }),
@@ -629,7 +577,6 @@ describe("exploratory run start", () => {
 
     const workOrder = await startExploratoryRun({
       projectRoot,
-      aiQaHome,
       payload: readyPayload,
       now: () => new Date("2026-07-13T00:00:00.000Z"),
     });
@@ -640,18 +587,11 @@ describe("exploratory run start", () => {
 
   it("uses one config snapshot for compatibility and the immutable work order", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, config });
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      env: { AI_QA_AGENTS_HOME: agentsHome },
       readStdin: async () => {
         await writeProjectConfig(projectRoot, {
           ...config,
@@ -704,18 +644,9 @@ describe("exploratory run start", () => {
 
   it("creates a blocked preflight result when the global skill is missing", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
-    const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, config });
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
       readStdin: async () => {
         await writeProjectConfig(projectRoot, {
           ...config,
@@ -776,17 +707,9 @@ describe("exploratory run start", () => {
 
   it("blocks project-skill preflight when the installed global skill lacks receipt capability", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-cli-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-run-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-run-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: {
         ...config,
         recordingPolicy: { mode: "project-skill" },
@@ -795,7 +718,7 @@ describe("exploratory run start", () => {
     await installReleasedLegacyGlobalSkill(agentsHome);
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      env: { AI_QA_AGENTS_HOME: agentsHome },
       readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
     });
 

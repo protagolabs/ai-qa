@@ -1,7 +1,6 @@
-import { join } from "node:path";
 import type { Command } from "commander";
 import type { RunEvent } from "../../core/runs/schema.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { RunProtocolService } from "../../services/run-protocol/run-protocol-service.js";
 import { readRunState } from "../../services/run-protocol/read-run-state.js";
 import type { CliContext } from "../context.js";
@@ -12,16 +11,14 @@ export async function createRunProtocolService(
   context: CliContext,
   runId: string,
 ): Promise<RunProtocolService> {
-  const home = context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
   const projectOption: unknown = command.optsWithGlobals().project;
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome: home,
     ...(typeof projectOption === "string"
       ? { explicitProject: projectOption }
       : {}),
   });
-  return new RunProtocolService(trusted.projectRoot, home, runId, context.now);
+  return new RunProtocolService(project.projectRoot, runId, context.now);
 }
 
 export async function writeProtocolEvent(
@@ -30,18 +27,15 @@ export async function writeProtocolEvent(
   runId: string,
   event: RunEvent,
 ): Promise<void> {
-  const home = context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
   const projectOption: unknown = command.optsWithGlobals().project;
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome: home,
     ...(typeof projectOption === "string"
       ? { explicitProject: projectOption }
       : {}),
   });
   const state = await readRunState({
-    projectRoot: trusted.projectRoot,
-    aiQaHome: home,
+    projectRoot: project.projectRoot,
     runId,
     now: context.now,
   });

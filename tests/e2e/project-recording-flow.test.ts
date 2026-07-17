@@ -38,7 +38,6 @@ interface CliHarness {
 
 interface TestProject {
   projectRoot: string;
-  aiQaHome: string;
   cli: CliHarness;
   setNow(value: string): void;
 }
@@ -71,7 +70,6 @@ function contentSha256(value: string): string {
 function createHarness(input: {
   projectRoot: string;
   machineHome: string;
-  aiQaHome: string;
   agentsHome: string;
   now: () => Date;
 }): CliHarness {
@@ -80,7 +78,6 @@ function createHarness(input: {
       cwd: input.projectRoot,
       homeDir: input.machineHome,
       env: {
-        AI_QA_HOME: input.aiQaHome,
         AI_QA_AGENTS_HOME: input.agentsHome,
       },
       now: input.now,
@@ -113,28 +110,21 @@ function createHarness(input: {
   };
 }
 
-async function createTrustedProject(): Promise<TestProject> {
+async function createProject(): Promise<TestProject> {
   const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-recording-e2e-"));
   const projectRoot = join(machineHome, "target-project");
-  const aiQaHome = join(machineHome, "ai-qa-home");
   const agentsHome = join(machineHome, "agents-home");
   let now = fixedNow();
   await mkdir(projectRoot, { recursive: true });
   const cli = createHarness({
     projectRoot,
     machineHome,
-    aiQaHome,
     agentsHome,
     now: () => now,
   });
   await cli.run(["skill", "install", "--global"]);
-  await cli.run(
-    ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
-    { confirmed: true },
-  );
   return {
     projectRoot,
-    aiQaHome,
     cli,
     setNow(value) {
       now = new Date(value);
@@ -154,7 +144,6 @@ async function installHostManagedProject(input: {
   ).resolves.toEqual({ status: "valid", config });
   await initializeTestProject({
     projectRoot: input.fixture.projectRoot,
-    aiQaHome: input.fixture.aiQaHome,
     config,
     projectSkill: skill,
   });
@@ -278,7 +267,7 @@ async function switchMode(
 
 describe("project recording workflow CLI", () => {
   it("ends a local-only run after verified local reports without recording files", async () => {
-    const fixture = await createTrustedProject();
+    const fixture = await createProject();
     await installHostManagedProject({ fixture, mode: "local-only" });
     const run = await startAndCancelWebRun(fixture);
     const report = await generateReport(fixture, run.runId);
@@ -312,7 +301,7 @@ describe("project recording workflow CLI", () => {
   });
 
   it("executes an exact arbitrary project procedure and stores one keyless idempotent neutral receipt", async () => {
-    const fixture = await createTrustedProject();
+    const fixture = await createProject();
     const installed = await installHostManagedProject({
       fixture,
       mode: "project-skill",
@@ -443,7 +432,7 @@ describe("project recording workflow CLI", () => {
   });
 
   it("stops a drifted run and snapshots the edited Project Skill only for a new run", async () => {
-    const fixture = await createTrustedProject();
+    const fixture = await createProject();
     const installed = await installHostManagedProject({
       fixture,
       mode: "project-skill",
@@ -528,7 +517,7 @@ describe("project recording workflow CLI", () => {
   });
 
   it("freezes historical recording modes across both config switch directions", async () => {
-    const fixture = await createTrustedProject();
+    const fixture = await createProject();
     await installHostManagedProject({ fixture, mode: "local-only" });
     const firstLocalRun = await startAndCancelWebRun(fixture);
     await generateReport(fixture, firstLocalRun.runId);

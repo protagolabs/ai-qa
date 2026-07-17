@@ -1,10 +1,10 @@
 import { realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod";
 import { AiQaError } from "../../core/errors.js";
 import { webControllerSchema } from "../../core/tools.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { registerEvidence } from "../../services/run-protocol/register-evidence.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
@@ -21,10 +21,6 @@ const evidenceInputSchema = z
     observationIds: z.array(z.string().trim().min(1)),
   })
   .strict();
-
-function aiQaHome(context: CliContext): string {
-  return context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
-}
 
 function explicitProject(command: Command): string | undefined {
   const value: unknown = command.optsWithGlobals().project;
@@ -70,21 +66,20 @@ export function registerEvidenceCommands(
     .requiredOption("--stdin-json", "read evidence metadata from stdin");
 
   addCommand.action(async (options: { run: string; file: string }) => {
-    const home = aiQaHome(context);
-    const project = explicitProject(addCommand);
-    const trusted = await resolveTrustedProject({
+    const projectOption = explicitProject(addCommand);
+    const project = await resolveProject({
       cwd: context.cwd,
-      aiQaHome: home,
-      ...(project === undefined ? {} : { explicitProject: project }),
+      ...(projectOption === undefined
+        ? {}
+        : { explicitProject: projectOption }),
     });
     const sourcePath = await rejectOtherProjectStateSource(
       resolve(context.cwd, options.file),
-      trusted.projectRoot,
+      project.projectRoot,
     );
     const input = await readJsonInput(context, evidenceInputSchema);
     const record = await registerEvidence({
-      projectRoot: trusted.projectRoot,
-      aiQaHome: home,
+      projectRoot: project.projectRoot,
       runId: options.run,
       payload: {
         sourcePath,

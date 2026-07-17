@@ -6,7 +6,7 @@ import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import { runIdSchema, type RunEvent } from "../../core/runs/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -23,17 +23,15 @@ export interface RunStateSnapshot {
 
 export async function readRunState(input: {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   now: () => Date;
 }): Promise<RunStateSnapshot> {
   const runId = runIdSchema.parse(input.runId);
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const repository = new RunRepository(project.projectRoot, input.now);
   return repository.journal(runId).readLocked(async (events) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId);
     validateProtocolEvents(events, workOrder, runId);

@@ -20,7 +20,6 @@ import { registerEvidence } from "../../src/services/run-protocol/register-evide
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -73,7 +72,6 @@ const config: ProjectConfig = {
 
 interface RegressionFixture {
   projectRoot: string;
-  aiQaHome: string;
   revision: CaseRevision;
 }
 
@@ -81,14 +79,7 @@ async function createActiveCase(
   options: { firstEvidenceCheckpoints?: string[] } = {},
 ): Promise<RegressionFixture> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-replay-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
-  await initializeTestProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, config });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
     schemaVersion: 1,
@@ -150,13 +141,12 @@ async function createActiveCase(
     confirmedBy: "user",
     confirmedAt: startedAt.toISOString(),
   });
-  return { projectRoot, aiQaHome, revision };
+  return { projectRoot, revision };
 }
 
 async function startFixtureRun(fixture: RegressionFixture) {
   const workOrder = await startRegressionRun({
     projectRoot: fixture.projectRoot,
-    aiQaHome: fixture.aiQaHome,
     caseId: "login-success",
     execution: "local",
     readiness: ready,
@@ -166,7 +156,6 @@ async function startFixtureRun(fixture: RegressionFixture) {
     workOrder,
     protocol: new RunProtocolService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ),
@@ -246,7 +235,6 @@ async function completeStep(input: {
   await writeFile(sourcePath, Buffer.from([1, 2, 3, input.key.length]));
   const evidence = await registerEvidence({
     projectRoot: input.fixture.projectRoot,
-    aiQaHome: input.fixture.aiQaHome,
     runId: input.runId,
     payload: {
       sourcePath,
@@ -329,7 +317,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -353,7 +340,6 @@ describe("pinned regression replay", () => {
 
     const completed = await finalizeRun({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: workOrder.runId,
       now,
     });
@@ -370,7 +356,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -400,7 +385,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -425,7 +409,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -479,7 +462,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -504,7 +486,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -543,7 +524,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -568,7 +548,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -629,7 +608,6 @@ describe("pinned regression replay", () => {
     await writeFile(sourcePath, Buffer.from([9, 8, 7, 6]));
     const launderedEvidence = await registerEvidence({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: workOrder.runId,
       payload: {
         sourcePath,
@@ -664,7 +642,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -689,7 +666,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -1143,7 +1119,6 @@ describe("pinned regression replay", () => {
     });
     const verdicts = new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     );
@@ -1164,7 +1139,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -1175,7 +1149,6 @@ describe("pinned regression replay", () => {
     const fixture = await createActiveCase();
     const result = await createPreflightResultRun({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       kind: "regression",
       caseId: "login-success",
       execution: "ci",
@@ -1228,7 +1201,6 @@ describe("pinned regression replay", () => {
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
       env: {
-        AI_QA_HOME: fixture.aiQaHome,
         AI_QA_AGENTS_HOME: agentsHome,
       },
       readStdin: async () => {
@@ -1284,7 +1256,6 @@ describe("pinned regression replay", () => {
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
       env: {
-        AI_QA_HOME: fixture.aiQaHome,
         AI_QA_AGENTS_HOME: agentsHome,
       },
       readStdin: async () => {
@@ -1344,7 +1315,6 @@ describe("pinned regression replay", () => {
     });
     await new VerdictService(
       fixture.projectRoot,
-      fixture.aiQaHome,
       workOrder.runId,
       now,
     ).set({
@@ -1380,7 +1350,6 @@ describe("pinned regression replay", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: workOrder.runId,
         now,
       }),
@@ -1400,7 +1369,7 @@ describe("pinned regression replay", () => {
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-replay-agents-"));
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      env: { AI_QA_AGENTS_HOME: agentsHome },
       readStdin: () => Promise.resolve(JSON.stringify(ready)),
     });
     expect(

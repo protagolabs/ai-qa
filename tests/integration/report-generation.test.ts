@@ -41,7 +41,6 @@ import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -82,19 +81,11 @@ function config(
 
 async function initializedProject(projectConfig: ProjectConfig) {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-report-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-report-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
   await initializeTestProject({
     projectRoot,
-    aiQaHome,
     config: projectConfig,
   });
-  return { projectRoot, aiQaHome };
+  return { projectRoot };
 }
 
 async function completedRun(
@@ -149,7 +140,6 @@ async function completedRun(
   );
   const protocol = new RunProtocolService(
     project.projectRoot,
-    project.aiQaHome,
     "run-1",
     eventNow,
   );
@@ -248,7 +238,6 @@ async function completedRun(
   });
   const verdict = await new VerdictService(
     project.projectRoot,
-    project.aiQaHome,
     "run-1",
     eventNow,
   ).set({
@@ -589,7 +578,6 @@ describe("generateRunReport", () => {
     );
     const verdicts = new VerdictService(
       project.projectRoot,
-      project.aiQaHome,
       "run-1",
       eventNow,
     );
@@ -858,7 +846,6 @@ describe("generateRunReport", () => {
     );
     const verdict = await new VerdictService(
       project.projectRoot,
-      project.aiQaHome,
       "run-1",
       eventNow,
     ).set({
@@ -1035,7 +1022,6 @@ describe("report CLI and project-local export", () => {
     const fixture = await completedRun();
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now: generatedNow,
     });
 
@@ -1079,7 +1065,6 @@ describe("report CLI and project-local export", () => {
     );
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now: generatedNow,
     });
 

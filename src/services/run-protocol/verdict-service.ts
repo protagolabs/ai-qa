@@ -15,7 +15,7 @@ import {
   type BlockerPayload,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 
 export interface VerdictEntry {
@@ -28,7 +28,6 @@ export class VerdictService {
 
   constructor(
     private readonly projectRoot: string,
-    private readonly aiQaHome: string,
     runId: string,
     private readonly now: () => Date,
   ) {
@@ -131,7 +130,7 @@ export class VerdictService {
   }
 
   async effectiveVerdict(): Promise<RunEvent | undefined> {
-    const repository = await this.trustedRepository();
+    const repository = await this.repository();
     return repository.journal(this.runId).readLocked(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
@@ -182,7 +181,7 @@ export class VerdictService {
     ) => AppendRunEvent,
     options: { allowInterrupted?: boolean } = {},
   ): Promise<RunEvent> {
-    const repository = await this.trustedRepository();
+    const repository = await this.repository();
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);
@@ -205,13 +204,12 @@ export class VerdictService {
     });
   }
 
-  private async trustedRepository(): Promise<RunRepository> {
-    const trusted = await resolveTrustedProject({
+  private async repository(): Promise<RunRepository> {
+    const project = await resolveProject({
       cwd: this.projectRoot,
       explicitProject: this.projectRoot,
-      aiQaHome: this.aiQaHome,
     });
-    return new RunRepository(trusted.projectRoot, this.now);
+    return new RunRepository(project.projectRoot, this.now);
   }
 }
 

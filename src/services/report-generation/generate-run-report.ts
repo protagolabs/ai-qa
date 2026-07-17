@@ -40,7 +40,7 @@ import {
   type VerdictPayload,
   verdictPayloadSchema,
 } from "../../core/verdicts/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -62,7 +62,6 @@ export interface ProjectLocalReportPaths {
 
 export interface ReportOperationInput {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   now: () => Date;
 }
@@ -210,13 +209,12 @@ async function buildVerifiedRunReport(
   input: ReportOperationInput,
 ): Promise<VerifiedRunReport> {
   const runId = runIdSchema.parse(input.runId);
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
-  const config = await readProjectConfig(trusted.projectRoot);
-  const repository = new RunRepository(trusted.projectRoot, input.now);
+  const config = await readProjectConfig(project.projectRoot);
+  const repository = new RunRepository(project.projectRoot, input.now);
   const verified = await repository
     .journal(runId)
     .readLocked(async (events) => {
@@ -229,7 +227,7 @@ async function buildVerifiedRunReport(
         );
       }
       const evidence = await new EvidenceRepository(
-        trusted.projectRoot,
+        project.projectRoot,
         runId,
         input.now,
       ).verifyAll();
@@ -271,7 +269,7 @@ async function buildVerifiedRunReport(
       );
       if (workOrder.kind === "regression") {
         await validatePinnedRegressionCase(
-          trusted.projectRoot,
+          project.projectRoot,
           workOrder,
           input.now,
         );
@@ -341,7 +339,7 @@ async function buildVerifiedRunReport(
         report,
       };
     });
-  return { projectRoot: trusted.projectRoot, config, ...verified };
+  return { projectRoot: project.projectRoot, config, ...verified };
 }
 
 function reportPaths(

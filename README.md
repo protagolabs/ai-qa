@@ -3,7 +3,7 @@
 `ai-qa` is an agent-orchestrated QA CLI and Agent Skill. It is not a runtime,
 daemon, or background service: the host invokes the CLI on demand and each
 command exits. The agent controls the Web target through Chrome DevTools MCP;
-the Node.js CLI owns the trusted configuration, immutable work orders, typed
+the Node.js CLI owns the validated configuration, immutable work orders, typed
 event protocol, evidence files and hashes, regression cases, verdict
 validation, and project-local reports.
 
@@ -11,7 +11,7 @@ The split is intentional: the agent decides what to observe and do, while the CL
 
 ## Increment 1 scope
 
-Increment 1 provides one complete local Web workflow: global skill installation, machine trust, target-project setup, Web readiness, exploratory QA, two-phase browser calls, screenshot evidence, reviewed case promotion, pinned regression replay, and JSON/Markdown reports.
+Increment 1 provides one complete local Web workflow: global skill installation, host-authorized target-project setup, Web readiness, exploratory QA, two-phase browser calls, screenshot evidence, reviewed case promotion, pinned regression replay, and JSON/Markdown reports.
 
 RunGroup and suite aggregation, Codex/Claude CI runner templates, external storage adapters, iOS/Pepper, Android/Appium, real-device workflows, and public npm publication are Increment 2 or later work.
 
@@ -51,7 +51,7 @@ AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill check --global
 
 npm installation never edits agent instructions. `skill install --global` is a separate, explicit operation that previews managed changes and installs the canonical skill under `$AI_QA_AGENTS_HOME/skills/ai-qa/` (default `~/.agents/skills/ai-qa/`). CLI-managed regions and reference assets may be updated by `skill sync`; user-authored content outside the managed markers is preserved. Replacing locally changed managed content requires explicit confirmation.
 
-## State and trust boundary
+## State and authority boundary
 
 Each target project owns its QA records under `<target>/.ai-qa/`:
 
@@ -66,7 +66,7 @@ per-run report directory can also contain the canonical neutral receipt journal
 `recording.jsonl` and its deterministic view `recording.json`. These files do
 not change the run, verdict, or generated report bytes.
 
-Repository trust is machine-level state under `$AI_QA_HOME/trust.json` (default `~/.ai-qa/trust.json`). It never belongs inside the target project, and a repository's config cannot declare itself trusted. Secret references contain environment-variable names, not credential values.
+Codex resolves the exact target and uses only project access granted by the host. AI QA stores no repository authorization state. Secret references contain environment-variable names, not credential values.
 
 ## Initialize a target project
 
@@ -74,7 +74,7 @@ Initialization is a host-managed project change. Follow this exact two-doctor
 workflow:
 
 ```text
-Codex resolves the target and manages repository trust/permissions
+Codex resolves the target and uses host-granted project access
 Codex runs doctor
 Doctor returns configure-project for an uninitialized target
 Codex suspends the requested QA work
@@ -93,7 +93,7 @@ ready and repair (`not_ready`) responses return `null`. Older CLIs that return
 only `status: "uninitialized"` trigger the same first-use flow.
 
 The configuration conversation does not ask the user to select a project root
-or repository-trust value. Codex owns those prerequisites. AI QA setup derives
+or an AI QA authorization value. Codex and the host own those prerequisites. AI QA setup derives
 unambiguous project facts, applies documented safe defaults only when the
 project and user are silent, and asks only for unresolved or conflicting
 values. Cancelling setup leaves the project uninitialized and the original QA
@@ -114,10 +114,12 @@ canonical `.ai-qa/` directories and write the two approved files. There is no
 combined initialization JSON, manual checksum, `ai-qa init`, or CLI-owned
 Project Skill generate/sync step.
 
-If the project has no existing result-management procedure, use
-`recordingPolicy.mode: local-only` and do not invent a provider. If it has one,
-use `project-skill` and put that exact arbitrary procedure, including match and
-rerun rules, in the Project Skill. Git tracking and commits are optional;
+Codex summarizes whether project inspection found an existing result-management
+procedure, then the user explicitly chooses `recordingPolicy.mode: local-only`
+or `recordingPolicy.mode: project-skill`; neither is a default. `project-skill`
+requires the user to confirm the exact existing procedure, including match,
+rerun, idempotency, and uncertain-result rules. Tool availability alone is not
+a procedure. Git tracking and commits are optional;
 GitHub and a Git remote are not assumed or required. Codex/host manages
 filesystem and tool permissions, executes approved authentication procedures,
 and invokes the final doctor. Unresolved target-project authentication and
@@ -177,16 +179,15 @@ configured `report.json` and `report.md` paths. It deliberately excludes
 The agent runs doctor first, derives unambiguous project facts and documented safe defaults, and asks only about unresolved or conflicting configuration values. Only a complete, user-confirmed configuration is submitted.
 
 1. Install/check the global product Skill explicitly with `ai-qa skill install --global` and `ai-qa skill check --global`.
-2. Confirm machine trust with `ai-qa trust confirm --project <target> --stdin-json`.
-3. Follow the host-managed two-doctor initialization workflow above. Treat the first doctor's `configure-project` action, or legacy bare `uninitialized` status, as mandatory; use `config validate` and `skill-creator`, write only after one confirmation, and resume the requested QA work only after the final doctor reports `ready`.
-4. Use Chrome DevTools MCP read-only checks and submit their result to `ai-qa doctor --platform web --json --stdin-json`.
-5. Start exploratory QA with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
-6. Before every browser call, record `ai-qa action plan`. After the call, record `ai-qa action complete`; then use the typed `observation`, `evidence`, `assertion`, `decision`, `recovery`, or `blocker` commands as appropriate.
-7. Register screenshot bytes with `ai-qa evidence add`, including their completed capture action, observation IDs, criterion IDs, and evidence kinds.
-8. Set or explicitly revise the evidence-linked verdict with `ai-qa verdict set`/`verdict revise`, then validate the terminal state with `ai-qa run finish`.
-9. Promote a completed exploratory run through `ai-qa case draft`, `case validate`, and explicit `case activate` review confirmation.
-10. Start `--kind regression --case <case-id>` and replay every pinned step exactly and in order. Each run pins the active revision plus case and platform-variant hashes.
-11. Generate and verify project-local output with `ai-qa report generate <run-id>` and `report export <run-id> --adapter project-local`.
+2. Follow the host-managed two-doctor initialization workflow above. Treat the first doctor's `configure-project` action, or legacy bare `uninitialized` status, as mandatory; use `config validate` and `skill-creator`, write only after one confirmation, and resume the requested QA work only after the final doctor reports `ready`.
+3. Use Chrome DevTools MCP read-only checks and submit their result to `ai-qa doctor --platform web --json --stdin-json`.
+4. Start exploratory QA with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
+5. Before every browser call, record `ai-qa action plan`. After the call, record `ai-qa action complete`; then use the typed `observation`, `evidence`, `assertion`, `decision`, `recovery`, or `blocker` commands as appropriate.
+6. Register screenshot bytes with `ai-qa evidence add`, including their completed capture action, observation IDs, criterion IDs, and evidence kinds.
+7. Set or explicitly revise the evidence-linked verdict with `ai-qa verdict set`/`verdict revise`, then validate the terminal state with `ai-qa run finish`.
+8. Promote a completed exploratory run through `ai-qa case draft`, `case validate`, and explicit `case activate` review confirmation.
+9. Start `--kind regression --case <case-id>` and replay every pinned step exactly and in order. Each run pins the active revision plus case and platform-variant hashes.
+10. Generate and verify project-local output with `ai-qa report generate <run-id>` and `report export <run-id> --adapter project-local`.
 
 There is no public generic event-append command. A successful MCP response alone is never a QA pass: every pass must satisfy all acceptance criteria and cite valid observations, assertions, and required evidence.
 

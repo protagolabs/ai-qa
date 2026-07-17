@@ -4,24 +4,11 @@
 
 Use one host-owned workflow for `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md`:
 
-### Codex-owned prerequisites
+### Host-owned project access
 
-Target resolution, repository trust, permissions, and project reads are Codex/host prerequisites, not AI QA configuration settings. The setup flow receives the already resolved target and does not ask the user to choose a root or trust value as configuration.
+Resolve the exact target project and use only project access already granted by Codex and the host. Never substitute an ancestor for a named nested project. AI QA does not grant repository access or maintain repository authorization state.
 
-1. Resolve the exact target project and obtain explicit trust confirmation before reading project content.
-2. Record trust with the exact single-field stdin object below. The schema accepts literal `true` and no additional fields.
-
-<!-- canonical-trust-confirm:start -->
-
-```text
-{"confirmed":true}
-```
-
-<!-- canonical-trust-confirm:end -->
-
-```text
-printf '%s\n' '{"confirmed":true}' | ai-qa trust confirm --project <path> --stdin-json
-```
+Target resolution and project access are Codex/host prerequisites; AI QA does not grant repository access.
 
 ### Mandatory first-use gate
 
@@ -33,14 +20,14 @@ Resume the original QA request only after the post-write doctor returns `ready`.
 
 ### Configuration decisions
 
-Configuration source precedence is explicit user decisions, unambiguous project-owned instructions, then safe product defaults. Conflicting project-owned sources are unresolved; Codex must ask rather than choose. Ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.
+Configuration source precedence for fields other than recording mode is explicit user decisions, unambiguous project-owned instructions, then safe product defaults. Conflicting project-owned sources are unresolved; Codex must ask rather than choose. Ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project. `recordingPolicy.mode` is the exception and must always be chosen explicitly by the user.
 
 Before asking questions, summarize values derived from committed project metadata, instructions, package scripts, documented Web URLs, existing result-management procedures, and Git conventions. Use the canonical schema-v2 draft below as the safe product defaults only when neither the user nor the project supplies a value. Never infer authentication, test data, named environments, secret environment-variable references, or a result-management procedure that the project does not declare. Never accept literal secret values.
 
 ### AI QA configuration
 
 1. Run `ai-qa doctor --json` and any applicable host-visible readiness checks. Treat `requiredAction.kind: configure-project`, or a legacy bare `status: uninitialized`, as the mandatory first-use gate described above. A missing config is expected; do not begin QA while the gate is active.
-2. Inspect the available config, Project Skill, project instructions, and documented QA result- or defect-management procedures. Ask how QA results or defects are managed only when that inspection cannot establish whether a procedure exists, and do not suggest providers. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the established procedure exactly, including its match and rerun rules.
+2. Inspect the available config, Project Skill, project instructions, and documented QA result- or defect-management procedures. Summarize whether an existing procedure was found, then always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default. Use `local-only` only after the user explicitly selects it. Use `project-skill` only after the user explicitly selects it and confirms the exact existing result-management procedure, including match, rerun, idempotency, and uncertain-result rules. Tool availability alone is not a result-management procedure. Do not validate a final config, request write confirmation, write project files, or resume QA until the recording decision is complete.
 3. A request to show the approval decision is proposal-only: produce the complete drafts and diffs from confirmed facts, but do not run host commands, write files, or treat an unavailable example path or CLI as a task failure before approval.
 4. Draft the complete schema-v2 config as JSON in scratch space. Use the canonical object shape below; substitute confirmed values, omit no required keys, and add no other config keys. Draft the Project Skill separately: Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.
 5. Keep the Project Skill project-owned and concise. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum. Put result-management commands and supported secret environment-variable references in its body, never literal secrets or provider assumptions.
@@ -69,6 +56,8 @@ Permissions, authentication, file writes, and external tools remain host-owned.
 Use this exact config shape for a Web project. Substitute only confirmed values.
 Project startup, authentication/test-data procedures, rerun rules, and project
 matching belong in the Project Skill body, not as extra config fields.
+
+The `recordingPolicy.mode` line below is illustrative syntax, not a default. Replace it with the user's explicit confirmed choice before validation.
 
 ```yaml
 schemaVersion: 2
@@ -117,7 +106,7 @@ The following Markdown is only an example body for a project that chose local-on
 
 ## Match
 
-Apply only to the trusted project root and Web target identified in this project.
+Apply only to the exact project root and Web target identified in this project.
 
 ## Evidence and reports
 

@@ -8,7 +8,6 @@ import { AiQaError } from "../../core/errors.js";
 import { runInstallationDoctor } from "../../services/doctor/installation-doctor.js";
 import { runWebDoctor } from "../../services/doctor/web-doctor.js";
 import { resolveProjectRoot } from "../../services/project-root/resolve-project-root.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
 
@@ -22,10 +21,6 @@ const doctorInputSchema = z.object({
   entryPage: agentCapabilityObservationSchema.optional(),
   chromeDevtoolsMcp: agentCapabilityObservationSchema,
 });
-
-function aiQaHome(context: CliContext): string {
-  return context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
-}
 
 function agentsHome(context: CliContext): string {
   return context.env.AI_QA_AGENTS_HOME ?? join(context.homeDir, ".agents");
@@ -66,7 +61,6 @@ export function registerDoctorCommand(
       if (hasPlatform) z.literal("web").parse(options.platform);
 
       const project = explicitProject(doctorCommand);
-      const home = aiQaHome(context);
       const root = await resolveProjectRoot({
         command: "init",
         cwd: context.cwd,
@@ -82,15 +76,7 @@ export function registerDoctorCommand(
         return;
       }
 
-      const resolved = await resolveTrustedProject({
-        cwd: root.root,
-        explicitProject: root.root,
-        aiQaHome: home,
-      });
-      const installation = await runInstallationDoctor({
-        ...installationInput,
-        projectRoot: resolved.projectRoot,
-      });
+      const installation = await runInstallationDoctor(installationInput);
       if (!hasPlatform || installation.status === "uninitialized") {
         writeJson(context, installation);
         return;
@@ -103,7 +89,7 @@ export function registerDoctorCommand(
         return;
       }
 
-      const config = await readProjectConfig(resolved.projectRoot);
+      const config = await readProjectConfig(root.root);
       const input = await readJsonInput(context, doctorInputSchema);
       const result = await runWebDoctor({
         installationChecks: installation.checks,

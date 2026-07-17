@@ -6,7 +6,7 @@ import { caseIdSchema } from "../../core/cases/schema.js";
 import { readProjectConfig } from "../../core/config/repository.js";
 import { exploratoryRunInputSchema } from "../../core/runs/schema.js";
 import type { WebDoctorResult } from "../../services/doctor/web-doctor.js";
-import { resolveTrustedProject } from "../../services/project-root/resolve-trusted-project.js";
+import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { createPreflightResultRun } from "../../services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../services/run-protocol/finalize-run.js";
 import { readRunState } from "../../services/run-protocol/read-run-state.js";
@@ -77,10 +77,6 @@ const exploratoryStartInputSchema = exploratoryRunInputSchema.extend({
   readiness: doctorReadinessInputSchema,
 });
 
-function aiQaHome(context: CliContext): string {
-  return context.env.AI_QA_HOME ?? join(context.homeDir, ".ai-qa");
-}
-
 function agentsHome(context: CliContext): string {
   return context.env.AI_QA_AGENTS_HOME ?? join(context.homeDir, ".agents");
 }
@@ -118,14 +114,14 @@ export function registerRunCommands(
       case?: string;
     }) => {
       const parsedOptions = startOptionsSchema.parse(options);
-      const project = explicitProject(startCommand);
-      const home = aiQaHome(context);
-      const resolved = await resolveTrustedProject({
+      const projectOption = explicitProject(startCommand);
+      const project = await resolveProject({
         cwd: context.cwd,
-        aiQaHome: home,
-        ...(project === undefined ? {} : { explicitProject: project }),
+        ...(projectOption === undefined
+          ? {}
+          : { explicitProject: projectOption }),
       });
-      const config = await readProjectConfig(resolved.projectRoot);
+      const config = await readProjectConfig(project.projectRoot);
       const suppliedExploratory =
         parsedOptions.kind === "exploratory"
           ? await readJsonInput(context, exploratoryStartInputSchema)
@@ -167,8 +163,7 @@ export function registerRunCommands(
           writeJson(
             context,
             await startRegressionRun({
-              projectRoot: resolved.projectRoot,
-              aiQaHome: home,
+              projectRoot: project.projectRoot,
               caseId: parsedOptions.case,
               execution: parsedOptions.execution,
               readiness: verifiedReadiness,
@@ -181,8 +176,7 @@ export function registerRunCommands(
         writeJson(
           context,
           await createPreflightResultRun({
-            projectRoot: resolved.projectRoot,
-            aiQaHome: home,
+            projectRoot: project.projectRoot,
             kind: "regression",
             caseId: parsedOptions.case,
             execution: parsedOptions.execution,
@@ -202,8 +196,7 @@ export function registerRunCommands(
         writeJson(
           context,
           await startExploratoryRun({
-            projectRoot: resolved.projectRoot,
-            aiQaHome: home,
+            projectRoot: project.projectRoot,
             payload,
             now: context.now,
             projectConfig: config,
@@ -214,8 +207,7 @@ export function registerRunCommands(
       writeJson(
         context,
         await createPreflightResultRun({
-          projectRoot: resolved.projectRoot,
-          aiQaHome: home,
+          projectRoot: project.projectRoot,
           kind: "exploratory",
           exploratoryPayload: payload,
           execution: "local",
@@ -280,13 +272,13 @@ export function registerRunCommands(
 async function resolveRunTarget(
   command: Command,
   context: CliContext,
-): Promise<{ projectRoot: string; aiQaHome: string }> {
-  const home = aiQaHome(context);
-  const project = explicitProject(command);
-  const trusted = await resolveTrustedProject({
+): Promise<{ projectRoot: string }> {
+  const projectOption = explicitProject(command);
+  const project = await resolveProject({
     cwd: context.cwd,
-    aiQaHome: home,
-    ...(project === undefined ? {} : { explicitProject: project }),
+    ...(projectOption === undefined
+      ? {}
+      : { explicitProject: projectOption }),
   });
-  return { projectRoot: trusted.projectRoot, aiQaHome: home };
+  return { projectRoot: project.projectRoot };
 }

@@ -29,7 +29,7 @@ import {
 } from "../../core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../core/tools.js";
 import { assertJsonValue } from "../../core/json-value.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
 
 const citationInputSchema = z
@@ -41,24 +41,22 @@ const citationInputSchema = z
 
 export async function registerEvidence(input: {
   projectRoot: string;
-  aiQaHome: string;
   runId: string;
   payload: RegisterRawEvidenceInput;
   criterionIds: string[];
   observationIds: string[];
   now: () => Date;
 }): Promise<EvidenceRecord> {
-  const trusted = await resolveTrustedProject({
+  const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
-    aiQaHome: input.aiQaHome,
   });
   const payload = registerRawEvidenceInputSchema.parse(input.payload);
   const citations = citationInputSchema.parse({
     criterionIds: input.criterionIds,
     observationIds: input.observationIds,
   });
-  const runRepository = new RunRepository(trusted.projectRoot, input.now);
+  const runRepository = new RunRepository(project.projectRoot, input.now);
   const journal = runRepository.journal(input.runId);
   const record = await journal.appendPrepared(async (events) => {
     const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
@@ -106,7 +104,7 @@ export async function registerEvidence(input: {
     requireValidObservations(events, citations.observationIds);
 
     const repository = new EvidenceRepository(
-      trusted.projectRoot,
+      project.projectRoot,
       input.runId,
       input.now,
     );
@@ -140,7 +138,7 @@ export async function registerEvidence(input: {
   });
   await journal.readLocked(async (events) => {
     const records = await new EvidenceRepository(
-      trusted.projectRoot,
+      project.projectRoot,
       input.runId,
       input.now,
     ).verifyAll();

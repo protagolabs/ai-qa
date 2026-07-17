@@ -30,7 +30,6 @@ import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -67,19 +66,11 @@ async function createCompletedPassRun(
   } = {},
 ): Promise<{
   projectRoot: string;
-  aiQaHome: string;
   plannedActionId: string;
   extraActionId?: string;
 }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-case-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
-  await initializeTestProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, config });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
@@ -108,7 +99,6 @@ async function createCompletedPassRun(
   );
   const protocol = new RunProtocolService(
     projectRoot,
-    aiQaHome,
     "run-source",
     runNow,
   );
@@ -154,7 +144,6 @@ async function createCompletedPassRun(
     await writeFile(unrelatedPath, Buffer.from([9, 9, 9, 9]));
     unrelatedEvidence = await registerEvidence({
       projectRoot,
-      aiQaHome,
       runId: "run-source",
       payload: {
         sourcePath: unrelatedPath,
@@ -270,7 +259,6 @@ async function createCompletedPassRun(
   await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
   const evidence = await registerEvidence({
     projectRoot,
-    aiQaHome,
     runId: "run-source",
     payload: {
       sourcePath,
@@ -300,7 +288,6 @@ async function createCompletedPassRun(
   });
   const verdict = new VerdictService(
     projectRoot,
-    aiQaHome,
     "run-source",
     runNow,
   );
@@ -329,14 +316,12 @@ async function createCompletedPassRun(
   } else {
     await finalizeRun({
       projectRoot,
-      aiQaHome,
       runId: "run-source",
       now: runNow,
     });
   }
   return {
     projectRoot,
-    aiQaHome,
     plannedActionId: planned.id,
     ...(extraAction === undefined ? {} : { extraActionId: extraAction.id }),
   };
@@ -347,13 +332,6 @@ async function createCompletedUnknownRun(): Promise<{
   plannedActionId: string;
 }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-unknown-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-case-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
@@ -379,7 +357,6 @@ async function createCompletedUnknownRun(): Promise<{
   );
   const protocol = new RunProtocolService(
     projectRoot,
-    aiQaHome,
     "run-unknown",
     runNow,
   );
@@ -421,7 +398,6 @@ async function createCompletedUnknownRun(): Promise<{
   });
   const verdict = new VerdictService(
     projectRoot,
-    aiQaHome,
     "run-unknown",
     runNow,
   );
@@ -433,7 +409,6 @@ async function createCompletedUnknownRun(): Promise<{
   });
   await finalizeRun({
     projectRoot,
-    aiQaHome,
     runId: "run-unknown",
     now: runNow,
   });
@@ -445,14 +420,7 @@ async function createStaleCompletedPassRun(): Promise<{
   plannedActionId: string;
 }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-stale-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-case-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
-  await initializeTestProject({ projectRoot, aiQaHome, config });
+  await initializeTestProject({ projectRoot, config });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
@@ -478,7 +446,6 @@ async function createStaleCompletedPassRun(): Promise<{
   );
   const protocol = new RunProtocolService(
     projectRoot,
-    aiQaHome,
     "run-source",
     runNow,
   );
@@ -518,7 +485,6 @@ async function createStaleCompletedPassRun(): Promise<{
   await writeFile(sourcePath, Buffer.from([5, 4, 3, 2]));
   const staleEvidence = await registerEvidence({
     projectRoot,
-    aiQaHome,
     runId: "run-source",
     payload: {
       sourcePath,
@@ -561,7 +527,6 @@ async function createStaleCompletedPassRun(): Promise<{
   });
   const verdict = await new VerdictService(
     projectRoot,
-    aiQaHome,
     "run-source",
     runNow,
   ).set({
@@ -1672,7 +1637,7 @@ describe("case promotion", () => {
   });
 
   it("requires exact activation confirmation through the public case command", async () => {
-    const { projectRoot, aiQaHome, plannedActionId } =
+    const { projectRoot, plannedActionId } =
       await createCompletedPassRun();
     const draft = await draftCaseFromRun({
       projectRoot,
@@ -1699,7 +1664,6 @@ describe("case promotion", () => {
     });
     const rejected = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () =>
         Promise.resolve(
           JSON.stringify({ reviewConfirmed: true, unexpected: true }),
@@ -1722,7 +1686,6 @@ describe("case promotion", () => {
 
     const confirmed = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () => Promise.resolve('{"reviewConfirmed":true}'),
     });
     expect(
@@ -1746,7 +1709,6 @@ describe("case promotion", () => {
     });
     const retried = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       now: () => new Date("2026-07-13T00:20:00.000Z"),
       readStdin: () => Promise.resolve('{"reviewConfirmed":true}'),
     });
@@ -1776,11 +1738,10 @@ describe("case promotion", () => {
   });
 
   it("drafts and validates immutable revisions through the public case command", async () => {
-    const { projectRoot, aiQaHome, plannedActionId } =
+    const { projectRoot, plannedActionId } =
       await createCompletedPassRun();
     const drafted = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
       readStdin: () =>
         Promise.resolve(
           JSON.stringify({
@@ -1817,7 +1778,6 @@ describe("case promotion", () => {
 
     const validated = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
     });
     expect(
       await runCli(

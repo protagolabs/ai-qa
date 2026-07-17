@@ -47,7 +47,6 @@ async function fixture(input?: {
   const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-unit-agents-"));
   await initializeTestProject({
     projectRoot,
-    aiQaHome: await mkdtemp(join(tmpdir(), "ai-qa-doctor-unit-home-")),
     config: input?.config ?? projectConfigV2(),
   });
   if (input?.installGlobalSkill !== false) {

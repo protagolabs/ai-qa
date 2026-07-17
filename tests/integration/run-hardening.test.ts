@@ -23,7 +23,6 @@ import {
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -92,20 +91,10 @@ async function createRepositoryRun(projectRoot: string, runId = "run-1") {
   return { repository, workOrder, ...result };
 }
 
-async function initializeTrustedProject(): Promise<{
-  projectRoot: string;
-  aiQaHome: string;
-}> {
+async function initializeProject(): Promise<{ projectRoot: string }> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-hardening-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-hardening-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: fixedNow(),
-  });
-  await initializeTestProject({ projectRoot, aiQaHome, config });
-  return { projectRoot, aiQaHome };
+  await initializeTestProject({ projectRoot, config });
+  return { projectRoot };
 }
 
 describe("run path confinement", () => {
@@ -181,34 +170,28 @@ describe("run path confinement", () => {
   });
 });
 
-describe("trusted exploratory start boundary", () => {
-  it("rejects an untrusted direct service call before parsing project config", async () => {
-    const projectRoot = await mkdtemp(
-      join(tmpdir(), "ai-qa-untrusted-service-"),
-    );
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-untrusted-home-"));
+describe("host-authorized exploratory start boundary", () => {
+  it("validates project config without an AI QA trust prerequisite", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-host-service-"));
     await mkdir(join(projectRoot, ".ai-qa"), { recursive: true });
     await writeFile(join(projectRoot, ".ai-qa", "config.yaml"), "invalid: [");
 
     await expect(
       startExploratoryRun({
         projectRoot,
-        aiQaHome,
         payload: readyPayload,
         now: fixedNow,
       }),
-    ).rejects.toMatchObject({ code: "trust.not_trusted" });
+    ).rejects.toMatchObject({ name: "YAMLParseError", code: "BAD_INDENT" });
     await expectMissing(join(projectRoot, ".ai-qa", "runs"));
   });
 
-  it("rejects an untrusted CLI start without creating run state", async () => {
-    const { projectRoot } = await initializeTrustedProject();
-    const untrustedHome = await mkdtemp(
-      join(tmpdir(), "ai-qa-untrusted-home-"),
-    );
+  it("does not use AI_QA_HOME as an authorization gate", async () => {
+    const { projectRoot } = await initializeProject();
+    const alternateHome = await mkdtemp(join(tmpdir(), "ai-qa-alternate-home-"));
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: untrustedHome },
+      env: { AI_QA_HOME: alternateHome },
       readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
     });
 
@@ -227,11 +210,11 @@ describe("trusted exploratory start boundary", () => {
         ],
         captured.context,
       ),
-    ).toBe(1);
-    expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
-      error: { code: "trust.not_trusted" },
+    ).toBe(0);
+    expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toHaveLength(1);
+    await expect(access(join(alternateHome, "trust.json"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
-    expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toEqual([]);
   });
 
   it.each([
@@ -241,7 +224,7 @@ describe("trusted exploratory start boundary", () => {
   ])(
     "rejects unsupported %s without creating run state",
     async (option, value) => {
-      const { projectRoot, aiQaHome } = await initializeTrustedProject();
+      const { projectRoot } = await initializeProject();
       const args = {
         kind: "exploratory",
         platform: "web",
@@ -250,7 +233,6 @@ describe("trusted exploratory start boundary", () => {
       };
       const captured = createCapturedCli({
         cwd: projectRoot,
-        env: { AI_QA_HOME: aiQaHome },
         readStdin: () => Promise.resolve(JSON.stringify(readyPayload)),
       });
 

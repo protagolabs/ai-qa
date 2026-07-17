@@ -28,7 +28,7 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
-import { resolveTrustedProject } from "../project-root/resolve-trusted-project.js";
+import { resolveProject } from "../project-root/resolve-project.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
 
 export const planActionInputSchema = z
@@ -86,7 +86,6 @@ export class RunProtocolService {
 
   constructor(
     private readonly projectRoot: string,
-    private readonly aiQaHome: string,
     runId: string,
     private readonly now: () => Date,
   ) {
@@ -373,12 +372,11 @@ export class RunProtocolService {
     ) => AppendRunEvent,
     validateTimestamp?: (workOrder: WorkOrder, timestamp: string) => void,
   ): Promise<RunEvent> {
-    const trusted = await resolveTrustedProject({
+    const project = await resolveProject({
       cwd: this.projectRoot,
       explicitProject: this.projectRoot,
-      aiQaHome: this.aiQaHome,
     });
-    const repository = new RunRepository(trusted.projectRoot, this.now);
+    const repository = new RunRepository(project.projectRoot, this.now);
     return repository.journal(this.runId).appendPrepared(async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(this.runId);
       validateProtocolEvents(events, workOrder, this.runId);

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir } from "node:fs/promises";
+import { access, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
@@ -70,7 +69,6 @@ async function installCurrentGlobalSkill(agentsHome: string): Promise<void> {
 describe("web doctor CLI", () => {
   it("reports an uninitialized explicit non-Git target without trust or Web checks", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-empty-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
     await installCurrentGlobalSkill(agentsHome);
     const fetchImpl = vi.fn<typeof fetch>();
@@ -78,7 +76,6 @@ describe("web doctor CLI", () => {
     const captured = createCapturedCli({
       cwd: tmpdir(),
       env: {
-        AI_QA_HOME: aiQaHome,
         AI_QA_AGENTS_HOME: agentsHome,
       },
       fetchImpl,
@@ -141,13 +138,7 @@ describe("web doctor CLI", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
     const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
-    await initializeTestProject({ projectRoot, aiQaHome, config });
+    await initializeTestProject({ projectRoot, config });
 
     await installCurrentGlobalSkill(agentsHome);
 
@@ -211,21 +202,16 @@ describe("web doctor CLI", () => {
     expect(JSON.stringify(output)).not.toContain(agentsHome);
     expect(await listFiles(projectRoot)).toEqual(beforeProject);
     expect(await listFiles(agentsHome)).toEqual(beforeAgents);
+    await expect(access(join(aiQaHome, "trust.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("reports the host-supplied optional entry-page observation", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-doctor-project-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
     const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
-    await confirmProjectTrust({
-      projectRoot,
-      aiQaHome,
-      confirmed: true,
-      now: new Date("2026-07-13T00:00:00.000Z"),
-    });
     await initializeTestProject({
       projectRoot,
-      aiQaHome,
       config: {
         ...config,
         targets: { web: { entryUrl: config.targets.web.entryUrl } },
@@ -234,7 +220,7 @@ describe("web doctor CLI", () => {
     await installCurrentGlobalSkill(agentsHome);
     const captured = createCapturedCli({
       cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome, AI_QA_AGENTS_HOME: agentsHome },
+      env: { AI_QA_AGENTS_HOME: agentsHome },
       fetchImpl: vi.fn<typeof fetch>(),
       readStdin: () =>
         Promise.resolve(
@@ -284,17 +270,9 @@ describe("web doctor CLI", () => {
       const projectRoot = await mkdtemp(
         join(tmpdir(), "ai-qa-doctor-project-"),
       );
-      const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-home-"));
       const agentsHome = await mkdtemp(join(tmpdir(), "ai-qa-doctor-agents-"));
-      await confirmProjectTrust({
-        projectRoot,
-        aiQaHome,
-        confirmed: true,
-        now: new Date("2026-07-13T00:00:00.000Z"),
-      });
       await initializeTestProject({
         projectRoot,
-        aiQaHome,
         config: {
           ...config,
           recordingPolicy: { mode: recordingMode },
@@ -305,7 +283,6 @@ describe("web doctor CLI", () => {
       const captured = createCapturedCli({
         cwd: projectRoot,
         env: {
-          AI_QA_HOME: aiQaHome,
           AI_QA_AGENTS_HOME: agentsHome,
         },
         fetchImpl: vi

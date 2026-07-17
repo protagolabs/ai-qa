@@ -20,7 +20,6 @@ import {
 } from "../../src/services/run-protocol/run-lifecycle.js";
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
-import { confirmProjectTrust } from "../../src/services/trust/confirm-project-trust.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -57,13 +56,6 @@ async function createRun(
   } = {},
 ) {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-finalize-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-finalize-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
@@ -91,24 +83,16 @@ async function createRun(
   );
   return {
     projectRoot,
-    aiQaHome,
     repository,
-    protocol: new RunProtocolService(projectRoot, aiQaHome, "run-1", now),
-    verdicts: new VerdictService(projectRoot, aiQaHome, "run-1", now),
+    protocol: new RunProtocolService(projectRoot, "run-1", now),
+    verdicts: new VerdictService(projectRoot, "run-1", now),
   };
 }
 
 async function createPreflightProject() {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-preflight-project-"));
-  const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-preflight-home-"));
-  await confirmProjectTrust({
-    projectRoot,
-    aiQaHome,
-    confirmed: true,
-    now: startedAt,
-  });
-  await initializeTestProject({ projectRoot, aiQaHome, config });
-  return { projectRoot, aiQaHome };
+  await initializeTestProject({ projectRoot, config });
+  return { projectRoot };
 }
 
 async function recordSupportedCriterion(
@@ -149,7 +133,6 @@ async function recordSupportedCriterion(
   await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
   const evidence = await registerEvidence({
     projectRoot: fixture.projectRoot,
-    aiQaHome: fixture.aiQaHome,
     runId: "run-1",
     payload: {
       sourcePath,
@@ -274,7 +257,6 @@ async function recordStalePass(fixture: Awaited<ReturnType<typeof createRun>>) {
   await writeFile(sourcePath, Buffer.from([4, 3, 2, 1]));
   const staleEvidence = await registerEvidence({
     projectRoot: fixture.projectRoot,
-    aiQaHome: fixture.aiQaHome,
     runId: "run-1",
     payload: {
       sourcePath,
@@ -400,7 +382,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -427,7 +408,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -472,7 +452,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -499,7 +478,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -540,7 +518,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -554,7 +531,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -626,7 +602,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -669,7 +644,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -697,7 +671,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -720,7 +693,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -746,7 +718,6 @@ describe("finalizeRun", () => {
     });
     const result = await finalizeRun({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: "run-1",
       now,
     });
@@ -759,7 +730,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -786,7 +756,6 @@ describe("finalizeRun", () => {
     });
     await finalizeRun({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: "run-1",
       now,
     });
@@ -798,7 +767,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -822,7 +790,6 @@ describe("finalizeRun", () => {
     });
     await finalizeRun({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: "run-1",
       now,
     });
@@ -839,7 +806,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -865,7 +831,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now: () => new Date("2026-07-13T00:30:00.001Z"),
       }),
@@ -896,7 +861,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -975,7 +939,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1007,7 +970,6 @@ describe("finalizeRun", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1073,7 +1035,6 @@ describe("run lifecycle", () => {
     await expect(
       registerEvidence({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         payload: {
           sourcePath: interruptedSource,
@@ -1092,7 +1053,6 @@ describe("run lifecycle", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1100,7 +1060,6 @@ describe("run lifecycle", () => {
     await expect(
       cancelRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         reason: "Cancel the durably interrupted run",
         now,
@@ -1146,7 +1105,6 @@ describe("run lifecycle", () => {
     await expect(
       readRunState({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1164,7 +1122,6 @@ describe("run lifecycle", () => {
     await expect(
       resumeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1187,7 +1144,6 @@ describe("run lifecycle", () => {
     await expect(
       resumeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1207,7 +1163,6 @@ describe("run lifecycle", () => {
     await expect(
       resumeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1241,7 +1196,6 @@ describe("run lifecycle", () => {
     await expect(
       resumeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1299,7 +1253,6 @@ describe("run lifecycle", () => {
     await expect(
       cancelRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         reason: "User stopped exploratory QA",
         now,
@@ -1312,7 +1265,6 @@ describe("run lifecycle", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1320,7 +1272,6 @@ describe("run lifecycle", () => {
     await expect(
       resumeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1368,7 +1319,6 @@ describe("run lifecycle", () => {
     await expect(
       finalizeRun({
         projectRoot: fixture.projectRoot,
-        aiQaHome: fixture.aiQaHome,
         runId: "run-1",
         now,
       }),
@@ -1538,7 +1488,6 @@ describe("verdict and lifecycle CLI", () => {
     const fixture = await createPreflightProject();
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now,
     });
 
@@ -1579,7 +1528,6 @@ describe("verdict and lifecycle CLI", () => {
 
     const state = await readRunState({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: "run-1",
       now,
     });
@@ -1596,7 +1544,6 @@ describe("verdict and lifecycle CLI", () => {
 
     const state = await readRunState({
       projectRoot: fixture.projectRoot,
-      aiQaHome: fixture.aiQaHome,
       runId: "run-1",
       now,
     });
@@ -1625,7 +1572,6 @@ describe("verdict and lifecycle CLI", () => {
     });
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now,
       readStdin: () => Promise.resolve(stdin),
     });
@@ -1722,7 +1668,6 @@ describe("verdict and lifecycle CLI", () => {
     const fixture = await createRun();
     const captured = createCapturedCli({
       cwd: fixture.projectRoot,
-      env: { AI_QA_HOME: fixture.aiQaHome },
       now,
     });
 

@@ -72,7 +72,6 @@ export function projectRecordingReceipt(input: {
 
 export async function initializeTestProject(input: {
   projectRoot: string;
-  aiQaHome: string;
   config?: ProjectConfigV2;
   projectSkill?: string;
 }): Promise<void> {

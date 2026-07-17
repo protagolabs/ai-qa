@@ -540,7 +540,7 @@ describe("syncGlobalSkill", () => {
   });
 });
 
-describe("bundled global skill 1.3", () => {
+describe("bundled global skill 1.4", () => {
   it("teaches the host-managed Project Skill procedure", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
@@ -559,14 +559,18 @@ describe("bundled global skill 1.3", () => {
     );
     const guidance = `${skill}\n${reference}`;
 
-    expect.soft(skill).toContain("  aiQaSkillVersion: 1.3.0");
+    expect.soft(skill).toContain("  aiQaSkillVersion: 1.4.0");
     expect.soft(skill).toContain("  aiQaProtocolRange: ^1.2.0");
     expect.soft(skill).toContain("  aiQaRecordingReceipt: true");
     expect.soft(skill).toContain("  aiQaManagedChecksum: bundled");
     for (const fact of [
       "Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.",
       "Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.",
-      "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools.",
+      "Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default.",
+      "Use `local-only` only after the user explicitly selects it.",
+      "Use `project-skill` only after the user explicitly selects it and confirms the exact existing result-management procedure.",
+      "Tool availability alone is not a result-management procedure.",
+      "Do not validate a final config, request write confirmation, write project files, or resume QA until the recording decision is complete.",
       "The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.",
       "Run `ai-qa config validate --stdin-json` as a read-only config check.",
       "Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.",
@@ -576,7 +580,7 @@ describe("bundled global skill 1.3", () => {
       "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
       "Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.",
       "Permissions, authentication, file writes, and external tools remain host-owned.",
-      "Target resolution, repository trust, permissions, and project reads are Codex/host prerequisites, not AI QA configuration settings.",
+      "Target resolution and project access are Codex/host prerequisites; AI QA does not grant repository access.",
       "Treat `requiredAction.kind: configure-project` as a mandatory first-use gate.",
       "Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.",
       "Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.",
@@ -628,67 +632,12 @@ Immediately before the approval question, include all four lines:
     expect.soft(guidance).not.toContain("--confirm-checksum");
     expect.soft(guidance).not.toContain("ai-qa skill generate --project");
     expect.soft(guidance).not.toContain("ai-qa skill sync --project");
+    expect.soft(guidance).not.toContain("ai-qa trust");
+    expect.soft(guidance).not.toContain("repository trust");
+    expect.soft(guidance).not.toContain(
+      "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`",
+    );
     expect.soft(guidance).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
-  });
-
-  it("ships the exact trust confirmation stdin accepted by the CLI", async () => {
-    const skill = await readFile(
-      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
-      "utf8",
-    );
-    expect(skill).toContain(
-      'pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted.',
-    );
-
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
-    );
-    const match =
-      /<!-- canonical-trust-confirm:start -->\s*```text\r?\n([^\r\n]+)\r?\n```\s*<!-- canonical-trust-confirm:end -->/.exec(
-        reference,
-      );
-    expect(match?.[1], "canonical trust confirmation stdin").toBeDefined();
-    const stdin = match?.[1];
-    if (stdin === undefined) {
-      throw new Error("Canonical trust confirmation stdin is missing");
-    }
-    expect(stdin).toBe('{"confirmed":true}');
-
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-project-"));
-    const aiQaHome = await mkdtemp(join(tmpdir(), "ai-qa-home-"));
-    for (const invalid of ['{"trusted":true}', "{}"] as const) {
-      const captured = createCapturedCli({
-        cwd: projectRoot,
-        env: { AI_QA_HOME: aiQaHome },
-        readStdin: () => Promise.resolve(invalid),
-      });
-      await expect(
-        runCli(
-          ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
-          captured.context,
-        ),
-      ).resolves.toBe(1);
-    }
-
-    const captured = createCapturedCli({
-      cwd: projectRoot,
-      env: { AI_QA_HOME: aiQaHome },
-      readStdin: () => Promise.resolve(stdin),
-    });
-    await expect(
-      runCli(
-        ["trust", "confirm", "--project", projectRoot, "--stdin-json"],
-        captured.context,
-      ),
-    ).resolves.toBe(0);
   });
 
   it("labels the local Project Skill body example as arbitrary and unmanaged", async () => {
@@ -763,7 +712,7 @@ describe("global skill CLI", () => {
     ).toBe(0);
     expect(
       await readFile(join(agentsHome, "skills", "ai-qa", "SKILL.md"), "utf8"),
-    ).toContain("aiQaSkillVersion: 1.3.0");
+    ).toContain("aiQaSkillVersion: 1.4.0");
     expect(await runCli(["skill", "check", "--global"], captured.context)).toBe(
       0,
     );

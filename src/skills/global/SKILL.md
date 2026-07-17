@@ -2,7 +2,7 @@
 name: ai-qa
 description: Use when configuring AI QA, manually testing Web behavior, capturing QA evidence, promoting an exploratory run, or replaying a regression case with the ai-qa CLI and platform control tools.
 metadata:
-  aiQaSkillVersion: 1.3.0
+  aiQaSkillVersion: 1.4.0
   aiQaProtocolRange: ^1.2.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
@@ -12,20 +12,20 @@ metadata:
 
 # AI QA Workflow
 
-## Codex-managed target prerequisites
+## Host-managed target prerequisites
 
 1. Resolve the exact target project. Never substitute an ancestor for a named nested project.
-2. Confirm repository trust with the user, then pipe exactly `{"confirmed":true}` to `ai-qa trust confirm --project <path> --stdin-json`; no other stdin fields are accepted. Read project files only after trust is recorded.
+2. Use only project access already granted by Codex and the host. AI QA does not grant repository access or maintain repository authorization state.
 
-Target resolution, repository trust, permissions, and project reads are Codex/host prerequisites, not AI QA configuration settings.
+Target resolution and project access are Codex/host prerequisites; AI QA does not grant repository access.
 
 ## Initialize or update a project
 
 1. Run the applicable installation doctor and host-visible checks. Treat `requiredAction.kind: configure-project` as a mandatory first-use gate. Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.
 2. Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.
 3. Inspect project-owned instructions and metadata. Derive only unambiguous values, summarize derived values, and ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.
-4. Use this precedence: explicit user decisions, unambiguous project-owned instructions, then the safe product defaults in `references/web-work-protocol.md`. Never choose between conflicting project sources.
-5. Inspect how the project already manages QA results or defects. When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`; do not choose a provider from available tools. Otherwise use `project-skill` and preserve the existing procedure, including match and rerun rules.
+4. Use this precedence for fields other than recording mode: explicit user decisions, unambiguous project-owned instructions, then the safe product defaults in `references/web-work-protocol.md`. Never choose between conflicting project sources. `recordingPolicy.mode` is the exception and must always be chosen explicitly by the user.
+5. Inspect how the project already manages QA results or defects and summarize whether an existing procedure was found. Inspection provides context and never selects the mode. Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default. Use `local-only` only after the user explicitly selects it. Use `project-skill` only after the user explicitly selects it and confirms the exact existing result-management procedure. Tool availability alone is not a result-management procedure. Do not validate a final config, request write confirmation, write project files, or resume QA until the recording decision is complete.
 6. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
 7. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
 8. Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.
