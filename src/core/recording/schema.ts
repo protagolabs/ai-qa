@@ -52,7 +52,7 @@ type StatusReferences = {
   references: string[];
 };
 
-function validateStoredStatusReferences(
+function validateStatusReferences(
   value: StatusReferences,
   context: z.core.$RefinementCtx,
 ): void {
@@ -70,13 +70,6 @@ function validateStoredStatusReferences(
       message: "Not-recorded receipts require an empty reference list",
     });
   }
-}
-
-function validatePublicStatusReferences(
-  value: StatusReferences,
-  context: z.core.$RefinementCtx,
-): void {
-  validateStoredStatusReferences(value, context);
   if (value.status === "unknown" && value.references.length !== 0) {
     context.addIssue({
       code: "custom",
@@ -89,7 +82,7 @@ function validatePublicStatusReferences(
 export const recordingReceiptInputSchema = z
   .object(receiptPayloadFields)
   .strict()
-  .superRefine(validatePublicStatusReferences);
+  .superRefine(validateStatusReferences);
 
 export type RecordingReceiptInput = z.infer<typeof recordingReceiptInputSchema>;
 
@@ -103,7 +96,7 @@ export const recordingEventSchema = z
     recordedAt: z.string().datetime(),
   })
   .strict()
-  .superRefine(validateStoredStatusReferences);
+  .superRefine(validateStatusReferences);
 
 export type RecordingEvent = z.infer<typeof recordingEventSchema>;
 
@@ -117,7 +110,8 @@ export const recordingArtifactSchema = z
         status: z.enum(["recorded", "not_recorded", "unknown"]),
         references: z.array(recordingReferenceSchema).max(20),
       })
-      .strict(),
+      .strict()
+      .superRefine(validateStatusReferences),
     history: z.array(
       z
         .object({
@@ -127,7 +121,8 @@ export const recordingArtifactSchema = z
           status: z.enum(["recorded", "not_recorded", "unknown"]),
           references: z.array(recordingReferenceSchema).max(20),
         })
-        .strict(),
+        .strict()
+        .superRefine(validateStatusReferences),
     ),
     materializedAt: z.string().datetime(),
   })

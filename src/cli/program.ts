@@ -32,6 +32,9 @@ export function createProgram(context: CliContext): Command {
       writeErr: (value) => context.writeStderr(value),
       outputError: () => undefined,
     });
+  const requestExitCode = (exitCode: number) => {
+    requestedExitCodes.set(program, exitCode);
+  };
   registerActionCommands(program, context);
   registerAssertionCommands(program, context);
   registerBlockerCommands(program, context);
@@ -42,12 +45,10 @@ export function createProgram(context: CliContext): Command {
   registerEvidenceCommands(program, context);
   registerObservationCommands(program, context);
   registerRecoveryCommands(program, context);
-  registerReportCommands(program, context);
+  registerReportCommands(program, context, requestExitCode);
   registerRunCommands(program, context);
   registerRunGroupCommands(program, context);
-  registerSkillCommands(program, context, (exitCode) => {
-    requestedExitCodes.set(program, exitCode);
-  });
+  registerSkillCommands(program, context, requestExitCode);
   registerVerdictCommands(program, context);
   return program;
 }

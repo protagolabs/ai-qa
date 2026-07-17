@@ -1,10 +1,11 @@
 import type { Command } from "commander";
 import { AiQaError } from "../../core/errors.js";
 import { recordingReceiptInputSchema } from "../../core/recording/schema.js";
+import type { RunGroupReport } from "../../core/reports/group-schema.js";
 import {
-  exportProjectLocalGroupReport,
   generateRunGroupReport,
   type GeneratedRunGroupReport,
+  withVerifiedGeneratedRunGroupReport,
 } from "../../services/report-generation/generate-group-report.js";
 import {
   exportProjectLocalRunReport,
@@ -72,9 +73,23 @@ function pathsOnly(report: GeneratedRunReport | GeneratedRunGroupReport): {
   };
 }
 
+function requestCiGroupFailure(
+  report: RunGroupReport,
+  requestExitCode: (exitCode: number) => void,
+): void {
+  if (
+    report.group.execution === "ci" &&
+    (report.group.status !== "completed" ||
+      report.matrix.some((cell) => cell.status !== "pass"))
+  ) {
+    requestExitCode(1);
+  }
+}
+
 export function registerReportCommands(
   program: Command,
   context: CliContext,
+  requestExitCode: (exitCode: number) => void,
 ): void {
   const reportCommand = program
     .command("report")
@@ -146,6 +161,7 @@ export function registerReportCommands(
       await groupReportInput(groupGenerateCommand, context, runGroupId),
     );
     writeJson(context, pathsOnly(generated));
+    requestCiGroupFailure(generated.report, requestExitCode);
   });
 
   const groupExportCommand = reportCommand
@@ -161,11 +177,13 @@ export function registerReportCommands(
           { adapter: options.adapter },
         );
       }
-      writeJson(
-        context,
-        await exportProjectLocalGroupReport(
-          await groupReportInput(groupExportCommand, context, runGroupId),
-        ),
+      await withVerifiedGeneratedRunGroupReport(
+        await groupReportInput(groupExportCommand, context, runGroupId),
+        (verified) => {
+          writeJson(context, verified.paths);
+          requestCiGroupFailure(verified.report, requestExitCode);
+          return Promise.resolve();
+        },
       );
     },
   );

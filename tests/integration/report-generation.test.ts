@@ -278,7 +278,7 @@ async function completedRegressionRun(
   const project = await initializedProject(config({ platform }));
   const cases = new CaseRepository(project.projectRoot, regressionEventNow);
   const revision = await cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: "platform-report",
     title: "Verify platform state",
     promotion: {
@@ -1136,7 +1136,7 @@ describe("generateRunReport", () => {
     const project = await initializedProject(config());
     const cases = new CaseRepository(project.projectRoot, eventNow);
     const draft = await cases.createDraft({
-      schemaVersion: 1,
+      schemaVersion: 2,
       caseId: "login-success",
       title: "Verify successful login",
       promotion: {

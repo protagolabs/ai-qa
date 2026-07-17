@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CASE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { CaseRepository } from "../../core/cases/repository.js";
 import {
@@ -153,7 +154,7 @@ export async function draftCaseFromRun(input: {
         source,
       );
       return {
-        schemaVersion: 1,
+        schemaVersion: CASE_SCHEMA_VERSION,
         caseId: supplied.caseId,
         title: latest?.title ?? supplied.title,
         promotion: {

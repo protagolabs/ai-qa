@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CASE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { controllerMatchesPlatform } from "../platforms/registry.js";
@@ -91,7 +92,7 @@ const casePromotionSourcesSchema = z
 
 export const caseRevisionSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(CASE_SCHEMA_VERSION),
     caseId: caseIdSchema,
     revision: z.number().int().positive(),
     contentHash: z.string(),

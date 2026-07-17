@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   calculateCaseContentHash,
   calculatePlatformVariantHash,
+  caseRevisionSchema,
   type CaseRevision,
 } from "../../src/core/cases/schema.js";
+import { CASE_SCHEMA_VERSION } from "../../src/schemas/versions.js";
 
 describe("calculateCaseContentHash", () => {
   it("ignores the stored contentHash field and key order", () => {
     const left = {
-      schemaVersion: 1 as const,
+      schemaVersion: CASE_SCHEMA_VERSION,
       caseId: "login-success",
       revision: 1,
       contentHash: "sha256:old",
@@ -47,6 +49,10 @@ describe("calculateCaseContentHash", () => {
     };
     const right = { ...left, contentHash: "sha256:different" };
 
+    expect(caseRevisionSchema.safeParse(left).success).toBe(true);
+    expect(
+      caseRevisionSchema.safeParse({ ...left, schemaVersion: 1 }).success,
+    ).toBe(false);
     expect(calculateCaseContentHash(left)).toBe(
       calculateCaseContentHash(right),
     );
@@ -54,7 +60,7 @@ describe("calculateCaseContentHash", () => {
 
   it("hashes only the selected immutable platform variant", () => {
     const revision = {
-      schemaVersion: 1,
+      schemaVersion: CASE_SCHEMA_VERSION,
       caseId: "login-success",
       revision: 2,
       contentHash: "sha256:case",
@@ -125,7 +131,7 @@ describe("calculateCaseContentHash", () => {
 
   it("rejects a hash request for a missing platform variant", () => {
     const revision = {
-      schemaVersion: 1,
+      schemaVersion: CASE_SCHEMA_VERSION,
       caseId: "login-success",
       revision: 1,
       contentHash: "sha256:case",

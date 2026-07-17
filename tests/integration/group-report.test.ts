@@ -80,7 +80,7 @@ async function groupFixture(
   });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: "login",
     title: "Login",
     promotion: {
@@ -323,7 +323,7 @@ async function allExclusionProjectSkillFixture() {
   });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: "web-only",
     title: "Web only",
     promotion: {

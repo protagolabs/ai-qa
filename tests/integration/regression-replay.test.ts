@@ -81,7 +81,7 @@ async function createActiveCase(
   });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: "login-success",
     title: "Successful login",
     promotion: {

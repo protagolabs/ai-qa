@@ -75,7 +75,7 @@ function twoEvents(): [RecordingEvent, RecordingEvent] {
       recordedAt: SECOND_RECORDED_AT,
       idempotencyKey: "receipt-2",
       status: "unknown",
-      references: ["opaque-reference-2"],
+      references: [],
     }),
   ];
 }
@@ -365,9 +365,9 @@ describe("recording repository", () => {
     expect((await stat(journalPath)).ino).toBe(journalStatBefore.ino);
   });
 
-  it("reads and recovers a stored unknown event with references", async () => {
+  it("rejects a stored unknown event with references as an integrity failure", async () => {
     const directory = await createDirectory();
-    const event: RecordingEvent = {
+    const event = {
       schemaVersion: 2,
       eventId: "recording-00000000-0000-0000-0000-000000000003",
       subject: RUN_SUBJECT,
@@ -375,8 +375,11 @@ describe("recording repository", () => {
       idempotencyKey: "legacy-unknown-receipt",
       status: "unknown",
       references: ["legacy-opaque-reference"],
-    };
-    await writeJournal(directory, [event]);
+    } as const;
+    await writeFile(
+      join(directory, "recording.jsonl"),
+      serializeJsonLines([event]),
+    );
     const journalPath = join(directory, "recording.jsonl");
     const journalBefore = await readFile(journalPath, "utf8");
     const repository = new RecordingRepository(
@@ -384,34 +387,13 @@ describe("recording repository", () => {
       RUN_SUBJECT,
       () => new Date(SECOND_RECORDED_AT),
     );
-    const expectedArtifact: RecordingArtifact = {
-      schemaVersion: 2,
-      subject: { kind: "run", id: "run-1" },
-      current: {
-        eventId: event.eventId,
-        status: event.status,
-        references: event.references,
-      },
-      history: [
-        {
-          eventId: event.eventId,
-          recordedAt: event.recordedAt,
-          idempotencyKey: event.idempotencyKey,
-          status: event.status,
-          references: event.references,
-        },
-      ],
-      materializedAt: event.recordedAt,
-    };
 
-    await expect(repository.readOrRecoverUnlocked()).resolves.toEqual({
-      state: "present",
-      events: [event],
-      artifact: expectedArtifact,
+    await expect(repository.readOrRecoverUnlocked()).rejects.toMatchObject({
+      code: "recording.integrity_error",
     });
-    expect(
-      JSON.parse(await readFile(join(directory, "recording.json"), "utf8")),
-    ).toEqual(expectedArtifact);
+    await expect(
+      readFile(join(directory, "recording.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(journalPath, "utf8")).toBe(journalBefore);
   });
 

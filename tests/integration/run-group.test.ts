@@ -106,7 +106,7 @@ async function createActiveCase(input: {
     sources[platform] = { sourceRunId: `run-source-${platform}` };
   }
   const revision = await input.cases.createDraft({
-    schemaVersion: 1,
+    schemaVersion: 2,
     caseId: input.caseId,
     title: input.title ?? input.caseId,
     promotion: { sources, validationIssues: [] },

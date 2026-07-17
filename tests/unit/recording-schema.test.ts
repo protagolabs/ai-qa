@@ -216,7 +216,7 @@ describe("recording repository schemas", () => {
         status: "unknown",
         references: ["legacy-reference"],
       }).success,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("rejects unknown receipt and event object keys", () => {
@@ -260,6 +260,36 @@ describe("recording repository schemas", () => {
       }).success,
     ).toBe(false);
   });
+
+  it.each([
+    ["recorded", []],
+    ["not_recorded", ["unexpected"]],
+    ["unknown", ["unexpected"]],
+  ] as const)(
+    "applies the %s reference rule to artifact current and history",
+    (status, references) => {
+      const historyEntry = {
+        eventId: validEvent.eventId,
+        recordedAt: validEvent.recordedAt,
+        idempotencyKey: validEvent.idempotencyKey,
+        status,
+        references,
+      };
+      const artifact = {
+        schemaVersion: 2,
+        subject: { kind: "run", id: "run-1" },
+        current: {
+          eventId: validEvent.eventId,
+          status,
+          references,
+        },
+        history: [historyEntry],
+        materializedAt: validEvent.recordedAt,
+      };
+
+      expect(recordingArtifactSchema.safeParse(artifact).success).toBe(false);
+    },
+  );
 
   it("rejects unknown artifact keys at the outer, current, and history levels", () => {
     const historyEntry = {

@@ -1007,7 +1007,7 @@ describe("case promotion", () => {
     );
     await mkdir(revisions, { recursive: true });
     const outsideRevision = join(outside, "1.yaml");
-    await writeFile(outsideRevision, "schemaVersion: 1\n");
+    await writeFile(outsideRevision, "schemaVersion: 2\n");
     await symlink(outsideRevision, join(revisions, "1.yaml"));
 
     await expect(
@@ -1026,7 +1026,7 @@ describe("case promotion", () => {
 
     await expect(
       new CaseRepository(projectRoot, runNow).createDraft({
-        schemaVersion: 1,
+        schemaVersion: 2,
         caseId: "login-success",
         title: "Login succeeds",
         promotion: {
@@ -1073,7 +1073,7 @@ describe("case promotion", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-concurrent-"));
     const repository = new CaseRepository(projectRoot, runNow);
     const input = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       caseId: "concurrent-case",
       title: "Concurrent case",
       promotion: {
@@ -1130,7 +1130,7 @@ describe("case promotion", () => {
       .mockRejectedValueOnce(new Error("simulated index sync failure"));
     const repository = new CaseRepository(projectRoot, runNow);
     const input = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       caseId: "bootstrap-cleanup",
       title: "Bootstrap cleanup",
       promotion: {
@@ -1201,7 +1201,7 @@ describe("case promotion", () => {
 
     await expect(
       repository.createDraft({
-        schemaVersion: 1,
+        schemaVersion: 2,
         caseId: "collision-case",
         title: "Collision case",
         promotion: {
@@ -1755,7 +1755,7 @@ describe("case promotion", () => {
       extraInteraction: true,
     });
     const revision = await new CaseRepository(projectRoot, runNow).createDraft({
-      schemaVersion: 1,
+      schemaVersion: 2,
       caseId: "forged-accounting",
       title: "Forged accounting",
       promotion: {
