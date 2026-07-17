@@ -27,6 +27,7 @@ import { createCapturedCli } from "../helpers/cli-context.js";
 import { installReleasedLegacyGlobalSkill } from "../helpers/global-skill-fixture.js";
 import {
   initializeTestProject,
+  projectConfig,
   projectSkillSource,
 } from "../helpers/project-fixture.js";
 
@@ -544,6 +545,32 @@ describe("exploratory run start", () => {
     });
 
     expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
+  });
+
+  it("returns a stable boundary error for non-Web regression variants before Task 4", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    await initializeTestProject({
+      projectRoot,
+      config: projectConfig(["ios-simulator"]),
+    });
+
+    await expect(
+      startRegressionRun({
+        projectRoot,
+        caseId: "login-success",
+        execution: "local",
+        readiness: {
+          platform: "ios-simulator",
+          status: "ready",
+          checks: [],
+        },
+        now,
+      }),
+    ).rejects.toMatchObject({
+      code: "case.platform_variant_unavailable",
+      details: { platform: "ios-simulator", caseId: "login-success" },
+    });
   });
 
   it("freezes the Project Skill bytes in not-ready preflight work orders", async () => {

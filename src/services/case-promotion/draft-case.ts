@@ -235,6 +235,7 @@ async function readCompletedExploratoryRun(
       runId,
       events,
       now,
+      workOrder.platform,
     );
     validateProtocolEvents(events, workOrder, runId, {
       evidenceParityAuthoritative: !evidenceResult.valid,
@@ -290,12 +291,14 @@ async function readVerifiedEvidence(
   runId: string,
   events: readonly RunEvent[],
   now: () => Date,
+  platform: WorkOrder["platform"],
 ): Promise<{ evidence: EvidenceRecord[]; valid: boolean }> {
   try {
     const evidence = await new EvidenceRepository(
       projectRoot,
       runId,
       now,
+      platform,
     ).verifyAll();
     validateEvidenceParity(events, evidence, runId);
     return { evidence, valid: true };

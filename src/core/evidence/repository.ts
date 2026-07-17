@@ -121,7 +121,7 @@ export class EvidenceRepository {
     projectRoot: string,
     runId: string,
     now: () => Date,
-    platform: Platform = "web",
+    platform: Platform,
   ) {
     this.projectRoot = resolve(projectRoot);
     this.runId = runIdSchema.parse(runId);

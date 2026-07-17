@@ -1440,6 +1440,47 @@ describe("preflight result runs", () => {
     ]);
     expect(events.at(-1)?.payload).toMatchObject({ phase: "completed" });
   });
+
+  it("classifies a failed environment check as blocked:environment", async () => {
+    const fixture = await createPreflightProject();
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "web.entry_page",
+          status: "fail" as const,
+          message: "Entry page is unreachable",
+          category: "environment" as const,
+        },
+      ],
+    };
+
+    await expect(
+      createPreflightResultRun({
+        ...fixture,
+        kind: "exploratory",
+        exploratoryPayload: {
+          goal: "Verify successful login",
+          acceptanceCriteria: [
+            {
+              id: "authenticated-home-visible",
+              description: "Authenticated home is visible",
+              requiredEvidence: ["post-action-screenshot"],
+            },
+          ],
+          readiness,
+        },
+        execution: "local",
+        readiness,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "completed",
+      verdict: "blocked",
+      blockerSubtype: "environment",
+    });
+  });
 });
 
 describe("verdict and lifecycle CLI", () => {

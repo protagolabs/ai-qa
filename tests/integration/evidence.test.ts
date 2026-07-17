@@ -27,6 +27,7 @@ import {
 } from "../../src/core/runs/schema.js";
 import { WEB_CONTROLLER } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
+import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
@@ -140,6 +141,89 @@ describe("actionPayloadSchema", () => {
 });
 
 describe("EvidenceRepository", () => {
+  it("registers and verifies iOS evidence with the immutable platform controller", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-ios-evidence-success-"),
+    );
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, "ios-screen");
+    const runRepository = new RunRepository(projectRoot, fixedNow);
+    await runRepository.create(
+      createExploratoryWorkOrder({
+        platform: "ios-simulator",
+        projectId: "sample-project",
+        runId: "run-ios",
+        input: exploratoryRunInputSchema.parse({
+          goal: "Verify iOS home",
+          acceptanceCriteria: [
+            {
+              id: "home-visible",
+              description: "Home is visible",
+              requiredEvidence: ["screenshot"],
+            },
+          ],
+          readiness: {
+            platform: "ios-simulator",
+            status: "ready",
+            checks: [],
+          },
+        }),
+        evidencePolicy: {
+          screenshots: "required",
+          defaultSensitivity: "internal",
+        },
+        startedAt: fixedNow(),
+      }),
+    );
+    const protocol = new RunProtocolService(
+      projectRoot,
+      "run-ios",
+      fixedNow,
+    );
+    const capture = await protocol.planAction({
+      idempotencyKey: "capture-ios-success",
+      kind: "evidence-capture",
+      intent: "Capture the iOS home screen",
+      tool: "pepper",
+      target: { description: "Home screen" },
+    });
+    await protocol.completeAction({
+      actionId: capture.id,
+      phase: "completed",
+      toolResult: { summary: "Screenshot captured" },
+    });
+
+    const record = await registerEvidence({
+      projectRoot,
+      runId: "run-ios",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "pepper",
+        sensitivity: "internal",
+        evidenceKinds: ["screenshot"],
+        captureActionId: capture.id,
+        idempotencyKey: "ios-evidence-success",
+      },
+      criterionIds: ["home-visible"],
+      observationIds: [],
+      now: fixedNow,
+    });
+
+    expect(record).toMatchObject({
+      platform: "ios-simulator",
+      sourceTool: "pepper",
+    });
+    await expect(
+      new EvidenceRepository(
+        projectRoot,
+        "run-ios",
+        fixedNow,
+        "ios-simulator",
+      ).verifyAll(),
+    ).resolves.toEqual([record]);
+  });
+
   it("rejects an unconfigured evidence source tool", () => {
     expect(
       registerRawEvidenceInputSchema.safeParse({
@@ -305,7 +389,12 @@ describe("EvidenceRepository", () => {
     const secondSource = join(projectRoot, "second.png");
     await writeFile(firstSource, "first");
     await writeFile(secondSource, "second");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     await repository.registerRaw({
       sourcePath: firstSource,
       mediaType: "image/png",
@@ -331,7 +420,12 @@ describe("EvidenceRepository", () => {
       "run-1",
       "index.jsonl",
     );
-    const reopened = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const reopened = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
 
     expect(await readFile(path, "utf8")).toMatch(/[^\n]\n$/u);
     await expect(reopened.readAll()).resolves.toHaveLength(2);
@@ -347,6 +441,7 @@ describe("EvidenceRepository", () => {
       projectRoot,
       "run-lock",
       fixedNow,
+      "web",
     );
     await repository.registerRaw({
       sourcePath: firstSource,
@@ -390,6 +485,7 @@ describe("EvidenceRepository", () => {
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
+      "web",
     );
 
     const record = await repository.registerRaw({
@@ -423,7 +519,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-path-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     const record = await repository.registerRaw({
       sourcePath: source,
       mediaType: "image/png",
@@ -448,7 +549,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-retry-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     const input = {
       sourcePath: source,
       mediaType: "image/png",
@@ -470,7 +576,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-source-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     const input = {
       sourcePath: source,
       mediaType: "image/png",
@@ -510,7 +621,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-index-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     await repository.registerRaw({
       sourcePath: source,
       mediaType: "image/png",
@@ -543,7 +659,12 @@ describe("EvidenceRepository", () => {
     );
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     const record = await repository.registerRaw({
       sourcePath: source,
       mediaType: "image/png",
@@ -570,6 +691,7 @@ describe("EvidenceRepository", () => {
       projectRoot,
       "run-1",
       () => new Date(Number.NaN),
+      "web",
     );
 
     await expect(
@@ -592,7 +714,8 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-run-id-"));
 
     expect(
-      () => new EvidenceRepository(projectRoot, "../outside", fixedNow),
+      () =>
+        new EvidenceRepository(projectRoot, "../outside", fixedNow, "web"),
     ).toThrow();
     await expect(access(join(projectRoot, ".ai-qa"))).rejects.toMatchObject({
       code: "ENOENT",
@@ -648,7 +771,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-safe-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
     await repository.registerRaw({
       sourcePath: source,
       mediaType: "image/png",
@@ -684,7 +812,12 @@ describe("EvidenceRepository", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-input-"));
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
 
     await expect(
       repository.registerRaw({
@@ -737,7 +870,12 @@ describe("EvidenceRepository", () => {
       await mkdir(dirname(linkPath), { recursive: true });
       await mkdir(target, { recursive: true });
       await symlink(target, linkPath);
-      const repository = new EvidenceRepository(projectRoot, "run-1", fixedNow);
+      const repository = new EvidenceRepository(
+        projectRoot,
+        "run-1",
+        fixedNow,
+        "web",
+      );
 
       await expect(
         repository.registerRaw({
@@ -902,6 +1040,7 @@ describe("registerEvidence", () => {
       projectRoot,
       "run-1",
       fixedNow,
+      "web",
     ).registerRaw(payload);
 
     const registered = await registerEvidence({

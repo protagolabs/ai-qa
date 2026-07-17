@@ -230,6 +230,7 @@ async function buildVerifiedRunReport(
         project.projectRoot,
         runId,
         input.now,
+        workOrder.platform,
       ).verifyAll();
       validateEvidenceParity(events, evidence, runId);
       validateProtocolEvents(events, workOrder, runId);
