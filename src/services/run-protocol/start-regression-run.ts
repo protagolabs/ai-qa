@@ -1,5 +1,6 @@
 import { readProjectConfig } from "../../core/config/repository.js";
 import {
+  configuredPlatforms,
   projectConfigSchema,
   type ProjectConfig,
 } from "../../core/config/schema.js";
@@ -8,8 +9,9 @@ import { createId } from "../../core/ids.js";
 import { CaseRepository } from "../../core/cases/repository.js";
 import {
   calculateCaseContentHash,
-  calculateWebVariantHash,
+  calculatePlatformVariantHash,
 } from "../../core/cases/schema.js";
+import type { Platform } from "../../core/platforms/schema.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import type { PlatformReadiness } from "../../core/readiness/schema.js";
 import {
@@ -43,9 +45,10 @@ export function calculateRegressionBudget(
   };
 }
 
-interface PrepareRegressionWorkOrderInput {
+export interface PrepareRegressionWorkOrderInput {
   projectRoot: string;
   caseId: string;
+  platform: Platform;
   execution: "local" | "ci";
   readiness: PlatformReadiness;
   now: () => Date;
@@ -64,19 +67,42 @@ export async function prepareRegressionWorkOrder(
     input.projectConfig ?? (await readProjectConfig(project.projectRoot)),
   );
   const readiness = readinessSchema.parse(input.readiness);
-  if (readiness.platform !== "web") {
+  if (
+    !configuredPlatforms(config).includes(input.platform) ||
+    config.targets[input.platform] === undefined ||
+    config.tools[input.platform] === undefined
+  ) {
     throw new AiQaError(
-      "case.platform_variant_unavailable",
-      "The active case does not contain the selected platform variant",
-      { platform: readiness.platform, caseId: input.caseId },
+      "platform.unconfigured",
+      "Regression platform is not configured",
+      {
+        platform: input.platform,
+        configuredPlatforms: configuredPlatforms(config),
+      },
+    );
+  }
+  if (readiness.platform !== input.platform) {
+    throw new AiQaError(
+      "platform.mismatch",
+      "Regression readiness does not match the selected platform",
+      {
+        platform: input.platform,
+        readinessPlatform: readiness.platform,
+      },
     );
   }
   const revision = await new CaseRepository(
     project.projectRoot,
     input.now,
   ).readActive(input.caseId);
+  const platformVariantHash = calculatePlatformVariantHash(
+    revision,
+    input.platform,
+  );
+  const variant = revision.variants[input.platform];
+  if (variant === undefined) throw new Error("unreachable");
   const startedAt = input.now();
-  const requiredSteps = revision.variants.web.steps.map((step, order) => ({
+  const requiredSteps = variant.steps.map((step, order) => ({
     id: step.id,
     order,
     intent: step.intent,
@@ -97,7 +123,7 @@ export async function prepareRegressionWorkOrder(
     kind: "regression",
     execution: input.execution,
     projectId: config.project.id,
-    platform: "web",
+    platform: input.platform,
     startedAt: startedAt.toISOString(),
     goal: revision.title,
     acceptanceCriteria: revision.acceptanceCriteria,
@@ -117,7 +143,7 @@ export async function prepareRegressionWorkOrder(
       caseId: revision.caseId,
       revision: revision.revision,
       caseContentHash: calculateCaseContentHash(revision),
-      platformVariantHash: calculateWebVariantHash(revision),
+      platformVariantHash,
     },
   });
   return {

@@ -16,6 +16,8 @@ import { runCli } from "../../src/cli/program.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
+import type { Platform } from "../../src/core/platforms/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
@@ -31,32 +33,14 @@ import { registerEvidence } from "../../src/services/run-protocol/register-evide
 import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { initializeTestProject } from "../helpers/project-fixture.js";
+import {
+  initializeTestProject,
+  projectConfig as createProjectConfig,
+} from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const runNow = () => new Date("2026-07-13T00:10:00.000Z");
-const config: ProjectConfig = {
-  schemaVersion: 2,
-  recordingPolicy: { mode: "local-only" },
-  project: { id: "sample-web", name: "Sample Web" },
-  targets: { web: { entryUrl: "https://example.com" } },
-  environments: {},
-  tools: { web: { controller: "chrome-devtools-mcp" } },
-  evidencePolicy: {
-    screenshots: "required",
-    defaultSensitivity: "internal",
-    retentionDays: 30,
-  },
-  reportPolicy: {
-    formats: ["markdown", "json"],
-    audience: "engineering",
-    detail: "full",
-  },
-  storagePolicy: { adapter: "project-local" },
-  gitPolicy: { config: "track", artifacts: "ignore" },
-  ciPolicy: { nonPassExit: "failure" },
-  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
-};
+const config: ProjectConfig = createProjectConfig(["web"]);
 
 async function createCompletedPassRun(
   options: {
@@ -74,6 +58,7 @@ async function createCompletedPassRun(
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-source",
       input: exploratoryRunInputSchema.parse({
@@ -327,6 +312,7 @@ async function createCompletedUnknownRun(): Promise<{
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-unknown",
       input: exploratoryRunInputSchema.parse({
@@ -408,6 +394,7 @@ async function createStaleCompletedPassRun(): Promise<{
   const repository = new RunRepository(projectRoot, () => startedAt);
   await repository.create(
     createExploratoryWorkOrder({
+      platform: "web",
       projectId: "sample-web",
       runId: "run-source",
       input: exploratoryRunInputSchema.parse({
@@ -559,7 +546,350 @@ async function appendDuplicateTypedEvidenceEvent(
   );
 }
 
+async function createCompletedPlatformPassRun(input: {
+  projectRoot: string;
+  runId: string;
+  platform: Platform;
+  criterionDescription?: string;
+}): Promise<{ plannedActionId: string }> {
+  const controller = controllerForPlatform(input.platform);
+  const repository = new RunRepository(input.projectRoot, () => startedAt);
+  await repository.create(
+    createExploratoryWorkOrder({
+      platform: input.platform,
+      projectId: "sample-web",
+      runId: input.runId,
+      input: exploratoryRunInputSchema.parse({
+        goal: "Verify successful login",
+        acceptanceCriteria: [
+          {
+            id: "authenticated-home-visible",
+            description:
+              input.criterionDescription ?? "Authenticated home is visible",
+            requiredEvidence: ["post-action-screenshot"],
+          },
+        ],
+        readiness: { platform: input.platform, status: "ready", checks: [] },
+      }),
+      evidencePolicy: {
+        screenshots: "required",
+        defaultSensitivity: "internal",
+      },
+      startedAt,
+    }),
+  );
+  const protocol = new RunProtocolService(
+    input.projectRoot,
+    input.runId,
+    runNow,
+  );
+  const planned = await protocol.planAction({
+    idempotencyKey: `${input.platform}-submit-login`,
+    kind: "interaction",
+    intent: "Submit valid credentials",
+    tool: controller,
+    target: { description: "Login button" },
+  });
+  await protocol.completeAction({
+    actionId: planned.id,
+    phase: "completed",
+    toolResult: { summary: "Credentials submitted" },
+  });
+  const stepId = (planned.payload as { stepId: string }).stepId;
+  const observationAction = await protocol.planAction({
+    idempotencyKey: `${input.platform}-observe-home`,
+    kind: "observation",
+    intent: "Observe authenticated home",
+    tool: controller,
+    target: { description: "Authenticated home" },
+    stepId,
+  });
+  await protocol.completeAction({
+    actionId: observationAction.id,
+    phase: "completed",
+    toolResult: { summary: "Authenticated home observed" },
+  });
+  const observation = await protocol.addObservation({
+    actionId: observationAction.id,
+    summary: "Authenticated home is visible",
+    state: { visible: true },
+  });
+  const capture = await protocol.planAction({
+    idempotencyKey: `${input.platform}-capture-home`,
+    kind: "evidence-capture",
+    intent: "Capture authenticated home",
+    tool: controller,
+    target: { description: "Authenticated home" },
+    stepId,
+  });
+  await protocol.completeAction({
+    actionId: capture.id,
+    phase: "completed",
+    toolResult: { summary: "Authenticated home captured" },
+  });
+  const sourcePath = join(
+    input.projectRoot,
+    `${input.runId}-${input.platform}.png`,
+  );
+  await writeFile(sourcePath, Buffer.from([1, 2, 3, input.runId.length]));
+  const evidence = await registerEvidence({
+    projectRoot: input.projectRoot,
+    runId: input.runId,
+    payload: {
+      sourcePath,
+      mediaType: "image/png",
+      sourceTool: controller,
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: capture.id,
+      idempotencyKey: `${input.platform}-home-evidence`,
+    },
+    criterionIds: ["authenticated-home-visible"],
+    observationIds: [observation.id],
+    now: runNow,
+  });
+  const assertion = await protocol.recordAssertion({
+    criterionId: "authenticated-home-visible",
+    status: "satisfied",
+    assertionKinds: ["semantic-ui"],
+    actual: "Authenticated home is visible",
+    expected: "Authenticated home is visible",
+    observationIds: [observation.id],
+    evidenceIds: [evidence.id],
+    stepId,
+  });
+  await new VerdictService(input.projectRoot, input.runId, runNow).set({
+    classification: "pass",
+    summary: "Login is supported by platform evidence",
+    criterionResults: [
+      {
+        criterionId: "authenticated-home-visible",
+        status: "satisfied",
+        assertionIds: [assertion.id],
+        evidenceIds: [evidence.id],
+      },
+    ],
+  });
+  await finalizeRun({
+    projectRoot: input.projectRoot,
+    runId: input.runId,
+    now: runNow,
+  });
+  return { plannedActionId: planned.id };
+}
+
 describe("case promotion", () => {
+  it("merges and replaces platform variants through new immutable revisions", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-variants-"));
+    await initializeTestProject({
+      projectRoot,
+      config: createProjectConfig(["web", "ios-simulator"]),
+    });
+    const web = await createCompletedPlatformPassRun({
+      projectRoot,
+      runId: "run-web-source",
+      platform: "web",
+    });
+    const ios = await createCompletedPlatformPassRun({
+      projectRoot,
+      runId: "run-ios-source",
+      platform: "ios-simulator",
+    });
+    const webSteps = [
+      {
+        sourceActionId: web.plannedActionId,
+        intent: "Submit valid credentials",
+        target: {
+          description: "Login button",
+          stability: "stable" as const,
+          stabilityRationale: "Stable Web control",
+        },
+        expectedState: "Authenticated home is visible",
+        assertionStrategy: "Observe authenticated home",
+        evidenceCheckpoints: ["post-action-screenshot"],
+      },
+    ];
+    const iosSteps = [
+      {
+        sourceActionId: ios.plannedActionId,
+        intent: "Submit valid credentials",
+        target: {
+          description: "Login button",
+          stability: "stable" as const,
+          stabilityRationale: "Stable accessibility identifier",
+        },
+        expectedState: "Authenticated home is visible",
+        assertionStrategy: "Observe authenticated home",
+        evidenceCheckpoints: ["post-action-screenshot"],
+      },
+    ];
+    const webDraft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-web-source",
+      input: {
+        caseId: "login",
+        title: "Login",
+        steps: webSteps,
+        excludedActions: [],
+      },
+    });
+    await activateCaseRevision({
+      projectRoot,
+      caseId: "login",
+      revision: webDraft.revision,
+      reviewConfirmed: true,
+      now: runNow,
+    });
+    const iosDraft = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-ios-source",
+      input: {
+        caseId: "login",
+        title: "Login",
+        steps: iosSteps,
+        excludedActions: [],
+      },
+    });
+
+    expect(iosDraft.revision).toBe(webDraft.revision + 1);
+    expect(Object.keys(iosDraft.variants).sort()).toEqual([
+      "ios-simulator",
+      "web",
+    ]);
+    expect(iosDraft.promotion.sources.web?.sourceRunId).toBe(
+      "run-web-source",
+    );
+    expect(
+      iosDraft.promotion.sources["ios-simulator"]?.sourceRunId,
+    ).toBe("run-ios-source");
+    const indexAfterMerge = parse(
+      await readFile(
+        join(projectRoot, ".ai-qa", "cases", "login", "case.yaml"),
+        "utf8",
+      ),
+    ) as {
+      activeRevision?: number;
+      revisions: Array<{
+        revision: number;
+        status: string;
+        activation?: unknown;
+      }>;
+    };
+    expect(indexAfterMerge.activeRevision).toBe(webDraft.revision);
+    expect(indexAfterMerge.revisions[0]).toMatchObject({
+      revision: webDraft.revision,
+      status: "active",
+      activation: { confirmedBy: "user" },
+    });
+
+    const webReplacement = await createCompletedPlatformPassRun({
+      projectRoot,
+      runId: "run-web-replacement",
+      platform: "web",
+    });
+    const replacement = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-web-replacement",
+      input: {
+        caseId: "login",
+        title: "Login",
+        steps: [
+          {
+            ...webSteps[0]!,
+            sourceActionId: webReplacement.plannedActionId,
+            expectedState: "Authenticated dashboard is visible",
+          },
+        ],
+        excludedActions: [],
+      },
+    });
+    expect(replacement.revision).toBe(iosDraft.revision + 1);
+    expect(replacement.promotion.sources.web?.sourceRunId).toBe(
+      "run-web-replacement",
+    );
+    expect(
+      replacement.promotion.sources["ios-simulator"]?.sourceRunId,
+    ).toBe("run-ios-source");
+    expect(replacement.variants.web?.steps[0]?.expectedState).toBe(
+      "Authenticated dashboard is visible",
+    );
+    expect(replacement.variants["ios-simulator"]).toEqual(
+      iosDraft.variants["ios-simulator"],
+    );
+    await expect(
+      new CaseRepository(projectRoot, runNow).readRevision(
+        "login",
+        iosDraft.revision,
+      ),
+    ).resolves.toEqual(iosDraft);
+  });
+
+  it("keeps criteria mismatch as a stable activation-blocking issue", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-mismatch-"));
+    await initializeTestProject({
+      projectRoot,
+      config: createProjectConfig(["web", "ios-simulator"]),
+    });
+    const web = await createCompletedPlatformPassRun({
+      projectRoot,
+      runId: "run-web-source",
+      platform: "web",
+    });
+    const ios = await createCompletedPlatformPassRun({
+      projectRoot,
+      runId: "run-ios-source",
+      platform: "ios-simulator",
+      criterionDescription: "Authenticated dashboard is visible",
+    });
+    const step = (sourceActionId: string) => ({
+      sourceActionId,
+      intent: "Submit valid credentials",
+      target: {
+        description: "Login button",
+        stability: "stable" as const,
+        stabilityRationale: "Stable platform control",
+      },
+      expectedState: "Authenticated home is visible",
+      assertionStrategy: "Observe authenticated home",
+      evidenceCheckpoints: ["post-action-screenshot"],
+    });
+    await draftCaseFromRun({
+      projectRoot,
+      runId: "run-web-source",
+      input: {
+        caseId: "login-mismatch",
+        title: "Login",
+        steps: [step(web.plannedActionId)],
+        excludedActions: [],
+      },
+    });
+    const mismatch = await draftCaseFromRun({
+      projectRoot,
+      runId: "run-ios-source",
+      input: {
+        caseId: "login-mismatch",
+        title: "Login",
+        steps: [step(ios.plannedActionId)],
+        excludedActions: [],
+      },
+    });
+
+    expect(mismatch.promotion.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "case.acceptance_criteria_mismatch" }),
+      ]),
+    );
+    await expect(
+      activateCaseRevision({
+        projectRoot,
+        caseId: mismatch.caseId,
+        revision: mismatch.revision,
+        reviewConfirmed: true,
+        now: runNow,
+      }),
+    ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+  });
+
   it("keeps a completed history with pre-action evidence inactive", async () => {
     const { projectRoot, plannedActionId } =
       await createStaleCompletedPassRun();
@@ -569,7 +899,7 @@ describe("case promotion", () => {
       input: {
         caseId: "stale-login-proof",
         title: "Reject stale login proof",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -702,8 +1032,9 @@ describe("case promotion", () => {
         caseId: "login-success",
         title: "Login succeeds",
         promotion: {
-          sourceRunId: "run-source",
-          excludedActions: [],
+          sources: {
+            web: { sourceRunId: "run-source", excludedActions: [] },
+          },
           validationIssues: [],
         },
         acceptanceCriteria: [
@@ -747,7 +1078,10 @@ describe("case promotion", () => {
       schemaVersion: 1 as const,
       caseId: "concurrent-case",
       title: "Concurrent case",
-      promotion: { sourceRunId: "run-source", validationIssues: [] },
+      promotion: {
+        sources: { web: { sourceRunId: "run-source" } },
+        validationIssues: [],
+      },
       acceptanceCriteria: [
         {
           id: "home-visible",
@@ -801,7 +1135,10 @@ describe("case promotion", () => {
       schemaVersion: 1 as const,
       caseId: "bootstrap-cleanup",
       title: "Bootstrap cleanup",
-      promotion: { sourceRunId: "run-source", validationIssues: [] },
+      promotion: {
+        sources: { web: { sourceRunId: "run-source" } },
+        validationIssues: [],
+      },
       acceptanceCriteria: [
         {
           id: "home-visible",
@@ -869,7 +1206,10 @@ describe("case promotion", () => {
         schemaVersion: 1,
         caseId: "collision-case",
         title: "Collision case",
-        promotion: { sourceRunId: "run-source", validationIssues: [] },
+        promotion: {
+          sources: { web: { sourceRunId: "run-source" } },
+          validationIssues: [],
+        },
         acceptanceCriteria: [
           {
             id: "home-visible",
@@ -912,7 +1252,7 @@ describe("case promotion", () => {
       input: {
         caseId: "login-success",
         title: "Successful login",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -934,7 +1274,10 @@ describe("case promotion", () => {
     expect(draft).toMatchObject({
       caseId: "login-success",
       revision: 1,
-      promotion: { sourceRunId: "run-source", validationIssues: [] },
+      promotion: {
+        sources: { web: { sourceRunId: "run-source" } },
+        validationIssues: [],
+      },
       variants: {
         web: {
           steps: [
@@ -993,7 +1336,7 @@ describe("case promotion", () => {
       input: {
         caseId: "applied-unknown-login",
         title: "Applied unknown login",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1051,7 +1394,7 @@ describe("case promotion", () => {
       input: {
         caseId: "duplicate-source-evidence",
         title: "Duplicate source evidence",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1095,7 +1438,7 @@ describe("case promotion", () => {
       input: {
         caseId: "duplicate-typed-source-evidence",
         title: "Duplicate typed source evidence",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1158,7 +1501,7 @@ describe("case promotion", () => {
         input: {
           caseId: "corrupt-protocol-with-invalid-evidence",
           title: "Corrupt protocol with invalid evidence",
-          webSteps: [
+          steps: [
             {
               sourceActionId: plannedActionId,
               intent: "Submit valid credentials",
@@ -1219,7 +1562,7 @@ describe("case promotion", () => {
         input: {
           caseId: "forged-controller",
           title: "Forged controller",
-          webSteps: [
+          steps: [
             {
               sourceActionId: forged.id,
               intent: "Submit valid credentials",
@@ -1254,7 +1597,7 @@ describe("case promotion", () => {
       input: {
         caseId: "mislinked-structured-proof",
         title: "Mislinked structured proof",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1330,7 +1673,7 @@ describe("case promotion", () => {
       input: {
         caseId: "unsupported-pass",
         title: "Unsupported pass",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1371,7 +1714,7 @@ describe("case promotion", () => {
       input: {
         caseId: "audited-detour",
         title: "Audited exploratory detour",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1395,11 +1738,7 @@ describe("case promotion", () => {
     });
 
     expect(
-      (
-        draft.promotion as typeof draft.promotion & {
-          excludedActions?: Array<{ actionId: string; reason: string }>;
-        }
-      ).excludedActions,
+      draft.promotion.sources.web?.excludedActions,
     ).toEqual([
       {
         actionId: extraActionId,
@@ -1423,7 +1762,10 @@ describe("case promotion", () => {
       schemaVersion: 1,
       caseId: "forged-accounting",
       title: "Forged accounting",
-      promotion: { sourceRunId: "run-source", validationIssues: [] },
+      promotion: {
+        sources: { web: { sourceRunId: "run-source" } },
+        validationIssues: [],
+      },
       acceptanceCriteria: [
         {
           id: "authenticated-home-visible",
@@ -1472,7 +1814,7 @@ describe("case promotion", () => {
       input: {
         caseId: "ambiguous-submit",
         title: "Ambiguous submission",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit the form",
@@ -1516,7 +1858,7 @@ describe("case promotion", () => {
       input: {
         caseId: "index-integrity",
         title: "Index integrity",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1577,7 +1919,7 @@ describe("case promotion", () => {
       input: {
         caseId: "draft-index-integrity",
         title: "Draft index integrity",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1624,7 +1966,7 @@ describe("case promotion", () => {
       input: {
         caseId: "cli-activation",
         title: "CLI activation",
-        webSteps: [
+        steps: [
           {
             sourceActionId: plannedActionId,
             intent: "Submit valid credentials",
@@ -1725,7 +2067,7 @@ describe("case promotion", () => {
           JSON.stringify({
             caseId: "cli-draft",
             title: "CLI draft",
-            webSteps: [
+            steps: [
               {
                 sourceActionId: plannedActionId,
                 intent: "Submit valid credentials",

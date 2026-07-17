@@ -168,6 +168,7 @@ export function registerRunCommands(
             await startRegressionRun({
               projectRoot: project.projectRoot,
               caseId: parsedOptions.case,
+              platform: parsedOptions.platform,
               execution: parsedOptions.execution,
               readiness: verifiedReadiness,
               now: context.now,

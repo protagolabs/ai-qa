@@ -4,9 +4,9 @@ import { CaseRepository } from "../../core/cases/repository.js";
 import {
   caseIdSchema,
   caseValidationIssueSchema,
+  type CaseStep,
   type CaseRevision,
   type CaseValidationIssue,
-  type WebCaseStep,
 } from "../../core/cases/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
@@ -22,7 +22,8 @@ import {
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import type { RunEvent, WorkOrder } from "../../core/runs/schema.js";
-import { WEB_CONTROLLER } from "../../core/tools.js";
+import { controllerForPlatform } from "../../core/platforms/registry.js";
+import { platformSchema } from "../../core/platforms/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { effectiveInteractionSuccesses } from "../run-protocol/effective-interactions.js";
 import { validateFinalization } from "../run-protocol/finalize-run.js";
@@ -32,7 +33,7 @@ import {
   validateVerdictHistory,
 } from "../run-protocol/verdict-service.js";
 
-const draftWebStepSchema = z
+const draftCaseStepSchema = z
   .object({
     sourceActionId: z.string().min(1),
     intent: z.string().trim().min(1),
@@ -54,7 +55,7 @@ export const draftCaseInputSchema = z
   .object({
     caseId: caseIdSchema,
     title: z.string().trim().min(1),
-    webSteps: z.array(draftWebStepSchema).min(1),
+    steps: z.array(draftCaseStepSchema).min(1),
     excludedActions: z.array(
       z.object({ actionId: z.string().min(1), reason: z.string() }).strict(),
     ),
@@ -64,7 +65,7 @@ export const draftCaseInputSchema = z
 export interface DraftCaseInput {
   caseId: string;
   title: string;
-  webSteps: Array<{
+  steps: Array<{
     sourceActionId: string;
     intent: string;
     target: {
@@ -115,32 +116,56 @@ export async function draftCaseFromRun(input: {
   );
   const issues = analyzePromotion({
     source,
-    steps: supplied.webSteps,
+    steps: supplied.steps,
     excludedActions: supplied.excludedActions,
     requireInteractionAccounting: true,
   });
-  const steps: WebCaseStep[] = supplied.webSteps.map((step, index) => ({
+  const platform = source.workOrder.platform;
+  const steps: CaseStep[] = supplied.steps.map((step, index) => ({
     id: stableStepId(index + 1, step.intent),
     sourceActionId: step.sourceActionId,
     intent: step.intent,
-    tool: WEB_CONTROLLER,
+    tool: controllerForPlatform(platform),
     target: step.target,
     expectedState: step.expectedState,
     assertionStrategy: step.assertionStrategy,
     evidenceCheckpoints: step.evidenceCheckpoints,
   }));
-  return new CaseRepository(input.projectRoot, () => new Date()).createDraft({
-    schemaVersion: 1,
-    caseId: supplied.caseId,
-    title: supplied.title,
-    promotion: {
-      sourceRunId: input.runId,
-      excludedActions: supplied.excludedActions,
-      validationIssues: issues,
+  const repository = new CaseRepository(input.projectRoot, () => new Date());
+  return repository.createDraftFromLatest(
+    supplied.caseId,
+    supplied.title,
+    (latest) => {
+      const variants: CaseRevision["variants"] = {
+        ...(latest?.variants ?? {}),
+      };
+      variants[platform] = { steps };
+      const sources: CaseRevision["promotion"]["sources"] = {
+        ...(latest?.promotion.sources ?? {}),
+      };
+      sources[platform] = {
+        sourceRunId: input.runId,
+        excludedActions: supplied.excludedActions,
+      };
+      const sharedIssues = latestSharedFieldIssues(
+        latest,
+        supplied.title,
+        source,
+      );
+      return {
+        schemaVersion: 1,
+        caseId: supplied.caseId,
+        title: latest?.title ?? supplied.title,
+        promotion: {
+          sources,
+          validationIssues: deduplicateIssues([...issues, ...sharedIssues]),
+        },
+        acceptanceCriteria:
+          latest?.acceptanceCriteria ?? source.workOrder.acceptanceCriteria,
+        variants,
+      };
     },
-    acceptanceCriteria: source.workOrder.acceptanceCriteria,
-    variants: { web: { steps } },
-  });
+  );
 }
 
 export async function validateCaseRevision(input: {
@@ -153,32 +178,80 @@ export async function validateCaseRevision(input: {
     input.caseId,
     input.revision,
   );
-  const source = await readCompletedExploratoryRun(
-    input.projectRoot,
-    revision.promotion.sourceRunId,
-  );
+  const sourceIssues: CaseValidationIssue[] = [];
+  for (const platform of platformSchema.options) {
+    const promotionSource = revision.promotion.sources[platform];
+    const variant = revision.variants[platform];
+    if (promotionSource === undefined || variant === undefined) continue;
+    const source = await readCompletedExploratoryRun(
+      input.projectRoot,
+      promotionSource.sourceRunId,
+    );
+    if (source.workOrder.platform !== platform) {
+      sourceIssues.push(
+        issue(
+          "case.source_platform_mismatch",
+          "Each promotion source must match its stored platform variant",
+          [promotionSource.sourceRunId, platform],
+        ),
+      );
+      continue;
+    }
+    sourceIssues.push(
+      ...analyzePromotion({
+        source,
+        steps: variant.steps,
+        excludedActions: promotionSource.excludedActions ?? [],
+        requireInteractionAccounting: true,
+      }),
+    );
+    if (
+      canonicalJson(revision.acceptanceCriteria) !==
+      canonicalJson(source.workOrder.acceptanceCriteria)
+    ) {
+      sourceIssues.push(acceptanceCriteriaMismatchIssue(source));
+    }
+  }
   const issues = deduplicateIssues([
     ...revision.promotion.validationIssues,
-    ...analyzePromotion({
-      source,
-      steps: revision.variants.web.steps,
-      excludedActions: revision.promotion.excludedActions ?? [],
-      requireInteractionAccounting: true,
-    }),
-    ...(canonicalJson(revision.acceptanceCriteria) ===
-    canonicalJson(source.workOrder.acceptanceCriteria)
-      ? []
-      : [
-          issue(
-            "case.acceptance_criteria_mismatch",
-            "Case criteria must match the immutable source work order",
-            source.workOrder.acceptanceCriteria.map(
-              (criterion) => criterion.id,
-            ),
-          ),
-        ]),
+    ...sourceIssues,
   ]);
   return { revision, valid: issues.length === 0, issues };
+}
+
+function latestSharedFieldIssues(
+  latest: CaseRevision | undefined,
+  suppliedTitle: string,
+  source: SourceRunSnapshot,
+): CaseValidationIssue[] {
+  if (latest === undefined) return [];
+  const issues: CaseValidationIssue[] = [];
+  if (latest.title !== suppliedTitle) {
+    issues.push(
+      issue(
+        "case.title_mismatch",
+        "Case title must match the latest immutable revision",
+        [latest.caseId],
+      ),
+    );
+  }
+  if (
+    canonicalJson(latest.acceptanceCriteria) !==
+    canonicalJson(source.workOrder.acceptanceCriteria)
+  ) {
+    issues.push(acceptanceCriteriaMismatchIssue(source));
+  }
+  return issues;
+}
+
+function acceptanceCriteriaMismatchIssue(
+  source: SourceRunSnapshot,
+): CaseValidationIssue {
+  return issue(
+    "case.acceptance_criteria_mismatch",
+    "Case criteria must match every immutable platform source work order",
+    source.workOrder.acceptanceCriteria.map((criterion) => criterion.id),
+  );
 }
 
 export async function activateCaseRevision(input: {
@@ -460,7 +533,7 @@ function analyzePromotion(input: {
       issues.push(
         issue(
           "case.target_review_required",
-          "Every activated Web target must be stable with a review rationale",
+          "Every activated target must be stable with a review rationale",
           [step.sourceActionId],
         ),
       );

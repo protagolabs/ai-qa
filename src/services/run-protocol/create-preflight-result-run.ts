@@ -113,6 +113,7 @@ export async function createPreflightResultRun(
       await prepareRegressionWorkOrder({
         projectRoot: project.projectRoot,
         caseId: input.caseId,
+        platform: input.readiness.platform,
         execution: input.execution,
         readiness: input.readiness,
         now: input.now,

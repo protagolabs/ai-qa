@@ -107,6 +107,98 @@ export class CaseRepository {
     );
   }
 
+  async createDraftFromLatest(
+    caseIdInput: string,
+    initialTitle: string,
+    build: (
+      latest: CaseRevision | undefined,
+    ) => Omit<CaseRevision, "revision" | "contentHash">,
+  ): Promise<CaseRevision> {
+    const caseId = caseIdSchema.parse(caseIdInput);
+    const paths = this.paths(caseId);
+    await ensureProjectLocalDirectory(this.projectRoot, [
+      ".ai-qa",
+      "cases",
+      caseId,
+      "revisions",
+    ]);
+    return this.withCaseWriteLock(
+      paths,
+      () => this.ensureIndex(paths.index, caseId, initialTitle),
+      async () => {
+        let revisionPath: string | undefined;
+        let ownsRevision = false;
+        try {
+          const index = await this.readIndex(caseId);
+          const latestEntry = index.revisions.reduce<
+            CaseIndex["revisions"][number] | undefined
+          >(
+            (latest, entry) =>
+              latest === undefined || entry.revision > latest.revision
+                ? entry
+                : latest,
+            undefined,
+          );
+          const latest =
+            latestEntry === undefined
+              ? undefined
+              : await this.validateRevision(caseId, latestEntry.revision);
+          const input = build(latest);
+          if (input.caseId !== caseId) {
+            throw new AiQaError(
+              "case.revision_identity_mismatch",
+              "Merged case draft must retain the locked case identity",
+              { caseId, proposedCaseId: input.caseId },
+            );
+          }
+          const revision = (latestEntry?.revision ?? 0) + 1;
+          const candidate = caseRevisionSchema.parse({
+            ...input,
+            revision,
+            contentHash: "",
+          });
+          const value = caseRevisionSchema.parse({
+            ...candidate,
+            contentHash: calculateCaseContentHash(candidate),
+          });
+          revisionPath = this.revisionPath(paths, revision);
+          await this.writeRevisionOnce(revisionPath, value, () => {
+            ownsRevision = true;
+          });
+          await atomicWriteFile(
+            paths.index,
+            stringify(
+              caseIndexSchema.parse({
+                ...index,
+                title: value.title,
+                revisions: [
+                  ...index.revisions,
+                  {
+                    revision,
+                    status: "draft",
+                    contentHash: value.contentHash,
+                  },
+                ],
+              }),
+              { sortMapEntries: true },
+            ),
+          );
+          revisionPath = undefined;
+          return value;
+        } catch (error: unknown) {
+          if (revisionPath !== undefined && ownsRevision) {
+            try {
+              await rm(revisionPath);
+            } catch {
+              // Preserve the draft creation failure.
+            }
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
   async readRevision(caseId: string, revision: number): Promise<CaseRevision> {
     caseId = caseIdSchema.parse(caseId);
     revision = z.number().int().positive().parse(revision);
@@ -206,18 +298,6 @@ export class CaseRepository {
         );
       }
       if (target.status === "active" && index.activeRevision === revision) {
-        const retried = caseIndexSchema.parse({
-          ...index,
-          revisions: index.revisions.map((entry) =>
-            entry.revision === revision
-              ? { ...entry, activation: confirmed }
-              : entry,
-          ),
-        });
-        await atomicWriteFile(
-          paths.index,
-          stringify(retried, { sortMapEntries: true }),
-        );
         return value;
       }
       if (target.status !== "draft") {

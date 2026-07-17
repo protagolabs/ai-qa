@@ -2,7 +2,7 @@ import { AiQaError } from "../../core/errors.js";
 import { CaseRepository } from "../../core/cases/repository.js";
 import {
   calculateCaseContentHash,
-  calculateWebVariantHash,
+  calculatePlatformVariantHash,
 } from "../../core/cases/schema.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
@@ -320,7 +320,10 @@ async function validatePinnedRegressionCase(
     pinned.revision,
   );
   const caseContentHash = calculateCaseContentHash(revision);
-  const platformVariantHash = calculateWebVariantHash(revision);
+  const platformVariantHash = calculatePlatformVariantHash(
+    revision,
+    workOrder.platform,
+  );
   if (
     revision.contentHash !== caseContentHash ||
     pinned.caseContentHash !== caseContentHash ||
@@ -328,7 +331,7 @@ async function validatePinnedRegressionCase(
   ) {
     throw new AiQaError(
       "case.content_hash_mismatch",
-      "Pinned regression case or Web variant hash verification failed",
+      "Pinned regression case or platform variant hash verification failed",
       {
         caseId: pinned.caseId,
         revision: pinned.revision,

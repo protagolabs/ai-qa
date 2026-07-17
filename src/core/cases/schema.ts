@@ -1,7 +1,18 @@
 import { z } from "zod";
 import { sha256Canonical } from "../canonical-json.js";
-import { acceptanceCriterionSchema } from "../runs/schema.js";
-import { webControllerSchema } from "../tools.js";
+import { AiQaError } from "../errors.js";
+import { controllerMatchesPlatform } from "../platforms/registry.js";
+import {
+  controllerSchema,
+  platformSchema,
+  type Platform,
+} from "../platforms/schema.js";
+import {
+  acceptanceCriterionSchema,
+  actionIdSchema,
+  runIdSchema,
+  stepIdSchema,
+} from "../runs/schema.js";
 
 export const caseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
 
@@ -15,28 +26,66 @@ export const caseValidationIssueSchema = z
 
 const excludedCaseActionSchema = z
   .object({
-    actionId: z.string().min(1),
+    actionId: actionIdSchema,
     reason: z.string(),
   })
   .strict();
 
-export const webCaseStepSchema = z
+export const targetDescriptionSchema = z
   .object({
-    id: z.string(),
-    sourceActionId: z.string(),
-    intent: z.string().min(1),
-    tool: webControllerSchema,
-    target: z
-      .object({
-        description: z.string().min(1),
-        selector: z.string().min(1).optional(),
-        stability: z.enum(["stable", "review-required"]),
-        stabilityRationale: z.string().min(1),
-      })
-      .strict(),
-    expectedState: z.string().min(1),
-    assertionStrategy: z.string().min(1),
-    evidenceCheckpoints: z.array(z.string().min(1)).min(1),
+    description: z.string().trim().min(1),
+    selector: z.string().trim().min(1).optional(),
+    stability: z.enum(["stable", "review-required"]),
+    stabilityRationale: z.string().trim().min(1),
+  })
+  .strict();
+
+export const caseStepSchema = z
+  .object({
+    id: stepIdSchema,
+    sourceActionId: actionIdSchema,
+    intent: z.string().trim().min(1),
+    tool: controllerSchema,
+    target: targetDescriptionSchema,
+    expectedState: z.string().trim().min(1),
+    assertionStrategy: z.string().trim().min(1),
+    evidenceCheckpoints: z.array(z.string().trim().min(1)).min(1),
+  })
+  .strict();
+
+export const caseVariantSchema = z
+  .object({
+    steps: z.array(caseStepSchema).min(1),
+  })
+  .strict();
+
+const caseVariantMapSchema = z
+  .object({
+    web: caseVariantSchema.optional(),
+    "ios-simulator": caseVariantSchema.optional(),
+    "android-emulator": caseVariantSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (variants) =>
+      platformSchema.options.some(
+        (platform) => variants[platform] !== undefined,
+      ),
+    { message: "Case revision requires at least one platform variant" },
+  );
+
+const casePromotionSourceSchema = z
+  .object({
+    sourceRunId: runIdSchema,
+    excludedActions: z.array(excludedCaseActionSchema).optional(),
+  })
+  .strict();
+
+const casePromotionSourcesSchema = z
+  .object({
+    web: casePromotionSourceSchema.optional(),
+    "ios-simulator": casePromotionSourceSchema.optional(),
+    "android-emulator": casePromotionSourceSchema.optional(),
   })
   .strict();
 
@@ -46,26 +95,53 @@ export const caseRevisionSchema = z
     caseId: caseIdSchema,
     revision: z.number().int().positive(),
     contentHash: z.string(),
-    title: z.string().min(1),
+    title: z.string().trim().min(1),
     promotion: z
       .object({
-        sourceRunId: z.string(),
-        excludedActions: z.array(excludedCaseActionSchema).optional(),
+        sources: casePromotionSourcesSchema,
         validationIssues: z.array(caseValidationIssueSchema),
       })
       .strict(),
     acceptanceCriteria: z.array(acceptanceCriterionSchema).min(1),
-    variants: z
-      .object({
-        web: z.object({ steps: z.array(webCaseStepSchema).min(1) }).strict(),
-      })
-      .strict(),
+    variants: caseVariantMapSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((revision, context) => {
+    const variantKeys = platformSchema.options.filter(
+      (platform) => revision.variants[platform] !== undefined,
+    );
+    const sourceKeys = platformSchema.options.filter(
+      (platform) => revision.promotion.sources[platform] !== undefined,
+    );
+    if (
+      variantKeys.length !== sourceKeys.length ||
+      variantKeys.some((platform, index) => platform !== sourceKeys[index])
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["promotion", "sources"],
+        message: "Promotion source keys must equal platform variant keys",
+      });
+    }
+    for (const platform of variantKeys) {
+      const variant = revision.variants[platform];
+      if (variant === undefined) continue;
+      for (const [index, step] of variant.steps.entries()) {
+        if (!controllerMatchesPlatform(platform, step.tool)) {
+          context.addIssue({
+            code: "custom",
+            path: ["variants", platform, "steps", index, "tool"],
+            message: "Case step controller must match its variant platform",
+          });
+        }
+      }
+    }
+  });
 
 export type CaseRevision = z.infer<typeof caseRevisionSchema>;
 export type CaseValidationIssue = z.infer<typeof caseValidationIssueSchema>;
-export type WebCaseStep = z.infer<typeof webCaseStepSchema>;
+export type CaseStep = z.infer<typeof caseStepSchema>;
+export type CaseVariant = z.infer<typeof caseVariantSchema>;
 
 const caseRevisionIndexEntrySchema = z
   .object({
@@ -132,6 +208,17 @@ export function calculateCaseContentHash(
   return sha256Canonical(content);
 }
 
-export function calculateWebVariantHash(revision: CaseRevision): string {
-  return sha256Canonical(revision.variants.web);
+export function calculatePlatformVariantHash(
+  revision: CaseRevision,
+  platform: Platform,
+): string {
+  const variant = revision.variants[platform];
+  if (variant === undefined) {
+    throw new AiQaError(
+      "case.variant_missing",
+      "Case revision does not contain the selected platform variant",
+      { caseId: revision.caseId, revision: revision.revision, platform },
+    );
+  }
+  return sha256Canonical(variant);
 }

@@ -31,7 +31,7 @@ export function registerCaseCommands(
     const input = await readJsonInput(context, draftCaseInputSchema);
     const draftInput = {
       ...input,
-      webSteps: input.webSteps.map((step) => ({
+      steps: input.steps.map((step) => ({
         ...step,
         target: {
           description: step.target.description,

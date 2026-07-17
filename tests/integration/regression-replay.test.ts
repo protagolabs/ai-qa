@@ -7,11 +7,10 @@ import { runCli } from "../../src/cli/program.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import {
   calculateCaseContentHash,
-  calculateWebVariantHash,
+  calculatePlatformVariantHash,
   type CaseRevision,
 } from "../../src/core/cases/schema.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
-import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
@@ -21,7 +20,10 @@ import { RunProtocolService } from "../../src/services/run-protocol/run-protocol
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
 import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import { initializeTestProject } from "../helpers/project-fixture.js";
+import {
+  initializeTestProject,
+  projectConfig as createProjectConfig,
+} from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:01:00.000Z");
@@ -47,28 +49,7 @@ const ready: WebDoctorResult = {
     },
   ],
 };
-const config: ProjectConfig = {
-  schemaVersion: 2,
-  recordingPolicy: { mode: "local-only" },
-  project: { id: "sample-web", name: "Sample Web" },
-  targets: { web: { entryUrl: "https://example.com" } },
-  environments: {},
-  tools: { web: { controller: "chrome-devtools-mcp" } },
-  evidencePolicy: {
-    screenshots: "required",
-    defaultSensitivity: "internal",
-    retentionDays: 30,
-  },
-  reportPolicy: {
-    formats: ["markdown", "json"],
-    audience: "engineering",
-    detail: "full",
-  },
-  storagePolicy: { adapter: "project-local" },
-  gitPolicy: { config: "track", artifacts: "ignore" },
-  ciPolicy: { nonPassExit: "failure" },
-  secretReferences: { fixtureProjectSkill: "QA_TEST_PASSWORD" },
-};
+const config = createProjectConfig(["web"]);
 
 interface RegressionFixture {
   projectRoot: string;
@@ -76,16 +57,34 @@ interface RegressionFixture {
 }
 
 async function createActiveCase(
-  options: { firstEvidenceCheckpoints?: string[] } = {},
+  options: {
+    firstEvidenceCheckpoints?: string[];
+    includeIosVariant?: boolean;
+    configureIos?: boolean;
+  } = {},
 ): Promise<RegressionFixture> {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-replay-project-"));
-  await initializeTestProject({ projectRoot, config });
+  await initializeTestProject({
+    projectRoot,
+    config:
+      options.configureIos === true
+        ? createProjectConfig(["web", "ios-simulator"])
+        : config,
+  });
   const cases = new CaseRepository(projectRoot, now);
   const revision = await cases.createDraft({
     schemaVersion: 1,
     caseId: "login-success",
     title: "Successful login",
-    promotion: { sourceRunId: "run-source", validationIssues: [] },
+    promotion: {
+      sources: {
+        web: { sourceRunId: "run-source" },
+        ...(options.includeIosVariant === true
+          ? { "ios-simulator": { sourceRunId: "run-ios-source" } }
+          : {}),
+      },
+      validationIssues: [],
+    },
     acceptanceCriteria: [
       {
         id: "home-visible",
@@ -135,6 +134,28 @@ async function createActiveCase(
           },
         ],
       },
+      ...(options.includeIosVariant === true
+        ? {
+            "ios-simulator": {
+              steps: [
+                {
+                  id: "step-1-submit-login-ios",
+                  sourceActionId: "event-source-login-ios",
+                  intent: "Submit valid credentials on iOS",
+                  tool: "pepper" as const,
+                  target: {
+                    description: "Login button",
+                    stability: "stable" as const,
+                    stabilityRationale: "Stable accessibility identifier",
+                  },
+                  expectedState: "Authenticated home is visible",
+                  assertionStrategy: "Observe the authenticated home",
+                  evidenceCheckpoints: ["post-action-screenshot"],
+                },
+              ],
+            },
+          }
+        : {}),
     },
   });
   await cases.activate("login-success", revision.revision, {
@@ -148,6 +169,7 @@ async function startFixtureRun(fixture: RegressionFixture) {
   const workOrder = await startRegressionRun({
     projectRoot: fixture.projectRoot,
     caseId: "login-success",
+    platform: "web",
     execution: "local",
     readiness: ready,
     now: () => startedAt,
@@ -262,6 +284,62 @@ async function completeStep(input: {
 }
 
 describe("pinned regression replay", () => {
+  it("selects and hash-pins only the requested platform variant", async () => {
+    const fixture = await createActiveCase({
+      configureIos: true,
+      includeIosVariant: true,
+    });
+    const iosReadiness = {
+      platform: "ios-simulator" as const,
+      status: "ready" as const,
+      checks: [],
+    };
+    const workOrder = await startRegressionRun({
+      projectRoot: fixture.projectRoot,
+      caseId: "login-success",
+      platform: "ios-simulator",
+      execution: "local",
+      readiness: iosReadiness,
+      now: () => startedAt,
+    });
+
+    expect(workOrder).toMatchObject({
+      platform: "ios-simulator",
+      requiredSteps: [
+        {
+          id: "step-1-submit-login-ios",
+          order: 0,
+          tool: "pepper",
+        },
+      ],
+      pinnedCase: {
+        platformVariantHash: calculatePlatformVariantHash(
+          fixture.revision,
+          "ios-simulator",
+        ),
+      },
+    });
+  });
+
+  it("rejects a configured platform missing from the active case", async () => {
+    const fixture = await createActiveCase({ configureIos: true });
+
+    await expect(
+      startRegressionRun({
+        projectRoot: fixture.projectRoot,
+        caseId: "login-success",
+        platform: "ios-simulator",
+        execution: "local",
+        readiness: {
+          platform: "ios-simulator",
+          status: "ready",
+          checks: [],
+        },
+        now: () => startedAt,
+      }),
+    ).rejects.toMatchObject({ code: "case.variant_missing" });
+  });
+
   it("pins the active case and rejects a prospective out-of-order step", async () => {
     const fixture = await createActiveCase();
     const { workOrder, protocol } = await startFixtureRun(fixture);
@@ -277,7 +355,10 @@ describe("pinned regression replay", () => {
         caseId: "login-success",
         revision: fixture.revision.revision,
         caseContentHash: calculateCaseContentHash(fixture.revision),
-        platformVariantHash: calculateWebVariantHash(fixture.revision),
+        platformVariantHash: calculatePlatformVariantHash(
+          fixture.revision,
+          "web",
+        ),
       },
     });
     await expect(
@@ -1157,7 +1238,10 @@ describe("pinned regression replay", () => {
         caseId: "login-success",
         revision: fixture.revision.revision,
         caseContentHash: calculateCaseContentHash(fixture.revision),
-        platformVariantHash: calculateWebVariantHash(fixture.revision),
+        platformVariantHash: calculatePlatformVariantHash(
+          fixture.revision,
+          "web",
+        ),
       },
     });
   });
@@ -1316,7 +1400,8 @@ describe("pinned regression replay", () => {
       `${String(fixture.revision.revision)}.yaml`,
     );
     const stored = parse(await readFile(revisionPath, "utf8")) as CaseRevision;
-    stored.variants.web.steps[1]!.target.description = "Tampered account label";
+    stored.variants.web!.steps[1]!.target.description =
+      "Tampered account label";
     await writeFile(revisionPath, stringify(stored, { sortMapEntries: true }));
 
     await expect(
@@ -1331,7 +1416,10 @@ describe("pinned regression replay", () => {
         expectedCaseContentHash: workOrder.pinnedCase!.caseContentHash,
         actualCaseContentHash: calculateCaseContentHash(stored),
         expectedPlatformVariantHash: workOrder.pinnedCase!.platformVariantHash,
-        actualPlatformVariantHash: calculateWebVariantHash(stored),
+        actualPlatformVariantHash: calculatePlatformVariantHash(
+          stored,
+          "web",
+        ),
       },
     });
   });
