@@ -74,22 +74,30 @@ Initialization is a host-managed project change. Follow this exact two-doctor
 workflow:
 
 ```text
-Codex loads global ai-qa Skill
+Codex resolves the target and manages repository trust/permissions
 Codex runs doctor
-Codex discusses requirements
+Doctor returns configure-project for an uninitialized target
+Codex suspends the requested QA work
+Codex derives safe values and asks only for unresolved decisions
 Codex drafts config and uses skill-creator in scratch space
 Codex validates both drafts
 Codex displays complete diffs and obtains one confirmation
 Codex writes .ai-qa/config.yaml and .agents/skills/ai-qa-project/SKILL.md
-Codex runs doctor again
+Codex runs doctor again and resumes QA only when status is ready
 ```
 
-The first doctor run reports installation and availability, including an
-expected `uninitialized` project state. Doctor never installs a Skill, creates
-directories, grants permissions, authenticates, or edits project files. Codex
-confirms the exact trusted project and discusses startup, targets,
-environments, authentication and test data, evidence, retention, reports,
-reruns, Git, CI, secrets, and result recording before choosing values.
+Every successful `doctor --json` response includes `requiredAction`. A missing
+`.ai-qa/config.yaml` returns the blocking action
+`{"kind":"configure-project","blocking":true,"reason":"project-config-missing"}`;
+ready and repair (`not_ready`) responses return `null`. Older CLIs that return
+only `status: "uninitialized"` trigger the same first-use flow.
+
+The configuration conversation does not ask the user to select a project root
+or repository-trust value. Codex owns those prerequisites. AI QA setup derives
+unambiguous project facts, applies documented safe defaults only when the
+project and user are silent, and asks only for unresolved or conflicting
+values. Cancelling setup leaves the project uninitialized and the original QA
+request suspended.
 
 Draft the complete schema-v2 config and the complete Project Skill separately
 in scratch space. Validate the config without writing project files:
@@ -168,7 +176,7 @@ The user and agent first discuss the target, acceptance criteria, evidence polic
 
 1. Install/check the global product Skill explicitly with `ai-qa skill install --global` and `ai-qa skill check --global`.
 2. Confirm machine trust with `ai-qa trust confirm --project <target> --stdin-json`.
-3. Follow the host-managed two-doctor initialization workflow above. Use `config validate` and `skill-creator`, then write only after one confirmation.
+3. Follow the host-managed two-doctor initialization workflow above. Treat the first doctor's `configure-project` action, or legacy bare `uninitialized` status, as mandatory; use `config validate` and `skill-creator`, write only after one confirmation, and resume the requested QA work only after the final doctor reports `ready`.
 4. Use Chrome DevTools MCP read-only checks and submit their result to `ai-qa doctor --platform web --json --stdin-json`.
 5. Start exploratory QA with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
 6. Before every browser call, record `ai-qa action plan`. After the call, record `ai-qa action complete`; then use the typed `observation`, `evidence`, `assertion`, `decision`, `recovery`, or `blocker` commands as appropriate.
