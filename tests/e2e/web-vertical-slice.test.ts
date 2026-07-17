@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
 import {
   evidenceRecordSchema,
@@ -28,7 +29,6 @@ import {
   draftCaseFromRun,
   validateCaseRevision,
 } from "../../src/services/case-promotion/draft-case.js";
-import type { WebDoctorResult } from "../../src/services/doctor/web-doctor.js";
 import {
   exportProjectLocalRunReport,
   generateRunReport,
@@ -44,21 +44,33 @@ import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const startedAt = new Date("2026-07-13T00:00:00.000Z");
 const now = () => new Date("2026-07-13T00:05:00.000Z");
-const ready: WebDoctorResult & WorkOrder["readiness"] = {
+const ready: PlatformReadiness & WorkOrder["readiness"] = {
   platform: "web" as const,
   status: "ready" as const,
   checks: [
-    { code: "web.entry_url", status: "pass", message: "Configured" },
-    { code: "web.entry_page", status: "pass", message: "Fixture ready" },
+    {
+      code: "web.entry_url",
+      status: "pass",
+      message: "Configured",
+      category: "environment",
+    },
+    {
+      code: "web.entry_page",
+      status: "pass",
+      message: "Fixture ready",
+      category: "environment",
+    },
     {
       code: "web.chrome_devtools_mcp",
       status: "pass",
       message: "Chrome DevTools MCP ready",
+      category: "tool",
     },
     {
       code: "agent.global_skill",
       status: "pass",
       message: "Global skill compatible",
+      category: "installation",
     },
   ],
 };
@@ -77,7 +89,7 @@ const criteria = [
 
 function config(): ProjectConfig {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     recordingPolicy: { mode: "local-only" },
     project: { id: "fixture-web", name: "Web QA fixture" },
     targets: { web: { entryUrl: "http://127.0.0.1:4173/login" } },
@@ -720,6 +732,7 @@ async function replayActiveCase(input: {
   const workOrder = await startRegressionRun({
     projectRoot: input.projectRoot,
     caseId: input.revision.caseId,
+    platform: "web",
     execution: "local",
     readiness: ready,
     now: () => startedAt,
@@ -743,15 +756,15 @@ async function replayActiveCase(input: {
   return { workOrder, result, report, exported };
 }
 
-describe("Increment 1 Web vertical slice services", () => {
-  it("packages the 1.4 global skill first-use capability", async () => {
+describe("Web vertical slice services", () => {
+  it("packages the 2.0 three-platform global skill", async () => {
     const skill = await readFile(
       join(process.cwd(), "src", "skills", "global", "SKILL.md"),
       "utf8",
     );
 
-    expect(skill).toContain("aiQaSkillVersion: 1.4.0");
-    expect(skill).toContain("aiQaProtocolRange: ^1.2.0");
+    expect(skill).toContain("aiQaSkillVersion: 2.0.0");
+    expect(skill).toContain("aiQaProtocolRange: ^2.0.0");
     expect(skill).toContain("aiQaRecordingReceipt: true");
   });
 
@@ -795,6 +808,7 @@ describe("Increment 1 Web vertical slice services", () => {
 
     const exploratory = await startExploratoryRun({
       projectRoot,
+      platform: "web",
       payload: {
         goal: "Verify successful login",
         acceptanceCriteria: criteria,
@@ -835,7 +849,7 @@ describe("Increment 1 Web vertical slice services", () => {
       input: {
         caseId: "login-success",
         title: "Successful login",
-        webSteps: [
+        steps: [
           {
             sourceActionId: exploratoryResult.interactionId,
             intent: "Submit valid credentials",

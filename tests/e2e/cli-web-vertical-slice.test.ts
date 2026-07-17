@@ -1,15 +1,7 @@
-import {
-  access,
-  mkdtemp,
-  mkdir,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { stringify } from "yaml";
 import { runCli } from "../../src/cli/program.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { validateEvidenceParity } from "../../src/core/evidence/parity.js";
@@ -31,10 +23,7 @@ import {
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
-import {
-  initializeTestProject,
-  projectConfigV1,
-} from "../helpers/project-fixture.js";
+import { initializeTestProject } from "../helpers/project-fixture.js";
 
 const fixedNow = () => new Date("2026-07-13T00:10:00.000Z");
 const criteria = [
@@ -52,7 +41,7 @@ const criteria = [
 
 function config(): ProjectConfig {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     recordingPolicy: { mode: "local-only" },
     project: { id: "fixture-web", name: "Web QA fixture" },
     targets: { web: { entryUrl: "http://127.0.0.1:4173/login" } },
@@ -887,7 +876,7 @@ describe("Increment 1 Web vertical slice CLI", () => {
     }>(["case", "draft", "--from-run", exploratory.runId, "--stdin-json"], {
       caseId: "login-success",
       title: "Successful login",
-      webSteps: [
+      steps: [
         {
           sourceActionId: exploratoryResult.proof.interactionId,
           intent: "Submit valid credentials",
@@ -1036,88 +1025,4 @@ describe("Increment 1 Web vertical slice CLI", () => {
     ).toHaveLength(3);
   }, 20_000);
 
-  it("keeps an existing v1 project local-only without rewriting it", async () => {
-    const machineHome = await mkdtemp(join(tmpdir(), "ai-qa-cli-v1-e2e-"));
-    const projectRoot = join(machineHome, "target-project");
-    const agentsHome = join(machineHome, "agents-home");
-    const legacyConfig = stringify(projectConfigV1());
-    await initializeTestProject({ projectRoot });
-    await Promise.all([
-      writeFile(join(projectRoot, ".ai-qa", "config.yaml"), legacyConfig),
-      rm(join(projectRoot, ".agents", "skills", "ai-qa-project", "SKILL.md")),
-    ]);
-    const cli = createHarness({
-      projectRoot,
-      machineHome,
-      agentsHome,
-    });
-    await cli.run(["skill", "install", "--global"]);
-    const doctor = await cli.run<WorkOrder["readiness"]>(
-      ["doctor", "--platform", "web", "--json", "--stdin-json"],
-      {
-        entryPage: {
-          status: "ready",
-          observedAt: fixedNow().toISOString(),
-          evidence: "Legacy project target is available",
-        },
-        chromeDevtoolsMcp: {
-          status: "ready",
-          observedAt: fixedNow().toISOString(),
-          evidence: "Chrome DevTools MCP capability confirmed",
-        },
-      },
-    );
-    const run = await cli.run<WorkOrder>(
-      [
-        "run",
-        "start",
-        "--kind",
-        "exploratory",
-        "--platform",
-        "web",
-        "--execution",
-        "local",
-        "--stdin-json",
-      ],
-      {
-        goal: "Prove v1 projects remain locally executable",
-        acceptanceCriteria: criteria,
-        readiness: doctor,
-      },
-    );
-    expect(run.recordingPolicy).toEqual({ mode: "local-only" });
-    await cli.run([
-      "run",
-      "cancel",
-      run.runId,
-      "--reason",
-      "Compatibility proof is complete",
-    ]);
-    await cli.run(["report", "generate", run.runId]);
-    expect(await cli.run(["report", "recording-status", run.runId])).toEqual({
-      subject: { kind: "run", id: run.runId },
-      status: "not_applicable",
-      references: [],
-    });
-    await expect(
-      readFile(join(projectRoot, ".ai-qa", "config.yaml"), "utf8"),
-    ).resolves.toBe(legacyConfig);
-    const reportDirectory = join(
-      projectRoot,
-      ".ai-qa",
-      "reports",
-      "runs",
-      run.runId,
-    );
-    await expect(
-      access(join(reportDirectory, "recording.jsonl")),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    await expect(
-      access(join(reportDirectory, "recording.json")),
-    ).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  });
 });

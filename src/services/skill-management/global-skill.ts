@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { createTwoFilesPatch } from "diff";
 import { satisfies } from "semver";
@@ -199,6 +199,27 @@ export async function previewGlobalSkillSync(input: {
       }
     }
   }
+  const sourceReferencePaths = new Set(
+    references.map((reference) => reference.relativePath),
+  );
+  const installedReferenceRoot = join(dirname(destination), "references");
+  const staleReferencePaths = (
+    await listFiles(installedReferenceRoot)
+  ).filter((relativePath) => !sourceReferencePaths.has(relativePath));
+  for (const relativePath of staleReferencePaths) {
+    const installedPath = join(installedReferenceRoot, relativePath);
+    const installed = await readFile(installedPath, "utf8");
+    referencesChanged = true;
+    requiresConfirmation = true;
+    diffs.push(
+      createTwoFilesPatch(
+        installedPath,
+        `${installedPath} (proposed)`,
+        installed,
+        "",
+      ),
+    );
+  }
 
   return {
     destination,
@@ -247,6 +268,20 @@ export async function syncGlobalSkill(
       referenceWrites.push({ path: installedPath, content: reference.content });
     }
   }
+  const sourceReferencePaths = new Set(
+    references.map((reference) => reference.relativePath),
+  );
+  const installedReferenceRoot = join(dirname(destination), "references");
+  const staleReferencePaths = (
+    await listFiles(installedReferenceRoot)
+  ).filter((relativePath) => !sourceReferencePaths.has(relativePath));
+  if (staleReferencePaths.length > 0 && !input.confirmManagedReplacement) {
+    throw new AiQaError(
+      "skill.reference_conflict",
+      "Installed CLI-managed skill contains references retired from the bundled asset set",
+      { paths: staleReferencePaths },
+    );
+  }
 
   await mkdir(dirname(destination), { recursive: true });
   if (merged.changed) {
@@ -255,9 +290,17 @@ export async function syncGlobalSkill(
   await Promise.all(
     referenceWrites.map(({ path, content }) => atomicWriteFile(path, content)),
   );
+  await Promise.all(
+    staleReferencePaths.map((relativePath) =>
+      unlink(join(installedReferenceRoot, relativePath)),
+    ),
+  );
   return {
     destination,
-    changed: merged.changed || referenceWrites.length > 0,
+    changed:
+      merged.changed ||
+      referenceWrites.length > 0 ||
+      staleReferencePaths.length > 0,
     managedChecksum: merged.managedChecksum,
   };
 }
@@ -319,6 +362,19 @@ export async function checkGlobalSkill(input: {
     if (sha256(installed) !== reference.hash) {
       return { status: "conflict", destination };
     }
+  }
+  const sourceReferencePaths = new Set(
+    references.map((reference) => reference.relativePath),
+  );
+  const installedReferencePaths = await listFiles(
+    join(dirname(destination), "references"),
+  );
+  if (
+    installedReferencePaths.some(
+      (relativePath) => !sourceReferencePaths.has(relativePath),
+    )
+  ) {
+    return { status: "stale", destination };
   }
   return { status: "compatible", destination };
 }

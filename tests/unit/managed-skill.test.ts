@@ -8,8 +8,8 @@ const source = `---
 name: ai-qa
 description: Canonical AI QA workflow
 metadata:
-  aiQaSkillVersion: 1.0.0
-  aiQaProtocolRange: ^1.0.0
+  aiQaSkillVersion: 2.0.0
+  aiQaProtocolRange: ^2.0.0
   aiQaManagedChecksum: bundled
 ---
 <!-- ai-qa:managed:start -->
@@ -33,7 +33,7 @@ describe("mergeManagedSkill", () => {
       recordedManagedChecksum: "bundled",
     });
     expect(inspection.metadata).toMatchObject({
-      aiQaProjectSkillVersion: "1.0.0",
+      aiQaProjectSkillVersion: "2.0.0",
     });
     expect(inspection.managedChecksum).toMatch(/^[a-f0-9]{64}$/);
     expect(Object.isFrozen(inspection)).toBe(true);

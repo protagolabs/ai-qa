@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -19,18 +20,15 @@ import {
 import { mergeManagedSkill } from "../../src/services/skill-management/managed-skill.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
-  copyReleasedLegacyGlobalSkill,
-  installReleasedLegacyGlobalSkill,
   installedGlobalSkillReference,
-  readReleasedLegacyGlobalSkill,
 } from "../helpers/global-skill-fixture.js";
 
 const canonicalSkill = `---
 name: ai-qa
 description: QA
 metadata:
-  aiQaSkillVersion: 1.2.0
-  aiQaProtocolRange: ^1.2.0
+  aiQaSkillVersion: 2.0.0
+  aiQaProtocolRange: ^2.0.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
 ---
@@ -43,7 +41,10 @@ flow
 
 async function createSkillFixture(
   references: Readonly<Record<string, string>> = {
-    "web-work-protocol.md": "# Protocol\n",
+    "shared-work-protocol.md": "# Shared protocol\n",
+    "web-controller.md": "# Web controller\n",
+    "ios-simulator-controller.md": "# iOS Simulator controller\n",
+    "android-emulator-controller.md": "# Android Emulator controller\n",
   },
 ): Promise<{
   agentsHome: string;
@@ -54,7 +55,6 @@ async function createSkillFixture(
   const sourceDirectory = join(agentsHome, "canonical");
   const sourcePath = join(sourceDirectory, "SKILL.md");
   await mkdir(join(sourceDirectory, "references"), { recursive: true });
-  await copyReleasedLegacyGlobalSkill(sourceDirectory);
   await writeFile(sourcePath, canonicalSkill);
   for (const [relativePath, content] of Object.entries(references)) {
     const path = join(sourceDirectory, "references", relativePath);
@@ -77,28 +77,28 @@ describe("syncGlobalSkill", () => {
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.2.0\n",
+        "  aiQaSkillVersion: 2.0.0\n",
         "",
       ),
     },
     {
       operation: "preview",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.2.0",
+        "  aiQaProtocolRange: ^2.0.0",
         "  aiQaProtocolRange: 1",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaSkillVersion: 1.2.0\n",
+        "  aiQaSkillVersion: 2.0.0\n",
         "",
       ),
     },
     {
       operation: "sync",
       malformedSource: canonicalSkill.replace(
-        "  aiQaProtocolRange: ^1.2.0",
+        "  aiQaProtocolRange: ^2.0.0",
         "  aiQaProtocolRange: 1",
       ),
     },
@@ -144,8 +144,8 @@ describe("syncGlobalSkill", () => {
     await mkdir(join(sourceDirectory, "references"), { recursive: true });
     await writeFile(sourcePath, canonicalSkill);
     await writeFile(
-      join(sourceDirectory, "references", "web-work-protocol.md"),
-      "# Protocol\n",
+      join(sourceDirectory, "references", "shared-work-protocol.md"),
+      "# Shared protocol\n",
     );
 
     await syncGlobalSkill({
@@ -155,7 +155,7 @@ describe("syncGlobalSkill", () => {
     });
     const destination = join(agentsHome, "skills", "ai-qa", "SKILL.md");
     expect(await readFile(destination, "utf8")).toContain(
-      "aiQaSkillVersion: 1.2.0",
+      "aiQaSkillVersion: 2.0.0",
     );
     expect(
       await readFile(
@@ -164,11 +164,11 @@ describe("syncGlobalSkill", () => {
           "skills",
           "ai-qa",
           "references",
-          "web-work-protocol.md",
+          "shared-work-protocol.md",
         ),
         "utf8",
       ),
-    ).toBe("# Protocol\n");
+    ).toBe("# Shared protocol\n");
 
     await mkdir(join(agentsHome, "skills", "ai-qa"), { recursive: true });
     await writeFile(
@@ -200,7 +200,7 @@ describe("syncGlobalSkill", () => {
     const installedReference = join(
       dirname(fixture.destination),
       "references",
-      "web-work-protocol.md",
+      "shared-work-protocol.md",
     );
     await unlink(installedReference);
 
@@ -211,7 +211,7 @@ describe("syncGlobalSkill", () => {
       }),
     ).resolves.toMatchObject({ changed: true });
     await expect(readFile(installedReference, "utf8")).resolves.toBe(
-      "# Protocol\n",
+      "# Shared protocol\n",
     );
   });
 
@@ -224,7 +224,7 @@ describe("syncGlobalSkill", () => {
     const installedReference = join(
       dirname(fixture.destination),
       "references",
-      "web-work-protocol.md",
+      "shared-work-protocol.md",
     );
     await writeFile(installedReference, "# Local edit\n");
 
@@ -373,32 +373,11 @@ describe("syncGlobalSkill", () => {
     );
   });
 
-  it("rejects a valid 1.0 skill for every current recording mode", async () => {
-    const fixture = await createSkillFixture();
-    await installReleasedLegacyGlobalSkill(fixture.agentsHome);
-
-    await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
-      status: "stale",
-    });
-    await expect(
-      checkGlobalSkillForProject({
-        ...fixture,
-        recordingMode: "local-only",
-      }),
-    ).resolves.toMatchObject({ status: "stale" });
-    await expect(
-      checkGlobalSkillForProject({
-        ...fixture,
-        recordingMode: "project-skill",
-      }),
-    ).resolves.toMatchObject({ status: "stale" });
-  });
-
   it.each([
     { condition: "missing", expected: "stale" },
     { condition: "tampered", expected: "conflict" },
   ] as const)(
-    "rejects the current 1.2 skill when its managed reference is $condition",
+    "rejects the current 2.0 skill when its managed reference is $condition",
     async ({ condition, expected }) => {
       const fixture = await createSkillFixture();
       await syncGlobalSkill({
@@ -408,7 +387,7 @@ describe("syncGlobalSkill", () => {
       const installedReference = join(
         dirname(fixture.destination),
         "references",
-        "web-work-protocol.md",
+        "shared-work-protocol.md",
       );
       if (condition === "missing") {
         await unlink(installedReference);
@@ -424,7 +403,7 @@ describe("syncGlobalSkill", () => {
     },
   );
 
-  it("rejects a checksum-self-consistent impostor claiming current 1.2", async () => {
+  it("rejects a checksum-self-consistent impostor claiming current 2.0", async () => {
     const fixture = await createSkillFixture();
     await syncGlobalSkill({
       ...fixture,
@@ -446,7 +425,7 @@ describe("syncGlobalSkill", () => {
     }
   });
 
-  it("keeps the current 1.2 user region outside managed checksum pinning", async () => {
+  it("keeps the current 2.0 user region outside managed checksum pinning", async () => {
     const fixture = await createSkillFixture();
     await syncGlobalSkill({
       ...fixture,
@@ -467,56 +446,40 @@ describe("syncGlobalSkill", () => {
     }
   });
 
-  it.each([{ condition: "missing" }, { condition: "tampered" }] as const)(
-    "rejects a released legacy 1.0 skill when its pinned reference is $condition",
-    async ({ condition }) => {
-      const fixture = await createSkillFixture();
-      await installReleasedLegacyGlobalSkill(fixture.agentsHome);
-      const installedReference = installedGlobalSkillReference(
-        fixture.agentsHome,
-      );
-      if (condition === "missing") {
-        await unlink(installedReference);
-      } else {
-        await writeFile(installedReference, "# Unknown legacy reference\n");
-      }
-
-      await expect(
-        checkGlobalSkillForProject({
-          ...fixture,
-          recordingMode: "local-only",
-        }),
-      ).resolves.toMatchObject({ status: "stale" });
-      await expect(
-        checkGlobalSkillForProject({
-          ...fixture,
-          recordingMode: "project-skill",
-        }),
-      ).resolves.toMatchObject({ status: "stale" });
-    },
-  );
-
-  it("rejects a checksum-self-consistent impostor claiming legacy 1.0", async () => {
+  it("removes stale managed references only after confirmed synchronization", async () => {
     const fixture = await createSkillFixture();
-    await installReleasedLegacyGlobalSkill(fixture.agentsHome);
-    const forged = (await readReleasedLegacyGlobalSkill()).replace(
-      "# AI QA Workflow",
-      "# Forged AI QA Workflow",
+    await syncGlobalSkill({
+      ...fixture,
+      confirmManagedReplacement: false,
+    });
+    const stale = installedGlobalSkillReference(
+      fixture.agentsHome,
+      "web-work-protocol.md",
     );
-    await writeFile(
-      fixture.destination,
-      mergeManagedSkill({
-        source: forged,
-        confirmManagedReplacement: false,
-      }).content,
-    );
+    await writeFile(stale, "# Retired Web-only protocol\n");
 
     await expect(
-      checkGlobalSkillForProject({
+      syncGlobalSkill({
         ...fixture,
-        recordingMode: "local-only",
+        confirmManagedReplacement: false,
       }),
-    ).resolves.toMatchObject({ status: "stale" });
+    ).rejects.toMatchObject({ code: "skill.reference_conflict" });
+    await expect(readFile(stale, "utf8")).resolves.toContain("Retired");
+
+    await expect(
+      syncGlobalSkill({ ...fixture, confirmManagedReplacement: true }),
+    ).resolves.toMatchObject({ changed: true });
+    await expectMissing(stale);
+    expect(
+      (
+        await readdir(join(dirname(fixture.destination), "references"))
+      ).sort(),
+    ).toEqual([
+      "android-emulator-controller.md",
+      "ios-simulator-controller.md",
+      "shared-work-protocol.md",
+      "web-controller.md",
+    ]);
   });
 
   it("requires the receipt capability for strict bundled skill checks", async () => {
@@ -540,132 +503,62 @@ describe("syncGlobalSkill", () => {
   });
 });
 
-describe("bundled global skill 1.4", () => {
-  it("teaches the host-managed Project Skill procedure", async () => {
-    const skill = await readFile(
-      join(process.cwd(), "src", "skills", "global", "SKILL.md"),
-      "utf8",
+describe("bundled global skill 2.0", () => {
+  it("routes setup and execution across the three configured platforms", async () => {
+    const root = join(process.cwd(), "src", "skills", "global");
+    const skill = await readFile(join(root, "SKILL.md"), "utf8");
+    const references = await Promise.all(
+      [
+        "shared-work-protocol.md",
+        "web-controller.md",
+        "ios-simulator-controller.md",
+        "android-emulator-controller.md",
+      ].map((name) => readFile(join(root, "references", name), "utf8")),
     );
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
-    );
-    const guidance = `${skill}\n${reference}`;
+    const guidance = [skill, ...references].join("\n");
 
-    expect.soft(skill).toContain("  aiQaSkillVersion: 1.4.0");
-    expect.soft(skill).toContain("  aiQaProtocolRange: ^1.2.0");
-    expect.soft(skill).toContain("  aiQaRecordingReceipt: true");
-    expect.soft(skill).toContain("  aiQaManagedChecksum: bundled");
+    expect.soft(skill).toContain("aiQaSkillVersion: 2.0.0");
+    expect.soft(skill).toContain("aiQaProtocolRange: ^2.0.0");
+    expect.soft(skill).toContain("web, ios-simulator, and android-emulator");
+    expect.soft(skill).toContain("ask which configured platform subset");
+    expect.soft(skill).not.toContain("schema-v2");
+    expect.soft(skill).not.toContain("automatically run all");
     for (const fact of [
-      "Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write.",
-      "Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files.",
-      "Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default.",
-      "Use `local-only` only after the user explicitly selects it.",
-      "Use `project-skill` only after the user explicitly selects it and confirms the exact existing result-management procedure.",
-      "Tool availability alone is not a result-management procedure.",
-      "Do not validate a final config, request write confirmation, write project files, or resume QA until the recording decision is complete.",
-      "The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.",
-      "Run `ai-qa config validate --stdin-json` as a read-only config check.",
-      "Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.",
-      "Only after config validation, scratch Project Skill validation, and all path, symlink, and secret safety checks succeed may Codex request the one confirmation; that confirmation authorizes only the two target writes and four canonical project-local directories, followed by the post-write doctor.",
-      "The one confirmation does not authorize the post-write doctor; after the approved writes and directory creation complete, Codex runs doctor as a separate mandatory verification step.",
-      "Run `ai-qa doctor --json` after the host-managed write.",
-      "For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.",
-      "Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.",
-      "Permissions, authentication, file writes, and external tools remain host-owned.",
-      "Target resolution and project access are Codex/host prerequisites; AI QA does not grant repository access.",
-      "Treat `requiredAction.kind: configure-project` as a mandatory first-use gate.",
-      "Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.",
-      "Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.",
-      "Configuration source precedence for fields other than recording mode is explicit user decisions, unambiguous project-owned instructions, then safe product defaults.",
-      "Ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.",
-      "If the user cancels or defers setup, do not write files, use temporary defaults, or resume QA.",
-      "Resume the original QA request only after the post-write doctor returns `ready`.",
+      "non-empty deployed platform selection",
+      "collect every selected platform's required configuration",
+      "Always ask the user to explicitly choose `recordingPolicy.mode`",
+      "schema 3",
+      "displays both complete diffs",
+      "Doctor every configured platform",
+      "Real devices are unsupported",
+      "The CLI never invokes controllers",
+      "RunGroup",
+      "aggregate report",
+      "recording",
     ]) {
       expect.soft(guidance).toContain(fact);
     }
-    expect.soft(reference).toContain("## Canonical schema-v2 config draft");
-    expect.soft(reference).toContain("targets:\n  web:\n    entryUrl:");
-    expect
-      .soft(reference)
-      .toContain('tools:\n  web:\n    controller: "chrome-devtools-mcp"');
-    expect
-      .soft(reference)
-      .toContain(
-        "evidencePolicy:\n  screenshots: required\n  defaultSensitivity: internal",
-      );
-    expect
-      .soft(reference)
-      .toContain("storagePolicy:\n  adapter: project-local");
-    expect
-      .soft(reference)
-      .toContain("secretReferences: {}\nrecordingPolicy:\n  mode: local-only");
-    expect
-      .soft(reference)
-      .toContain("A request to show the approval decision is proposal-only");
-    expect
-      .soft(reference)
-      .toContain(
-        "Project Skill drafted and validated with `skill-creator` in scratch space; target write waits for this one confirmation.",
-      );
-    expect.soft(reference).toContain(`## Required pre-confirmation attestation
-
-Immediately before the approval question, include all four lines:
-
-- Complete config validation: MUST PASS BEFORE CONFIRMATION.
-- Scratch Project Skill validation with \`skill-creator\`: MUST PASS BEFORE CONFIRMATION.
-- Exact-root and target/parent symlink safety: MUST PASS BEFORE CONFIRMATION.
-- Literal-secret and unsupported-secret-handling safety: MUST PASS BEFORE CONFIRMATION.`);
-    expect.soft(guidance).not.toContain("InitializationRequest");
-    expect.soft(guidance).not.toContain("initializationRequestSchema");
-    expect.soft(guidance).not.toContain("projectSkill.content");
-    expect.soft(guidance).not.toMatch(/(?:managed-)?checksum algorithm/i);
-    expect.soft(guidance).not.toContain("createHash");
-    expect.soft(guidance).not.toContain("SHA-256");
-    expect.soft(guidance).not.toContain("--confirm-checksum");
-    expect.soft(guidance).not.toContain("ai-qa skill generate --project");
-    expect.soft(guidance).not.toContain("ai-qa skill sync --project");
-    expect.soft(guidance).not.toContain("ai-qa trust");
-    expect.soft(guidance).not.toContain("repository trust");
-    expect
-      .soft(guidance)
-      .not.toContain(
-        "When no existing result-management procedure exists, use `recordingPolicy.mode: local-only`",
-      );
-    expect.soft(guidance).not.toMatch(/\b(?:GitHub|Jira|Notion|Linear)\b/i);
+    expect.soft(guidance).toContain("chrome-devtools-mcp");
+    expect.soft(guidance).toContain("pepper");
+    expect.soft(guidance).toContain("appium");
+    expect.soft(guidance).toContain("uiautomator2");
+    expect.soft(guidance).not.toContain("web-work-protocol.md");
   });
 
-  it("labels the local Project Skill body example as arbitrary and unmanaged", async () => {
-    const reference = await readFile(
-      join(
-        process.cwd(),
-        "src",
-        "skills",
-        "global",
-        "references",
-        "web-work-protocol.md",
-      ),
-      "utf8",
+  it("contains exactly the current one-level reference set", async () => {
+    const referenceDirectory = join(
+      process.cwd(),
+      "src",
+      "skills",
+      "global",
+      "references",
     );
-    const match =
-      /### Arbitrary local Project Skill body example[\s\S]*?```markdown\r?\n([\s\S]*?)\r?\n```/.exec(
-        reference,
-      );
-
-    expect(match?.[1], "arbitrary local Project Skill body").toBeDefined();
-    expect(match?.[1]).toContain("# Sample Web Project Procedures");
-    expect(match?.[1]).toContain("without creating an external record");
-    expect(match?.[1]).not.toContain("---");
-    expect(match?.[1]).not.toContain("metadata:");
-    expect(match?.[1]).not.toContain("ai-qa:managed");
-    expect(reference).toContain("It is not a provider contract.");
+    expect((await readdir(referenceDirectory)).sort()).toEqual([
+      "android-emulator-controller.md",
+      "ios-simulator-controller.md",
+      "shared-work-protocol.md",
+      "web-controller.md",
+    ]);
   });
 });
 
@@ -714,7 +607,7 @@ describe("global skill CLI", () => {
     ).toBe(0);
     expect(
       await readFile(join(agentsHome, "skills", "ai-qa", "SKILL.md"), "utf8"),
-    ).toContain("aiQaSkillVersion: 1.4.0");
+    ).toContain("aiQaSkillVersion: 2.0.0");
     expect(await runCli(["skill", "check", "--global"], captured.context)).toBe(
       0,
     );

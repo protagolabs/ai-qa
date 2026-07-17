@@ -1,21 +1,10 @@
 # ai-qa
 
-`ai-qa` is an agent-orchestrated QA CLI and Agent Skill. It is not a runtime,
-daemon, or background service: the host invokes the CLI on demand and each
-command exits. The agent controls the Web target through Chrome DevTools MCP;
-the Node.js CLI owns the validated configuration, immutable work orders, typed
-event protocol, evidence files and hashes, regression cases, verdict
-validation, and project-local reports.
+`ai-qa` is an agent-orchestrated QA CLI and Agent Skill for Web, iOS Simulator, and Android Emulator. The host invokes controllers; the CLI never does. The CLI owns schema-3 configuration, immutable platform work orders, typed journals, evidence integrity, case variants, verdict validation, RunGroups, aggregate matrices, reports, and neutral recording receipts.
 
-The split is intentional: the agent decides what to observe and do, while the CLI is the authority for persisted state and whether the available evidence supports a verdict.
+Real iOS and Android devices are unsupported. Mobile targets are Simulator/Emulator only.
 
-## Increment 1 scope
-
-Increment 1 provides one complete local Web workflow: global skill installation, host-authorized target-project setup, Web readiness, exploratory QA, two-phase browser calls, screenshot evidence, reviewed case promotion, pinned regression replay, and JSON/Markdown reports.
-
-RunGroup and suite aggregation, Codex/Claude CI runner templates, external storage adapters, iOS/Pepper, Android/Appium, real-device workflows, and public npm publication are Increment 2 or later work.
-
-## Develop
+## Develop and install
 
 Requirements: Node.js 22 or 24 and pnpm 11.9.0.
 
@@ -26,169 +15,160 @@ pnpm check
 pnpm build
 ```
 
-Start the deterministic local fixture with a runtime-only password:
+Install the bundled global Skill explicitly:
 
 ```bash
-AI_QA_FIXTURE_PASSWORD=correct-horse pnpm fixture:web
+AI_QA_AGENTS_HOME="$AGENTS_HOME" ai-qa skill install --global
+AI_QA_AGENTS_HOME="$AGENTS_HOME" ai-qa skill check --global
 ```
 
-`correct-horse` is a published, non-production value used only by this deterministic fixture. Treat real target credentials as secrets: preload them through the operator's secret manager and never persist their values in project state or reports.
+The current Skill is version `2.0.0` and accepts work protocol `^2.0.0`. A confirmed sync installs exactly four managed references: the shared protocol plus Web, iOS Simulator, and Android Emulator controller guides. User content outside managed markers is preserved.
 
-## Pack and install in isolation
+## State and authority
 
-Public publication is not part of Increment 1. Build and verify the npm package locally:
+Each target project owns `.ai-qa/config.yaml`, cases, runs, RunGroups, evidence, run reports, and group reports. Codex resolves the exact project and uses only host-granted access. Secret references are environment-variable names, never credential values.
+
+The host owns Chrome DevTools MCP, Pepper, Appium/UiAutomator2, authentication, controller sessions, and screenshots. `ai-qa action plan` and `action complete` record those calls but do not make them.
+
+## Configure a project
+
+Run doctor first. A missing config returns the blocking `configure-project` action. Suspend QA until setup is approved and a post-write doctor is ready.
+
+Setup must:
+
+1. Ask for a non-empty deployed platform selection.
+2. Collect every selected platform target/tool configuration.
+3. Ask explicitly for `recordingPolicy.mode`; neither mode is a default.
+4. Draft schema 3 config and a project-owned Project Skill in scratch space.
+5. Validate config with `ai-qa config validate --stdin-json` and validate the Skill with `skill-creator`.
+6. Display both complete diffs, obtain one confirmation, write once, and doctor every configured platform.
+
+`targets` and `tools` must contain the same non-empty platform keys. These fragments show each platform's required schema-3 fields; combine any non-empty subset with the shared policies below.
+
+```yaml
+schemaVersion: 3
+targets:
+  web:
+    entryUrl: https://example.test
+    readinessUrl: https://example.test/health
+tools:
+  web:
+    controller: chrome-devtools-mcp
+```
+
+```yaml
+schemaVersion: 3
+targets:
+  ios-simulator:
+    bundleId: com.example.app
+    simulator:
+      selection: device-name
+      deviceName: iPhone 17 Pro
+tools:
+  ios-simulator:
+    controller: pepper
+```
+
+```yaml
+schemaVersion: 3
+targets:
+  android-emulator:
+    appPackage: com.example.app
+    appActivity: .MainActivity
+    emulator:
+      selection: avd-name
+      avdName: Pixel_10_API_36
+tools:
+  android-emulator:
+    controller: appium
+    automationName: uiautomator2
+    endpoint: http://127.0.0.1:4723
+```
+
+Complete config also includes `project`, `environments`, `evidencePolicy`, `reportPolicy`, `recordingPolicy`, `storagePolicy`, `gitPolicy`, `ciPolicy`, and `secretReferences`. Run `config validate`; do not infer extra keys.
+
+## Doctor and single-platform runs
+
+Supply host-recorded observations to the platform doctor:
 
 ```bash
-PACK_DIR="$(mktemp -d)"
-PREFIX="$(mktemp -d)"
-AGENTS_HOME="$(mktemp -d)"
-pnpm pack --pack-destination "$PACK_DIR"
-npm install --global --prefix "$PREFIX" "$PACK_DIR/ai-qa-0.0.0.tgz"
-AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill install --global
-AI_QA_AGENTS_HOME="$AGENTS_HOME" "$PREFIX/bin/ai-qa" skill check --global
-"$PREFIX/bin/ai-qa" --help
+ai-qa doctor --platform web --json --stdin-json
+ai-qa doctor --platform ios-simulator --json --stdin-json
+ai-qa doctor --platform android-emulator --json --stdin-json
 ```
 
-npm installation never edits agent instructions. `skill install --global` is a separate, explicit operation that previews managed changes and installs the canonical skill under `$AI_QA_AGENTS_HOME/skills/ai-qa/` (default `~/.agents/skills/ai-qa/`). CLI-managed regions and reference assets may be updated by `skill sync`; user-authored content outside the managed markers is preserved. Replacing locally changed managed content requires explicit confirmation.
-
-## State and authority boundary
-
-Each target project owns its QA records under `<target>/.ai-qa/`:
-
-- confirmed `config.yaml`;
-- immutable run work orders and append-only typed journals;
-- per-run evidence indexes and raw files;
-- immutable case revisions and activation provenance;
-- generated reports under `reports/runs/<run-id>/`.
-
-When a work order snapshots `recordingPolicy.mode: project-skill`, the same
-per-run report directory can also contain the canonical neutral receipt journal
-`recording.jsonl` and its deterministic view `recording.json`. These files do
-not change the run, verdict, or generated report bytes.
-
-Codex resolves the exact target and uses only project access granted by the host. AI QA stores no repository authorization state. Secret references contain environment-variable names, not credential values.
-
-## Initialize a target project
-
-Initialization is a host-managed project change. Follow this exact two-doctor
-workflow:
-
-```text
-Codex resolves the target and uses host-granted project access
-Codex runs doctor
-Doctor returns configure-project for an uninitialized target
-Codex suspends the requested QA work
-Codex derives safe values and asks only for unresolved decisions
-Codex drafts config and uses skill-creator in scratch space
-Codex validates both drafts
-Codex displays complete diffs and obtains one confirmation
-Codex writes .ai-qa/config.yaml and .agents/skills/ai-qa-project/SKILL.md
-Codex runs doctor again and resumes QA only when status is ready
-```
-
-Every successful `doctor --json` response includes `requiredAction`. A missing
-`.ai-qa/config.yaml` returns the blocking action
-`{"kind":"configure-project","blocking":true,"reason":"project-config-missing"}`;
-ready and repair (`not_ready`) responses return `null`. Older CLIs that return
-only `status: "uninitialized"` trigger the same first-use flow.
-
-The configuration conversation does not ask the user to select a project root
-or an AI QA authorization value. Codex and the host own those prerequisites. AI QA setup derives
-unambiguous project facts, applies documented safe defaults only when the
-project and user are silent, and asks only for unresolved or conflicting
-values. Cancelling setup leaves the project uninitialized and the original QA
-request suspended.
-
-Draft the complete schema-v2 config and the complete Project Skill separately
-in scratch space. Validate the config without writing project files:
+Before execution, ask the user which configured platform subset to run. A project may configure three platforms and run only one or two. For one platform:
 
 ```bash
-ai-qa config validate --stdin-json < config-draft.json
+ai-qa run start --kind exploratory --platform ios-simulator --execution local --stdin-json
+ai-qa run start --kind regression --case login --platform ios-simulator --execution local --stdin-json
 ```
 
-Use `skill-creator` to create and validate the Skill draft. The target Skill is
-an ordinary, complete, project-owned Skill; it has no AI-QA managed/user
-regions or embedded AI-QA checksum. Display the complete config and Skill diffs
-and obtain one confirmation covering both files. Only then may Codex create the
-canonical `.ai-qa/` directories and write the two approved files. There is no
-combined initialization JSON, manual checksum, `ai-qa init`, or CLI-owned
-Project Skill generate/sync step.
+Before every controller interaction, observation, and screenshot, record `action plan`; record the terminal result with `action complete`. A satisfied assertion must cite a fresh same-step post-action observation and registered evidence from the configured controller. Set an evidence-linked verdict and finish the run.
 
-Codex summarizes whether project inspection found an existing result-management
-procedure, then the user explicitly chooses `recordingPolicy.mode: local-only`
-or `recordingPolicy.mode: project-skill`; neither is a default. `project-skill`
-requires the user to confirm the exact existing procedure, including match,
-rerun, idempotency, and uncertain-result rules. Tool availability alone is not
-a procedure. Git tracking and commits are optional;
-GitHub and a Git remote are not assumed or required. Codex/host manages
-filesystem and tool permissions, executes approved authentication procedures,
-and invokes the final doctor. Unresolved target-project authentication and
-test-data requirements are confirmed during setup.
-
-## Finish reporting and project recording
-
-Recording mode is frozen in each immutable work order. Changing the current
-config affects only new runs: a historical `local-only` run remains
-`not_applicable`, and a historical `project-skill` run remains receipt-eligible.
-
-For a local-only run, generate and verify the configured local reports, confirm
-the neutral status, and end:
+Promote a complete reviewed exploratory run incrementally:
 
 ```bash
-ai-qa --project /absolute/target report generate <run-id>
-ai-qa --project /absolute/target report recording-status <run-id>
-# {"runId":"<run-id>","status":"not_applicable","references":[]}
+ai-qa case draft --from-run <run-id> --stdin-json
+ai-qa case validate login --revision <revision>
+ai-qa case activate login --revision <revision> --stdin-json
 ```
 
-For a project-skill run, `recording-status` becomes `pending` only after a
-terminal run has an existing verified report. Before report generation it
-returns `report.not_generated`; report or evidence drift returns the applicable
-integrity error instead of `pending`. After the host performs the exact Project
-Skill procedure, register only its neutral outcome and opaque references:
+Each draft adds or replaces only the source platform's immutable variant while retaining the other variants.
+
+## Explicit multi-platform RunGroups
+
+Repeat `--platform` for the exact requested subset. Configuration never selects all platforms implicitly.
 
 ```bash
-ai-qa --project /absolute/target report generate <run-id>
-ai-qa --project /absolute/target report recording-status <run-id>
-# {"runId":"<run-id>","status":"pending","references":[]}
+# Two selected platforms
+ai-qa run-group start --case login \
+  --platform ios-simulator android-emulator \
+  --execution local --stdin-json
 
-printf '%s\n' \
-  '{"status":"recorded","references":["docs/qa-results.md#run-id"]}' \
-  | ai-qa --project /absolute/target report receipt <run-id> --stdin-json
+# Three selected platforms
+ai-qa run-group start --all-active \
+  --platform web ios-simulator android-emulator \
+  --execution ci --stdin-json
 
-ai-qa --project /absolute/target report recording-status <run-id>
+ai-qa run-group finish <group-id>
 ```
 
-Use `not_recorded` with no references when the host confirms no record was
-made. Use `unknown` when the host cannot determine the outcome, and do not
-retry an uncertain external operation. `ai-qa` stores no provider payload and
-never changes the QA verdict based on a recording receipt.
+The manifest freezes case revisions, platform variants, selection, and budgets. A missing selected variant is a `coverage_gap`, not a child run. Aggregate reports preserve every case/platform cell and never synthesize a QA verdict.
 
-Receipt idempotency is derived internally from the run and frozen recording
-context. Do not construct or submit an idempotency key. If the Project Skill
-changes after a project-skill run starts, status and receipt operations stop
-with `project_skill.changed`; the verified report and QA verdict remain intact.
-Start a new run to snapshot the updated Skill.
+## Reports and recording
 
-`report export <run-id> --adapter project-local` verifies and returns only the
-configured `report.json` and `report.md` paths. It deliberately excludes
-`recording.jsonl` and `recording.json`; query the latest recording state through
-`report recording-status`.
+Generate and verify run reports:
 
-## Typed workflow
+```bash
+ai-qa report generate <run-id>
+ai-qa report export <run-id> --adapter project-local
+ai-qa report recording-status <run-id>
+```
 
-The agent runs doctor first, derives unambiguous project facts and documented safe defaults, and asks only about unresolved or conflicting configuration values. Only a complete, user-confirmed configuration is submitted.
+Generate and verify aggregate output:
 
-1. Install/check the global product Skill explicitly with `ai-qa skill install --global` and `ai-qa skill check --global`.
-2. Follow the host-managed two-doctor initialization workflow above. Treat the first doctor's `configure-project` action, or legacy bare `uninitialized` status, as mandatory; use `config validate` and `skill-creator`, write only after one confirmation, and resume the requested QA work only after the final doctor reports `ready`.
-3. Use Chrome DevTools MCP read-only checks and submit their result to `ai-qa doctor --platform web --json --stdin-json`.
-4. Start exploratory QA with `ai-qa run start --kind exploratory --platform web --execution local --stdin-json`.
-5. Before every browser call, record `ai-qa action plan`. After the call, record `ai-qa action complete`; then use the typed `observation`, `evidence`, `assertion`, `decision`, `recovery`, or `blocker` commands as appropriate.
-6. Register screenshot bytes with `ai-qa evidence add`, including their completed capture action, observation IDs, criterion IDs, and evidence kinds.
-7. Set or explicitly revise the evidence-linked verdict with `ai-qa verdict set`/`verdict revise`, then validate the terminal state with `ai-qa run finish`.
-8. Promote a completed exploratory run through `ai-qa case draft`, `case validate`, and explicit `case activate` review confirmation.
-9. Start `--kind regression --case <case-id>` and replay every pinned step exactly and in order. Each run pins the active revision plus case and platform-variant hashes.
-10. Generate and verify project-local output with `ai-qa report generate <run-id>` and `report export <run-id> --adapter project-local`.
+```bash
+ai-qa report group-generate <group-id>
+ai-qa report group-export <group-id> --adapter project-local
+ai-qa report group-recording-status <group-id>
+```
 
-There is no public generic event-append command. A successful MCP response alone is never a QA pass: every pass must satisfy all acceptance criteria and cite valid observations, assertions, and required evidence.
+For `local-only`, show verified local paths and stop. For `project-skill`, the host executes the exact frozen Project Skill procedure only after report verification, then submits a neutral `recorded`, `not_recorded`, or `unknown` receipt with opaque references:
 
-The exact live release-gate procedure is in [docs/validation/web-live-acceptance.md](docs/validation/web-live-acceptance.md).
+```bash
+printf '%s\n' '{"status":"recorded","references":["docs/qa.md#run"]}' \
+  | ai-qa report receipt <run-id> --stdin-json
+
+printf '%s\n' '{"status":"recorded","references":["docs/qa.md#group"]}' \
+  | ai-qa report group-receipt <group-id> --stdin-json
+```
+
+Never retry an external recording operation reported as `unknown`. Recording does not change run verdicts or aggregate matrix cells.
+
+## Live acceptance
+
+- [Web](docs/validation/web-live-acceptance.md)
+- [iOS Simulator](docs/validation/ios-simulator-live-acceptance.md)
+- [Android Emulator](docs/validation/android-emulator-live-acceptance.md)
+- [Multi-platform](docs/validation/multi-platform-live-acceptance.md)

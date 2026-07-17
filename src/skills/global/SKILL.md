@@ -1,9 +1,9 @@
 ---
 name: ai-qa
-description: Use when configuring AI QA, manually testing Web behavior, capturing QA evidence, promoting an exploratory run, or replaying a regression case with the ai-qa CLI and platform control tools.
+description: Use when configuring AI QA, testing Web or virtual mobile app behavior, capturing evidence, promoting platform case variants, replaying regressions, or reporting selected multi-platform runs with the ai-qa CLI.
 metadata:
-  aiQaSkillVersion: 1.4.0
-  aiQaProtocolRange: ^1.2.0
+  aiQaSkillVersion: 2.0.0
+  aiQaProtocolRange: ^2.0.0
   aiQaRecordingReceipt: true
   aiQaManagedChecksum: bundled
 ---
@@ -12,49 +12,35 @@ metadata:
 
 # AI QA Workflow
 
-## Host-managed target prerequisites
+AI QA supports exactly web, ios-simulator, and android-emulator. Real devices are unsupported. The host owns project access, permissions, authentication, platform controllers, and file writes. The CLI never invokes controllers; it validates and records host-supplied readiness, actions, evidence, verdicts, cases, RunGroups, reports, and recording receipts.
 
-1. Resolve the exact target project. Never substitute an ancestor for a named nested project.
-2. Use only project access already granted by Codex and the host. AI QA does not grant repository access or maintain repository authorization state.
+## Configure a project
 
-Target resolution and project access are Codex/host prerequisites; AI QA does not grant repository access.
+1. Resolve the exact project root and run `ai-qa doctor --json`. Treat `requiredAction.kind: configure-project` as a blocking first-use gate.
+2. Inspect project-owned instructions and derive only unambiguous values. Ask for a non-empty deployed platform selection, then collect every selected platform's required configuration. Never configure a physical iOS or Android device.
+3. Inspect existing result-management procedures. Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default. Select `project-skill` only after the user confirms the exact existing procedure.
+4. Draft the complete schema 3 config and project-owned `.agents/skills/ai-qa-project/SKILL.md` together. Use `skill-creator` for the Project Skill. Keep literal secrets out; config may name environment variables.
+5. Run `ai-qa config validate --stdin-json`, validate the scratch Project Skill, and verify exact-root, target/parent symlink, and secret safety.
+6. The host displays both complete diffs. Obtain one confirmation, then write both files once and create the canonical `.ai-qa/` directories. If the user cancels, write nothing.
+7. Run doctor for every configured platform. Resume QA only when every requested platform is ready.
 
-## Initialize or update a project
+Read [shared-work-protocol.md](references/shared-work-protocol.md) for setup, lifecycle, evidence, case, RunGroup, report, and recording contracts.
 
-1. Run the applicable installation doctor and host-visible checks. Treat `requiredAction.kind: configure-project` as a mandatory first-use gate. Treat a legacy doctor result with `status: uninitialized` and no `requiredAction` as the same gate.
-2. Suspend the original QA request and do not start a run or invoke a Web controller while setup is incomplete.
-3. Inspect project-owned instructions and metadata. Derive only unambiguous values, summarize derived values, and ask only for unresolved or conflicting values; do not re-ask for facts established unambiguously by the project.
-4. Use this precedence for fields other than recording mode: explicit user decisions, unambiguous project-owned instructions, then the safe product defaults in `references/web-work-protocol.md`. Never choose between conflicting project sources. `recordingPolicy.mode` is the exception and must always be chosen explicitly by the user.
-5. Inspect how the project already manages QA results or defects and summarize whether an existing procedure was found. Inspection provides context and never selects the mode. Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default. Use `local-only` only after the user explicitly selects it. Use `project-skill` only after the user explicitly selects it and confirms the exact existing result-management procedure. Tool availability alone is not a result-management procedure. Do not validate a final config, request write confirmation, write project files, or resume QA until the recording decision is complete.
-6. Draft the complete schema-v2 config and Project Skill together. Use `skill-creator` to create or update `.agents/skills/ai-qa-project/SKILL.md` in scratch space before target write. The target Project Skill is project-owned; do not add AI-QA managed/user markers or an embedded AI-QA checksum.
-7. Run `ai-qa config validate --stdin-json` as a read-only config check. Validate the scratch Project Skill with `skill-creator`.
-8. Before confirmation or write, reject literal secrets and unsupported secret handling, and verify both target files are inside the exact project root and are not symlink targets.
-9. Codex validates the config and Project Skill, displays both complete diffs, obtains one confirmation, then writes both project files. On initialization, also create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/evidence`, and `.ai-qa/reports/runs` as project-local directories.
-10. If the user cancels or defers setup, do not write files, use temporary defaults, or resume QA.
-11. Run `ai-qa doctor --json` after the host-managed write. Resume the original QA request only after the post-write doctor returns `ready`; otherwise surface the failed check and keep QA blocked.
-12. Permissions, authentication, file writes, and external tools remain host-owned.
+## Execute selected platforms
 
-Read `references/web-work-protocol.md` for the exact host-managed sequence and Project Skill body example.
+Before starting work, ask which configured platform subset the user wants now. Accept any non-empty subset of one, two, or three configured platforms. Configuration does not select execution platforms.
 
-## Execute Web QA
+For each selected platform:
 
-1. Run the doctor with host-observed readiness data. The CLI reports readiness; it does not control the browser.
-2. Before an exploratory run, confirm a goal and stable acceptance criteria with required evidence. Historical work orders may use protocol `1.0.0` or `1.1.0`; new work orders use `1.2.0`.
-3. Before every controller invocation, including observation and screenshot capture, call `ai-qa action plan --run <run-id> [--step <step-id>] --stdin-json`; after the controller call, use `ai-qa action complete <action-id> --run <run-id> --stdin-json` to record `completed` or `unknown`.
-4. After an interaction, record its terminal result, a fresh step-linked observation, a completed evidence-capture action, and the evidence before recording a satisfied assertion. Cite the criterion, assertion, observation, and evidence IDs.
-5. Never use pre-action, stale, or differently sourced evidence to support `pass`, case promotion, or a verified report.
-6. Cancel only with `ai-qa run cancel <run-id> --reason <reason>`. Promote only complete exploratory runs after user review. During regression, follow the pinned work order in order and keep recovery within its budget.
+1. Read its controller reference and obtain host-recorded readiness.
+2. Start a platform-owned exploratory run or regression. One run has one platform, work order, journal, evidence directory, verdict, and report.
+3. Follow the shared two-phase action and fresh post-action evidence chain. Invoke the controller only through the host, never through the CLI.
+4. Promote reviewed exploratory work incrementally into the matching immutable platform variant.
 
-## Complete and record
+Use [web-controller.md](references/web-controller.md) for Web, [ios-simulator-controller.md](references/ios-simulator-controller.md) for iOS Simulator, and [android-emulator-controller.md](references/android-emulator-controller.md) for Android Emulator.
 
-1. Finish the run, generate the configured local report, and verify it before recording-status or receipt work.
-2. Treat `report.not_generated` as a prerequisite. Stop on lifecycle, evidence, report, recording, or storage integrity errors; do not call them `pending` or submit a receipt.
-3. For `local-only`, show the verified local report paths and end.
-4. For project-skill runs, execute the exact Project Skill procedure only after a verified report and submit only status/references.
-5. Let the host perform that procedure with its own permissions and approvals. Never retry an external result-recording operation submitted as `unknown`; scope observation-gated recovery to non-recording Web actions.
-6. Never change the QA verdict because of the recording outcome.
+For multiple selected platforms, start a RunGroup with the explicit subset. Missing selected case variants are coverage gaps, not child runs. Generate and verify every child report before the aggregate report. An aggregate report preserves the complete matrix and never synthesizes a QA verdict.
 
-Read `references/web-work-protocol.md` before the first Web run in a project.
 <!-- ai-qa:managed:end -->
 
 <!-- ai-qa:user:start -->
