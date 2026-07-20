@@ -4,7 +4,7 @@
 
 **Goal:** Add an idempotent, non-interactive `ai-qa clear` command that removes project configuration by default and removes all project-local AI QA state when `--records` is supplied.
 
-**Architecture:** A focused project-clear service owns the fixed deletion set, project containment checks, symlink-safe removal, and structured result. The existing project-root resolver gains a `clear` mode for initialized-ancestor discovery with Git-root fallback, while a thin Commander module resolves the target, invokes the service, and emits JSON.
+**Architecture:** A focused project-clear service owns the fixed deletion set and structured result, while the existing project-storage layer remains the single owner of project containment, ancestry, symlink, identity, and low-level removal safety. The project-root resolver gains a `clear` mode for initialized-ancestor discovery with Git-root fallback, while a thin Commander module resolves the target, invokes the service, and emits JSON.
 
 **Tech Stack:** TypeScript 5.9, Node.js 22/24 filesystem APIs, Commander 14, Vitest 4, pnpm 11.9.
 
@@ -25,7 +25,9 @@
 
 ## File structure
 
-- Create `src/services/project-clear/clear-project.ts`: validate the fixed project-local targets, preflight all targets, remove them safely, and return the public result.
+- Modify `src/core/fs/project-storage.ts`: add the reusable prepared-removal primitive without changing existing read/write contracts.
+- Modify `tests/unit/project-storage.test.ts`: prove final symlinks are unlinked, ancestors are rejected, identities are checked, and outside data is preserved.
+- Create `src/services/project-clear/clear-project.ts`: choose the fixed project-local targets, preflight all targets through project storage, perform prepared removals, and return the public result.
 - Create `tests/integration/project-clear.test.ts`: exercise deletion scope, idempotency, preservation, and symlink containment at the service boundary.
 - Modify `src/services/project-root/resolve-project-root.ts`: add clear-specific Git-root fallback and error copy.
 - Modify `tests/unit/project-root.test.ts`: cover clear resolution before and after configuration removal.
@@ -38,13 +40,19 @@
 ### Task 1: Project-clear service
 
 **Files:**
+- Modify: `src/core/fs/project-storage.ts`
+- Modify: `tests/unit/project-storage.test.ts`
 - Create: `src/services/project-clear/clear-project.ts`
 - Create: `tests/integration/project-clear.test.ts`
 
 **Interfaces:**
 - Consumes: a canonical or canonicalizable project root supplied by the project-root layer.
+- Produces: `prepareProjectLocalRemoval(input: { projectRoot: string; segments: readonly string[]; expected: "file" | "directory" }): Promise<PreparedProjectLocalRemoval>` in `project-storage.ts`.
+- Produces: `PreparedProjectLocalRemoval = { relativePath: string; remove(): Promise<boolean> }`; preparation performs validation and captures identity, while `remove()` revalidates and removes only the prepared entry.
 - Produces: `clearProject(input: { projectRoot: string; records: boolean }): Promise<ClearProjectResult>`.
 - Produces: `ClearProjectResult = { status: "cleared"; projectRoot: string; records: boolean; removedPaths: string[] }`.
+
+**Binding architecture correction:** The low-level inspection/removal algorithm shown later in this task is an algorithm reference only. Implement it once in `src/core/fs/project-storage.ts` behind `prepareProjectLocalRemoval`; `clear-project.ts` must not duplicate ancestor walking, symlink handling, inode checks, `storageError`, or Node error-code helpers. This correction supersedes the monolithic file placement in Step 3.
 
 - [ ] **Step 1: Write failing scope, idempotency, and symlink-safety tests**
 
@@ -268,9 +276,9 @@ pnpm exec vitest run tests/integration/project-clear.test.ts
 
 Expected: FAIL because `src/services/project-clear/clear-project.ts` does not exist.
 
-- [ ] **Step 3: Implement the fixed-scope clear service**
+- [ ] **Step 3: Implement shared prepared removal and the fixed-scope clear service**
 
-Create `src/services/project-clear/clear-project.ts`:
+Implement the inspection, identity recheck, symlink unlink, and real-directory recursive removal portions below in `src/core/fs/project-storage.ts` behind the `prepareProjectLocalRemoval` interface. Keep `src/services/project-clear/clear-project.ts` limited to choosing the two target specs, preparing both before deletion, invoking `remove()`, and constructing the result. Do not duplicate storage helpers across the two files.
 
 ```ts
 import { lstat, realpath, rm, unlink } from "node:fs/promises";
@@ -479,7 +487,7 @@ Expected: both commands exit 0.
 - [ ] **Step 6: Commit the service**
 
 ```bash
-git add src/services/project-clear/clear-project.ts tests/integration/project-clear.test.ts
+git add src/core/fs/project-storage.ts tests/unit/project-storage.test.ts src/services/project-clear/clear-project.ts tests/integration/project-clear.test.ts
 git commit -m "feat: add project clear service"
 ```
 

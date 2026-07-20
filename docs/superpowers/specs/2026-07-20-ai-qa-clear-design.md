@@ -63,12 +63,13 @@ The command does not remove now-empty parent directories such as `.agents/skills
 
 ## Architecture and data flow
 
-The feature has two bounded components:
+The feature has three bounded components:
 
 1. A CLI command module registers `clear`, accepts `--records`, resolves the target project, invokes the service, and writes the JSON result.
-2. A project-clear service calculates the exact deletion set, validates project containment and path ancestry, performs the removals, and returns project-relative removed paths.
+2. A project-clear service calculates the exact deletion set, preflights every removal through the storage layer, performs the prepared removals, and returns project-relative removed paths.
+3. The existing project-storage layer remains the single owner of project containment, path ancestry, symlink, file-identity, and low-level removal safety.
 
-The service receives a canonical project root and never performs ancestor discovery itself. This keeps selection policy in the existing project-root layer and deletion policy in one testable unit.
+The service receives a canonical project root and never performs ancestor discovery or duplicate filesystem-safety checks itself. This keeps selection policy in the existing project-root layer, deletion policy in one testable service, and filesystem integrity rules in the existing shared storage boundary.
 
 The project resolver gains a clear-compatible mode with the same discovery behavior as initialization: prefer an existing configuration ancestor, otherwise fall back to the Git root. Explicit nested projects continue to override configured ancestors.
 
