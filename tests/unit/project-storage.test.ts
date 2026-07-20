@@ -187,6 +187,33 @@ describe("project-local storage", () => {
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
   });
 
+  it("snapshots segments before awaiting project-root canonicalization", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "ai-qa-storage-race-"));
+    const projectRoot = join(sandbox, "project");
+    const outside = join(sandbox, "outside");
+    const outsideMarker = join(outside, "marker.txt");
+    await Promise.all([mkdir(projectRoot), mkdir(outside)]);
+    await writeFile(outsideMarker, "outside bytes\n");
+    const segments = [".ai-qa"];
+
+    const preparation = prepareProjectLocalRemoval({
+      projectRoot,
+      segments,
+      expected: "directory",
+    });
+    segments.splice(0, segments.length, "..", "outside");
+    const prepared = await preparation;
+
+    const removed = await prepared.remove();
+    await expect(readFile(outsideMarker, "utf8")).resolves.toBe(
+      "outside bytes\n",
+    );
+    expect({ relativePath: prepared.relativePath, removed }).toEqual({
+      relativePath: ".ai-qa",
+      removed: false,
+    });
+  });
+
   it("snapshots segments so caller mutation cannot redirect removal", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
     await mkdir(join(projectRoot, ".ai-qa"));

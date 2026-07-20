@@ -130,12 +130,12 @@ type InspectedProjectLocalRemoval =
 export async function prepareProjectLocalRemoval(
   input: ProjectLocalRemovalInput,
 ): Promise<PreparedProjectLocalRemoval> {
-  validateSegments(input.segments);
-  const projectRoot = await realpath(input.projectRoot);
   const spec: ProjectLocalRemovalSpec = {
     segments: [...input.segments],
     expected: input.expected,
   };
+  validateSegments(spec.segments);
+  const projectRoot = await realpath(input.projectRoot);
   const inspected = await inspectProjectLocalRemoval(projectRoot, spec);
   return {
     relativePath: inspected.relativePath,
