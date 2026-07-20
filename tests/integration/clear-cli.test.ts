@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -103,5 +104,44 @@ describe("clear CLI", () => {
       removedPaths: [],
     });
     expect(second.stderr).toEqual([]);
+  });
+
+  it("implicitly clears a nested dangling config symlink instead of the Git-root project", async () => {
+    const root = await createCliProject();
+    const nested = join(root, "packages", "app");
+    await mkdir(join(root, ".git"));
+    await mkdir(join(nested, ".ai-qa"), { recursive: true });
+    await mkdir(join(nested, ".agents", "skills", "ai-qa-project"), {
+      recursive: true,
+    });
+    await symlink(
+      join(nested, "missing-config.yaml"),
+      join(nested, ".ai-qa", "config.yaml"),
+    );
+    await writeFile(
+      join(nested, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+      "nested skill",
+    );
+    const captured = createCapturedCli({ cwd: nested });
+
+    expect(await runCli(["clear"], captured.context)).toBe(0);
+    expect(JSON.parse(captured.stdout.join(""))).toEqual({
+      status: "cleared",
+      projectRoot: await realpath(nested),
+      records: false,
+      removedPaths: [".ai-qa/config.yaml", ".agents/skills/ai-qa-project"],
+    });
+    expect(captured.stderr).toEqual([]);
+    await expectMissing(join(nested, ".ai-qa", "config.yaml"));
+    await expectMissing(join(nested, ".agents", "skills", "ai-qa-project"));
+    await expect(
+      readFile(join(root, ".ai-qa", "config.yaml"), "utf8"),
+    ).resolves.toBe("schemaVersion: 3\n");
+    await expect(
+      readFile(
+        join(root, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("skill");
   });
 });

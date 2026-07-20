@@ -1,4 +1,4 @@
-import { access, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { AiQaError } from "../../core/errors.js";
 
@@ -15,11 +15,22 @@ export interface ResolvedProjectRoot {
 
 async function exists(path: string): Promise<boolean> {
   try {
-    await access(path);
+    await lstat(path);
     return true;
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
+      return false;
+    }
+    throw error;
   }
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
 
 async function canonical(path: string): Promise<string> {

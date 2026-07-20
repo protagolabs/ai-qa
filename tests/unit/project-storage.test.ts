@@ -4,13 +4,16 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rename,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { AiQaError } from "../../src/core/errors.js";
 import {
   ensureProjectLocalDirectory,
   inspectOptionalProjectLocalRegularFile,
@@ -115,6 +118,7 @@ describe("project-local storage", () => {
     expect(prepared.relativePath).toBe(".ai-qa/config.yaml");
     await expect(prepared.remove()).resolves.toBe(true);
     await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readdir(projectRoot)).resolves.toEqual([".ai-qa"]);
   });
 
   it("does not remove an entry created after a missing target was prepared", async () => {
@@ -151,6 +155,64 @@ describe("project-local storage", () => {
     });
     await expect(readFile(path, "utf8")).resolves.toBe("replacement bytes\n");
     await expect(readFile(displaced, "utf8")).resolves.toBe("prepared bytes\n");
+  });
+
+  it("preserves a target replaced after final verification in a project-local recovery claim", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    const displaced = join(projectRoot, ".ai-qa", "displaced.yaml");
+    await writeFile(path, "prepared bytes\n");
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+      hooks: {
+        afterFinalVerification: async () => {
+          await rename(path, displaced);
+          await writeFile(path, "replacement bytes\n");
+        },
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      await prepared.remove();
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "storage.integrity_error" });
+    expect(thrown).toBeInstanceOf(AiQaError);
+    if (!(thrown instanceof AiQaError)) throw new Error("Expected AiQaError");
+    const recoveryPath = thrown.details.recoveryPath;
+    expect(typeof recoveryPath).toBe("string");
+    if (typeof recoveryPath !== "string") {
+      throw new Error("Expected a project-local recovery path");
+    }
+    await expect(
+      readFile(join(projectRoot, recoveryPath), "utf8"),
+    ).resolves.toBe("replacement bytes\n");
+    await expect(readFile(displaced, "utf8")).resolves.toBe("prepared bytes\n");
+  });
+
+  it("cleans an empty recovery claim when the source disappears before it can be claimed", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    await writeFile(path, "prepared bytes\n");
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+      hooks: {
+        afterFinalVerification: async () => {
+          await unlink(path);
+        },
+      },
+    });
+
+    await expect(prepared.remove()).resolves.toBe(false);
+    await expect(readdir(projectRoot)).resolves.toEqual([".ai-qa"]);
   });
 
   it("unlinks a prepared final symlink without removing its destination", async () => {

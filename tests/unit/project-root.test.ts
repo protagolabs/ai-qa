@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -62,6 +62,28 @@ describe("resolveProjectRoot", () => {
     await writeFile(
       join(nestedProject, ".ai-qa", "config.yaml"),
       "schemaVersion: 3\n",
+    );
+
+    await expect(
+      resolveProjectRoot({ command: "clear", cwd: workingDirectory }),
+    ).resolves.toEqual({
+      root: await realpath(nestedProject),
+      source: "config-ancestor",
+    });
+  });
+
+  it("treats a dangling nested config symlink as the nearest configured ancestor", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-dangling-root-"));
+    const nestedProject = join(root, "packages", "app");
+    const workingDirectory = join(nestedProject, "src");
+    await mkdir(join(root, ".git"));
+    await mkdir(join(root, ".ai-qa"));
+    await mkdir(join(nestedProject, ".ai-qa"), { recursive: true });
+    await mkdir(workingDirectory);
+    await writeFile(join(root, ".ai-qa", "config.yaml"), "schemaVersion: 3\n");
+    await symlink(
+      join(nestedProject, "missing-config.yaml"),
+      join(nestedProject, ".ai-qa", "config.yaml"),
     );
 
     await expect(

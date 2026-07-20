@@ -1,6 +1,16 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rm, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  realpath,
+  rename,
+  rm,
+  rmdir,
+  unlink,
+} from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 
 function validateSegments(segments: readonly string[]): void {
@@ -95,10 +105,15 @@ export interface PreparedProjectLocalRemoval {
   remove(): Promise<boolean>;
 }
 
+export interface ProjectLocalRemovalHooks {
+  afterFinalVerification?: (input: { path: string }) => Promise<void>;
+}
+
 interface ProjectLocalRemovalInput {
   projectRoot: string;
   segments: readonly string[];
   expected: "file" | "directory";
+  hooks?: ProjectLocalRemovalHooks;
 }
 
 interface ProjectLocalRemovalSpec {
@@ -134,12 +149,18 @@ export async function prepareProjectLocalRemoval(
     segments: [...input.segments],
     expected: input.expected,
   };
+  const afterFinalVerification = input.hooks?.afterFinalVerification;
   validateSegments(spec.segments);
   const projectRoot = await realpath(input.projectRoot);
   const inspected = await inspectProjectLocalRemoval(projectRoot, spec);
   return {
     relativePath: inspected.relativePath,
-    remove: () => removePreparedProjectLocalEntry(projectRoot, inspected),
+    remove: () =>
+      removePreparedProjectLocalEntry(
+        projectRoot,
+        inspected,
+        afterFinalVerification,
+      ),
   };
 }
 
@@ -220,6 +241,7 @@ async function inspectProjectLocalRemoval(
 async function removePreparedProjectLocalEntry(
   projectRoot: string,
   prepared: InspectedProjectLocalRemoval,
+  afterFinalVerification?: ProjectLocalRemovalHooks["afterFinalVerification"],
 ): Promise<boolean> {
   if (prepared.state === "missing") return false;
   const current = await inspectProjectLocalRemoval(projectRoot, prepared.spec);
@@ -234,16 +256,143 @@ async function removePreparedProjectLocalEntry(
       prepared.path,
     );
   }
+  await afterFinalVerification?.({ path: prepared.path });
+
+  const claimDirectory = await createRemovalClaimDirectory(projectRoot);
+  const claimedPath = resolve(claimDirectory, "entry");
+  const recoveryPath = `${basename(claimDirectory)}/entry`;
   try {
-    if (current.entryKind === "directory") {
-      await rm(current.path, { recursive: true });
-    } else {
-      await unlink(current.path);
+    try {
+      await rename(prepared.path, claimedPath);
+    } catch (error: unknown) {
+      if (isNodeError(error, "ENOENT")) {
+        await removeEmptyClaimDirectory(claimDirectory);
+        return false;
+      }
+      await removeEmptyClaimDirectory(claimDirectory);
+      throw storageError(
+        "Project-local removal target could not be claimed",
+        prepared.path,
+        nodeErrorCode(error),
+      );
     }
+
+    const claimed = await inspectClaimedProjectLocalRemoval(
+      claimedPath,
+      recoveryPath,
+    );
+    if (
+      claimed.identity.dev !== prepared.identity.dev ||
+      claimed.identity.ino !== prepared.identity.ino ||
+      claimed.entryKind !== prepared.entryKind
+    ) {
+      throw storageError(
+        "Project-local removal claim does not match the prepared target",
+        prepared.path,
+        undefined,
+        { recoveryPath },
+      );
+    }
+
+    if (claimed.entryKind === "directory") {
+      await rm(claimedPath, { recursive: true });
+    } else {
+      await unlink(claimedPath);
+    }
+    await removeEmptyClaimDirectory(claimDirectory);
     return true;
   } catch (error: unknown) {
-    if (isNodeError(error, "ENOENT")) return false;
+    if (error instanceof AiQaError) throw error;
+    if (isNodeError(error, "ENOENT")) {
+      await removeEmptyClaimDirectory(claimDirectory);
+      return false;
+    }
     throw error;
+  }
+}
+
+async function createRemovalClaimDirectory(
+  projectRoot: string,
+): Promise<string> {
+  let claimDirectory: string;
+  try {
+    claimDirectory = await mkdtemp(
+      resolve(projectRoot, ".ai-qa-removal-claim-"),
+    );
+    const stats = await lstat(claimDirectory);
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      (await realpath(claimDirectory)) !== claimDirectory
+    ) {
+      throw storageError(
+        "Project-local removal claim is not a real directory",
+        claimDirectory,
+      );
+    }
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local removal claim creation failed",
+      projectRoot,
+      nodeErrorCode(error),
+    );
+  }
+  return claimDirectory;
+}
+
+async function inspectClaimedProjectLocalRemoval(
+  claimedPath: string,
+  recoveryPath: string,
+): Promise<{
+  entryKind: "file" | "directory" | "symlink";
+  identity: ProjectLocalRemovalIdentity;
+}> {
+  try {
+    const stats = await lstat(claimedPath, { bigint: true });
+    const entryKind = stats.isSymbolicLink()
+      ? "symlink"
+      : stats.isFile()
+        ? "file"
+        : stats.isDirectory()
+          ? "directory"
+          : undefined;
+    if (entryKind === undefined) {
+      throw storageError(
+        "Project-local removal claim has an invalid type",
+        claimedPath,
+        undefined,
+        { recoveryPath },
+      );
+    }
+    return {
+      entryKind,
+      identity: { dev: stats.dev, ino: stats.ino },
+    };
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local removal claim inspection failed",
+      claimedPath,
+      nodeErrorCode(error),
+      { recoveryPath },
+    );
+  }
+}
+
+async function removeEmptyClaimDirectory(
+  claimDirectory: string,
+): Promise<void> {
+  try {
+    await rmdir(claimDirectory);
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return;
+    throw storageError(
+      "Project-local removal claim cleanup failed",
+      claimDirectory,
+      nodeErrorCode(error),
+      { recoveryPath: basename(claimDirectory) },
+    );
   }
 }
 
@@ -417,10 +566,12 @@ function storageError(
   message: string,
   path?: string,
   causeCode?: string,
+  details: Readonly<Record<string, unknown>> = {},
 ): AiQaError {
   return new AiQaError("storage.integrity_error", message, {
     ...(path === undefined ? {} : { path }),
     ...(causeCode === undefined ? {} : { causeCode }),
+    ...details,
   });
 }
 

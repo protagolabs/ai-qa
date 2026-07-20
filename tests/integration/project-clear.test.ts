@@ -216,6 +216,20 @@ describe("clearProject", () => {
     ).resolves.toBe("inside config");
   });
 
+  it("preflights every target before rejecting a non-directory ancestor", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-ancestor-project-"));
+    await mkdir(join(root, ".ai-qa"));
+    await writeFile(join(root, ".ai-qa", "config.yaml"), "inside config");
+    await writeFile(join(root, ".agents"), "not a directory");
+
+    await expect(
+      clearProject({ projectRoot: root, records: false }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(
+      readFile(join(root, ".ai-qa", "config.yaml"), "utf8"),
+    ).resolves.toBe("inside config");
+  });
+
   it("unlinks a symlinked .ai-qa entry in records mode", async () => {
     const root = await mkdtemp(
       join(tmpdir(), "ai-qa-clear-record-link-project-"),
