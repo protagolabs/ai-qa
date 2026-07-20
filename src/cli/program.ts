@@ -5,6 +5,7 @@ import { registerActionCommands } from "./commands/action.js";
 import { registerAssertionCommands } from "./commands/assertion.js";
 import { registerBlockerCommands } from "./commands/blocker.js";
 import { registerCaseCommands } from "./commands/case.js";
+import { registerClearCommand } from "./commands/clear.js";
 import { registerConfigCommands } from "./commands/config.js";
 import { registerDecisionCommands } from "./commands/decision.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
@@ -39,6 +40,7 @@ export function createProgram(context: CliContext): Command {
   registerAssertionCommands(program, context);
   registerBlockerCommands(program, context);
   registerCaseCommands(program, context);
+  registerClearCommand(program, context);
   registerConfigCommands(program, context);
   registerDecisionCommands(program, context);
   registerDoctorCommand(program, context);

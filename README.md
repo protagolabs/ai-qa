@@ -30,6 +30,25 @@ Each target project owns `.ai-qa/config.yaml`, cases, runs, RunGroups, evidence,
 
 The host owns Chrome DevTools MCP, Pepper, Appium/UiAutomator2, authentication, controller sessions, and screenshots. `ai-qa action plan` and `action complete` record those calls but do not make them.
 
+## Clear project configuration and records
+
+Clear the selected project's AI QA configuration without deleting cases, runs, evidence, or reports:
+
+```bash
+ai-qa clear
+ai-qa --project /exact/project/path clear
+```
+
+This immediately removes `.ai-qa/config.yaml` and the complete `.agents/skills/ai-qa-project/` directory. The command is idempotent and does not prompt for confirmation.
+
+To also delete every project-local AI QA record, including cases, runs, RunGroups, evidence, reports, and recording receipts:
+
+```bash
+ai-qa clear --records
+```
+
+`--records` immediately removes the complete `.ai-qa/` directory. Other project skills remain untouched.
+
 ## Configure a project
 
 Run doctor first. A missing config returns the blocking `configure-project` action. Suspend QA until setup is approved and a post-write doctor is ready.

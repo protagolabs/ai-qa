@@ -22,6 +22,19 @@ describe("ai-qa CLI shell", () => {
     expect(help).not.toMatch(/^\s+configure(?:\s|\[)/m);
   });
 
+  it("documents the clear command and destructive records option", async () => {
+    const captured = createCapturedCli();
+
+    expect(await runCli(["--help"], captured.context)).toBe(0);
+    expect(captured.stdout.join("")).toMatch(/^\s+clear\s/m);
+
+    captured.stdout.length = 0;
+    expect(await runCli(["clear", "--help"], captured.context)).toBe(0);
+    const help = captured.stdout.join("");
+    expect(help).toContain("--records");
+    expect(help).toContain("delete all project-local AI QA records");
+  });
+
   it.each([
     {
       args: ["config", "validate", "--help"],

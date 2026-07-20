@@ -1,0 +1,107 @@
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { runCli } from "../../src/cli/program.js";
+import { createCapturedCli } from "../helpers/cli-context.js";
+
+async function expectMissing(path: string): Promise<void> {
+  await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+}
+
+async function initializeCliProject(root: string): Promise<void> {
+  await Promise.all([
+    mkdir(join(root, ".ai-qa", "runs", "run-1"), { recursive: true }),
+    mkdir(join(root, ".agents", "skills", "ai-qa-project"), {
+      recursive: true,
+    }),
+  ]);
+  await Promise.all([
+    writeFile(join(root, ".ai-qa", "config.yaml"), "schemaVersion: 3\n"),
+    writeFile(join(root, ".ai-qa", "runs", "run-1", "events.jsonl"), "run"),
+    writeFile(
+      join(root, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+      "skill",
+    ),
+  ]);
+}
+
+async function createCliProject(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-cli-"));
+  await initializeCliProject(root);
+  return root;
+}
+
+describe("clear CLI", () => {
+  it("clears only configuration for the exact explicit nested project", async () => {
+    const ancestor = await createCliProject();
+    const nested = join(ancestor, "packages", "app");
+    await initializeCliProject(nested);
+    const captured = createCapturedCli({ cwd: ancestor });
+
+    expect(await runCli(["--project", nested, "clear"], captured.context)).toBe(
+      0,
+    );
+    expect(JSON.parse(captured.stdout.join(""))).toEqual({
+      status: "cleared",
+      projectRoot: await realpath(nested),
+      records: false,
+      removedPaths: [".ai-qa/config.yaml", ".agents/skills/ai-qa-project"],
+    });
+    expect(captured.stderr).toEqual([]);
+    await expectMissing(join(nested, ".ai-qa", "config.yaml"));
+    await expectMissing(join(nested, ".agents", "skills", "ai-qa-project"));
+    await expect(
+      readFile(join(nested, ".ai-qa", "runs", "run-1", "events.jsonl"), "utf8"),
+    ).resolves.toBe("run");
+    await expect(
+      readFile(join(ancestor, ".ai-qa", "config.yaml"), "utf8"),
+    ).resolves.toBe("schemaVersion: 3\n");
+    await expect(
+      readFile(
+        join(ancestor, ".ai-qa", "runs", "run-1", "events.jsonl"),
+        "utf8",
+      ),
+    ).resolves.toBe("run");
+    await expect(
+      readFile(
+        join(ancestor, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("skill");
+  });
+
+  it("clears records and remains repeatable through Git-root fallback", async () => {
+    const root = await createCliProject();
+    await mkdir(join(root, ".git"));
+    const first = createCapturedCli({ cwd: root });
+
+    expect(await runCli(["clear", "--records"], first.context)).toBe(0);
+    expect(JSON.parse(first.stdout.join(""))).toEqual({
+      status: "cleared",
+      projectRoot: await realpath(root),
+      records: true,
+      removedPaths: [".ai-qa", ".agents/skills/ai-qa-project"],
+    });
+    expect(first.stderr).toEqual([]);
+    await expectMissing(join(root, ".ai-qa"));
+    await expectMissing(join(root, ".agents", "skills", "ai-qa-project"));
+
+    const second = createCapturedCli({ cwd: root });
+    expect(await runCli(["clear", "--records"], second.context)).toBe(0);
+    expect(JSON.parse(second.stdout.join(""))).toEqual({
+      status: "cleared",
+      projectRoot: await realpath(root),
+      records: true,
+      removedPaths: [],
+    });
+    expect(second.stderr).toEqual([]);
+  });
+});
