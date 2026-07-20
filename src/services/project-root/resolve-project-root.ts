@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { AiQaError } from "../../core/errors.js";
 
 export interface ResolveProjectRootInput {
-  command: "init" | "other";
+  command: "init" | "clear" | "other";
   cwd: string;
   explicitProject?: string;
 }
@@ -54,7 +54,7 @@ export async function resolveProjectRoot(
   if (configRoot !== undefined) {
     return { root: configRoot, source: "config-ancestor" };
   }
-  if (input.command === "init") {
+  if (input.command !== "other") {
     const gitRoot = await findAncestor(input.cwd, async (candidate) => {
       const dotGit = join(candidate, ".git");
       if (!(await exists(dotGit))) return false;
@@ -68,7 +68,7 @@ export async function resolveProjectRoot(
     if (gitRoot !== undefined) return { root: gitRoot, source: "git-root" };
     throw new AiQaError(
       "project.explicit_required",
-      "init outside Git requires --project <path>",
+      `${input.command} outside Git requires --project <path>`,
     );
   }
   throw new AiQaError("project.not_found", "No .ai-qa/config.yaml found");

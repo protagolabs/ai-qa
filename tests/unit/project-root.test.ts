@@ -40,4 +40,46 @@ describe("resolveProjectRoot", () => {
       code: "project.explicit_required",
     });
   });
+
+  it("falls back to the Git root when clear has no stored config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-git-root-"));
+    const nested = join(root, "packages", "app");
+    await mkdir(join(root, ".git"));
+    await mkdir(nested, { recursive: true });
+
+    await expect(
+      resolveProjectRoot({ command: "clear", cwd: nested }),
+    ).resolves.toEqual({ root: await realpath(root), source: "git-root" });
+  });
+
+  it("prefers a configured ancestor over the Git root for clear", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-config-root-"));
+    const nestedProject = join(root, "packages", "app");
+    const workingDirectory = join(nestedProject, "src");
+    await mkdir(join(root, ".git"));
+    await mkdir(join(nestedProject, ".ai-qa"), { recursive: true });
+    await mkdir(workingDirectory, { recursive: true });
+    await writeFile(
+      join(nestedProject, ".ai-qa", "config.yaml"),
+      "schemaVersion: 3\n",
+    );
+
+    await expect(
+      resolveProjectRoot({ command: "clear", cwd: workingDirectory }),
+    ).resolves.toEqual({
+      root: await realpath(nestedProject),
+      source: "config-ancestor",
+    });
+  });
+
+  it("requires an explicit clear target outside Git after config removal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-no-git-"));
+
+    await expect(
+      resolveProjectRoot({ command: "clear", cwd: root }),
+    ).rejects.toMatchObject({
+      code: "project.explicit_required",
+      message: "clear outside Git requires --project <path>",
+    });
+  });
 });
