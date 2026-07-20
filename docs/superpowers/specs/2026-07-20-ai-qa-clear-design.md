@@ -87,7 +87,7 @@ The final target may itself be a symbolic link. In that case, the command unlink
 
 Real directory targets are removed recursively only for the two exact, validated directory paths described above. Unexpected filesystem failures are reported as errors; the command never reports a failed deletion as successful.
 
-The service preflights the complete deletion set before making changes. This prevents predictable integrity failures on a later target from causing a partial clear. Cross-directory deletion cannot be made fully atomic, so an operating-system failure during removal may still leave a partially cleared project; the command reports that failure and a retry safely completes the idempotent operation.
+The service preflights the complete deletion set before making changes. This prevents predictable integrity failures on a later target from causing a partial clear. Cross-directory deletion cannot be made fully atomic. Once a target has been renamed into a project-local removal claim, any inspection, removal, hook, or cleanup failure returns `storage.recovery_required` with a project-relative `recoveryPath` and retains the claim when it still exists. Every later clear preflight fails with the same recovery-required contract while a reserved claim remains. The command never automatically deletes, restores, or resumes retained claims; an operator must inspect and manually resolve the reported recovery entry before running clear again.
 
 ## Testing
 
@@ -103,6 +103,7 @@ Service and CLI tests cover:
 - repeated default and `--records` invocations succeed;
 - symbolic-link targets are unlinked without modifying their destinations;
 - symbolic-link or invalid ancestors fail with `storage.integrity_error` and do not affect outside data;
+- post-claim failures retain their recovery entry and block retries with `storage.recovery_required` until it is manually resolved;
 - help text documents `clear` and `--records`;
 - successful JSON output matches the public contract.
 

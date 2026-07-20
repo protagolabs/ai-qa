@@ -106,6 +106,25 @@ describe("clear CLI", () => {
     expect(second.stderr).toEqual([]);
   });
 
+  it("reports retained claim recovery instead of treating missing targets as success", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-cli-recovery-"));
+    await mkdir(join(root, ".ai-qa-removal-claim-aaaaaa"));
+    const captured = createCapturedCli({ cwd: root });
+
+    expect(await runCli(["--project", root, "clear"], captured.context)).toBe(
+      1,
+    );
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "storage.recovery_required",
+        message:
+          "Project-local removal recovery is required before another clear",
+        details: { recoveryPath: ".ai-qa-removal-claim-aaaaaa" },
+      },
+    });
+  });
+
   it("implicitly clears a nested dangling config symlink instead of the Git-root project", async () => {
     const root = await createCliProject();
     const nested = join(root, "packages", "app");

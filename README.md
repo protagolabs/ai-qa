@@ -49,6 +49,8 @@ ai-qa clear --records
 
 `--records` immediately removes the complete `.ai-qa/` directory. Other project skills remain untouched.
 
+If clear reports `storage.recovery_required`, inspect and manually resolve the project-relative `recoveryPath` before retrying; clear never automatically deletes, restores, or resumes a retained recovery entry.
+
 ## Configure a project
 
 Run doctor first. A missing config returns the blocking `configure-project` action. Suspend QA until setup is approved and a post-write doctor is ready.

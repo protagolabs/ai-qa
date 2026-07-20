@@ -164,6 +164,27 @@ describe("clearProject", () => {
     });
   });
 
+  it("fails closed before deleting any target when a retained claim exists", async () => {
+    const root = await createInitializedProject();
+    await mkdir(join(root, ".ai-qa-removal-claim-aaaaaa"));
+
+    await expect(
+      clearProject({ projectRoot: root, records: false }),
+    ).rejects.toMatchObject({
+      code: "storage.recovery_required",
+      details: { recoveryPath: ".ai-qa-removal-claim-aaaaaa" },
+    });
+    await expect(
+      readFile(join(root, ".ai-qa", "config.yaml"), "utf8"),
+    ).resolves.toBe("schemaVersion: 3\n");
+    await expect(
+      readFile(
+        join(root, ".agents", "skills", "ai-qa-project", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toBe("project skill");
+  });
+
   it("unlinks final-target symlinks without touching outside data", async () => {
     const root = await mkdtemp(join(tmpdir(), "ai-qa-clear-symlink-project-"));
     const outside = await mkdtemp(

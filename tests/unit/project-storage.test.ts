@@ -181,7 +181,7 @@ describe("project-local storage", () => {
     } catch (error: unknown) {
       thrown = error;
     }
-    expect(thrown).toMatchObject({ code: "storage.integrity_error" });
+    expect(thrown).toMatchObject({ code: "storage.recovery_required" });
     expect(thrown).toBeInstanceOf(AiQaError);
     if (!(thrown instanceof AiQaError)) throw new Error("Expected AiQaError");
     const recoveryPath = thrown.details.recoveryPath;
@@ -213,6 +213,77 @@ describe("project-local storage", () => {
 
     await expect(prepared.remove()).resolves.toBe(false);
     await expect(readdir(projectRoot)).resolves.toEqual([".ai-qa"]);
+  });
+
+  it("retains a claimed entry after a post-claim failure and blocks retry with its recovery path", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    await writeFile(path, "prepared bytes\n");
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+      hooks: {
+        afterClaim: () =>
+          Promise.reject(
+            Object.assign(new Error("injected post-claim failure"), {
+              code: "EIO",
+            }),
+          ),
+      },
+    });
+
+    let firstError: unknown;
+    try {
+      await prepared.remove();
+    } catch (error: unknown) {
+      firstError = error;
+    }
+    expect(firstError).toBeInstanceOf(AiQaError);
+    if (!(firstError instanceof AiQaError)) {
+      throw new Error("Expected AiQaError");
+    }
+    expect(firstError.code).toBe("storage.recovery_required");
+    expect(firstError.details).toMatchObject({ causeCode: "EIO" });
+    const recoveryPath = firstError.details.recoveryPath;
+    expect(recoveryPath).toMatch(/^\.ai-qa-removal-claim-.+\/entry$/u);
+    if (typeof recoveryPath !== "string") {
+      throw new Error("Expected a project-local recovery path");
+    }
+    await expect(
+      readFile(join(projectRoot, recoveryPath), "utf8"),
+    ).resolves.toBe("prepared bytes\n");
+
+    await expect(
+      prepareProjectLocalRemoval({
+        projectRoot,
+        segments: [".ai-qa", "config.yaml"],
+        expected: "file",
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        code: "storage.recovery_required",
+        details: { recoveryPath },
+      }),
+    );
+  });
+
+  it("reports the lexicographically first retained claim deterministically", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa-removal-claim-zzzzzz"));
+    await mkdir(join(projectRoot, ".ai-qa-removal-claim-aaaaaa"));
+
+    await expect(
+      prepareProjectLocalRemoval({
+        projectRoot,
+        segments: [".ai-qa", "config.yaml"],
+        expected: "file",
+      }),
+    ).rejects.toMatchObject({
+      code: "storage.recovery_required",
+      details: { recoveryPath: ".ai-qa-removal-claim-aaaaaa" },
+    });
   });
 
   it("unlinks a prepared final symlink without removing its destination", async () => {
