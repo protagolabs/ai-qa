@@ -1,4 +1,6 @@
 import {
+  access,
+  link,
   mkdtemp,
   mkdir,
   readFile,
@@ -12,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   ensureProjectLocalDirectory,
   inspectOptionalProjectLocalRegularFile,
+  prepareProjectLocalRemoval,
   requireProjectLocalRegularFile,
 } from "../../src/core/fs/project-storage.js";
 
@@ -95,5 +98,112 @@ describe("project-local storage", () => {
     await expect(readFile(outsideFile, "utf8")).resolves.toBe(
       "outside bytes\n",
     );
+  });
+
+  it("removes only the regular file prepared for removal", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    await writeFile(path, "schemaVersion: 3\n");
+
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+    });
+
+    expect(prepared.relativePath).toBe(".ai-qa/config.yaml");
+    await expect(prepared.remove()).resolves.toBe(true);
+    await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not remove an entry created after a missing target was prepared", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+    });
+    await writeFile(path, "created later\n");
+
+    await expect(prepared.remove()).resolves.toBe(false);
+    await expect(readFile(path, "utf8")).resolves.toBe("created later\n");
+  });
+
+  it("rejects a target replaced after preparation without removing the replacement", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const path = join(projectRoot, ".ai-qa", "config.yaml");
+    const displaced = join(projectRoot, ".ai-qa", "displaced.yaml");
+    await writeFile(path, "prepared bytes\n");
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+    });
+    await rename(path, displaced);
+    await writeFile(path, "replacement bytes\n");
+
+    await expect(prepared.remove()).rejects.toMatchObject({
+      code: "storage.integrity_error",
+    });
+    await expect(readFile(path, "utf8")).resolves.toBe("replacement bytes\n");
+    await expect(readFile(displaced, "utf8")).resolves.toBe("prepared bytes\n");
+  });
+
+  it("unlinks a prepared final symlink without removing its destination", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const outsideFile = join(outside, "config.yaml");
+    const link = join(projectRoot, ".ai-qa", "config.yaml");
+    await writeFile(outsideFile, "outside bytes\n");
+    await symlink(outsideFile, link);
+
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments: [".ai-qa", "config.yaml"],
+      expected: "file",
+    });
+
+    await expect(prepared.remove()).resolves.toBe(true);
+    await expect(access(link)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(outsideFile, "utf8")).resolves.toBe(
+      "outside bytes\n",
+    );
+  });
+
+  it("rejects traversal segments before preparing a removal", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+
+    await expect(
+      prepareProjectLocalRemoval({
+        projectRoot,
+        segments: ["..", "outside"],
+        expected: "directory",
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
+  it("snapshots segments so caller mutation cannot redirect removal", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const original = join(projectRoot, ".ai-qa", "config.yaml");
+    const hardLink = join(projectRoot, ".ai-qa", "other.yaml");
+    await writeFile(original, "shared inode\n");
+    await link(original, hardLink);
+    const segments = [".ai-qa", "config.yaml"];
+    const prepared = await prepareProjectLocalRemoval({
+      projectRoot,
+      segments,
+      expected: "file",
+    });
+    segments[1] = "other.yaml";
+
+    await expect(prepared.remove()).resolves.toBe(true);
+    await expect(access(original)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(hardLink, "utf8")).resolves.toBe("shared inode\n");
   });
 });

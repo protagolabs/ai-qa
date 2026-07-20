@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rm, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 
@@ -88,6 +88,163 @@ export interface OptionalProjectLocalFile {
 export interface OptionalProjectLocalInspectionHooks {
   afterPathIdentity?: (input: { path: string }) => Promise<void>;
   afterHandleRead?: (input: { path: string }) => Promise<void>;
+}
+
+export interface PreparedProjectLocalRemoval {
+  relativePath: string;
+  remove(): Promise<boolean>;
+}
+
+interface ProjectLocalRemovalInput {
+  projectRoot: string;
+  segments: readonly string[];
+  expected: "file" | "directory";
+}
+
+interface ProjectLocalRemovalSpec {
+  segments: readonly string[];
+  expected: "file" | "directory";
+}
+
+interface ProjectLocalRemovalIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+type InspectedProjectLocalRemoval =
+  | {
+      state: "missing";
+      spec: ProjectLocalRemovalSpec;
+      path: string;
+      relativePath: string;
+    }
+  | {
+      state: "present";
+      spec: ProjectLocalRemovalSpec;
+      path: string;
+      relativePath: string;
+      entryKind: "file" | "directory" | "symlink";
+      identity: ProjectLocalRemovalIdentity;
+    };
+
+export async function prepareProjectLocalRemoval(
+  input: ProjectLocalRemovalInput,
+): Promise<PreparedProjectLocalRemoval> {
+  validateSegments(input.segments);
+  const projectRoot = await realpath(input.projectRoot);
+  const spec: ProjectLocalRemovalSpec = {
+    segments: [...input.segments],
+    expected: input.expected,
+  };
+  const inspected = await inspectProjectLocalRemoval(projectRoot, spec);
+  return {
+    relativePath: inspected.relativePath,
+    remove: () => removePreparedProjectLocalEntry(projectRoot, inspected),
+  };
+}
+
+async function inspectProjectLocalRemoval(
+  projectRoot: string,
+  spec: ProjectLocalRemovalSpec,
+): Promise<InspectedProjectLocalRemoval> {
+  const path = resolve(projectRoot, ...spec.segments);
+  const relativePath = spec.segments.join("/");
+  let current = projectRoot;
+  for (const segment of spec.segments.slice(0, -1)) {
+    current = resolve(current, segment);
+    let stats;
+    try {
+      stats = await lstat(current);
+      if (
+        stats.isSymbolicLink() ||
+        !stats.isDirectory() ||
+        (await realpath(current)) !== current
+      ) {
+        throw storageError(
+          "Project-local removal ancestor is not a real directory",
+          current,
+        );
+      }
+    } catch (error: unknown) {
+      if (error instanceof AiQaError) throw error;
+      if (isNodeError(error, "ENOENT")) {
+        return { state: "missing", spec, path, relativePath };
+      }
+      throw storageError(
+        "Project-local removal ancestor inspection failed",
+        current,
+        nodeErrorCode(error),
+      );
+    }
+  }
+
+  let stats;
+  try {
+    stats = await lstat(path, { bigint: true });
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) {
+      return { state: "missing", spec, path, relativePath };
+    }
+    throw storageError(
+      "Project-local removal target inspection failed",
+      path,
+      nodeErrorCode(error),
+    );
+  }
+  const entryKind = stats.isSymbolicLink()
+    ? "symlink"
+    : stats.isFile()
+      ? "file"
+      : stats.isDirectory()
+        ? "directory"
+        : undefined;
+  if (
+    entryKind === undefined ||
+    (entryKind !== "symlink" && entryKind !== spec.expected)
+  ) {
+    throw storageError(
+      "Project-local removal target has an invalid type",
+      path,
+    );
+  }
+  return {
+    state: "present",
+    spec,
+    path,
+    relativePath,
+    entryKind,
+    identity: { dev: stats.dev, ino: stats.ino },
+  };
+}
+
+async function removePreparedProjectLocalEntry(
+  projectRoot: string,
+  prepared: InspectedProjectLocalRemoval,
+): Promise<boolean> {
+  if (prepared.state === "missing") return false;
+  const current = await inspectProjectLocalRemoval(projectRoot, prepared.spec);
+  if (current.state === "missing") return false;
+  if (
+    current.identity.dev !== prepared.identity.dev ||
+    current.identity.ino !== prepared.identity.ino ||
+    current.entryKind !== prepared.entryKind
+  ) {
+    throw storageError(
+      "Project-local removal target changed during verification",
+      prepared.path,
+    );
+  }
+  try {
+    if (current.entryKind === "directory") {
+      await rm(current.path, { recursive: true });
+    } else {
+      await unlink(current.path);
+    }
+    return true;
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
 }
 
 export async function inspectOptionalProjectLocalRegularFile(
