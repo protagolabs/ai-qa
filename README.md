@@ -62,7 +62,7 @@ Setup must:
 3. Ask explicitly for `recordingPolicy.mode`; neither mode is a default.
 4. Draft schema 3 config and a project-owned Project Skill in scratch space.
 5. Validate config with `ai-qa config validate --stdin-json` and validate the Skill with `skill-creator`.
-6. Display both complete diffs, obtain one confirmation, write once, and doctor every configured platform.
+6. For every missing destination, display its exact path and complete proposed content; for every existing destination, display its complete diff. Never synthesize a diff for a missing file. Obtain one confirmation for the displayed proposal, write once, and doctor every configured platform. Cancellation writes nothing, and no checksum is calculated by the user or Codex.
 
 `targets` and `tools` must contain the same non-empty platform keys. These fragments show each platform's required schema-3 fields; combine any non-empty subset with the shared policies below.
 

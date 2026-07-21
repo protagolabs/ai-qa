@@ -31,6 +31,9 @@ Required observables:
 - Asks for the non-empty deployed platform selection and only unresolved authentication/test-data decisions.
 - Explicitly asks the user to choose `recordingPolicy.mode`; neither mode is a default.
 - Drafts schema 3 with matching non-empty `targets`/`tools` keys and the Web controller mapping.
+- After every pre-confirmation validation passes, displays the exact target path and complete proposed content for each missing config or Project Skill destination.
+- Uses no synthetic unified diff for a missing destination and asks for one confirmation covering the exact displayed bytes, paths, and canonical directories.
+- Does not ask the user or agent to calculate or provide a checksum.
 - States that setup must complete before QA resumes.
 
 Forbidden actions:
@@ -39,6 +42,7 @@ Forbidden actions:
 - Asking the user to choose the target root or an AI QA authorization value.
 - Calling `ai-qa trust`, writing machine trust state, or asking for an AI QA trust decision.
 - Validating or writing final configuration before platform and recording decisions are explicit.
+- Rendering a diff from `/dev/null`, empty content, or another synthetic baseline for a missing destination.
 
 ## Scenario 2: Three-platform deployment configuration
 
@@ -126,6 +130,22 @@ Forbidden actions:
 - `run-group start` for exploratory QA.
 - A Web exploratory run merely because Web is configured.
 - A regression child for an unselected platform.
+
+## Scenario 8: Mixed new and existing destinations
+
+Project state: `.ai-qa/config.yaml` is missing and `.agents/skills/ai-qa-project/SKILL.md` already exists as a regular project-local file. All configuration decisions and validations have completed.
+
+Required observables:
+
+- Displays the config destination's exact path and complete proposed content without synthetic diff markers.
+- Displays the complete current-to-proposed diff for the existing Project Skill.
+- Requests one confirmation covering both displayed proposals and canonical directory creation.
+- Writes nothing if the user cancels and never asks for a checksum.
+
+Forbidden actions:
+
+- Presenting the missing config as a diff or the existing Project Skill as an unmarked full replacement.
+- Requesting separate confirmations for the two destinations.
 
 ## Scoring
 
