@@ -5,7 +5,7 @@
 When Codex first uses AI QA in a target project that has no
 `.ai-qa/config.yaml`, AI QA must block the requested QA work and direct Codex
 to configure the project. Codex derives safe values from the project, asks the
-user only for unresolved decisions, previews the complete validated change,
+user only for unresolved decisions, previews the complete validated proposal,
 and resumes the original QA request only after the post-write doctor reports
 `ready`.
 
@@ -19,6 +19,8 @@ configuration workflow.
 - Give Codex a deterministic, machine-readable signal to begin configuration.
 - Minimize user questions by deriving unambiguous project facts and applying
   documented safe product defaults.
+- Present every new file as exact complete content instead of a synthetic diff
+  from an empty file.
 - Preserve the existing validated two-file initialization and post-write
   doctor workflow.
 - Keep project selection, repository trust, and filesystem authorization under
@@ -147,8 +149,27 @@ conflicting project instructions. Literal secret values are never accepted.
 
 Codex first presents a concise summary of derived values, then asks unresolved
 questions without re-asking for facts already established by the project. The
-final complete diff remains the user's authoritative confirmation of every
-derived, defaulted, and supplied value.
+final complete file preview remains the user's authoritative confirmation of
+every derived, defaulted, and supplied value.
+
+## Proposal presentation
+
+Presentation is selected independently for each proposed destination:
+
+- If the destination does not exist, display its exact target path and complete
+  proposed content. Do not render a unified diff against `/dev/null`, an empty
+  string, or another synthetic baseline.
+- If the destination exists, display the complete diff from its current bytes
+  to the proposed bytes.
+- In a mixed state, display complete content for each new file and a complete
+  diff for each existing file.
+
+Before presenting the proposal, Codex completes config, Project Skill,
+exact-root, symlink, and literal-secret validation. The proposal identifies
+those successful checks and all canonical directories that will be created.
+One user confirmation authorizes exactly the displayed file bytes, target
+paths, and directory creation. Cancellation writes nothing. Neither initial
+creation nor update requires the user or Codex to calculate a checksum.
 
 ## Validated write flow
 
@@ -160,7 +181,8 @@ authoritative:
 2. Validate the config with `ai-qa config validate --stdin-json` and validate
    the Project Skill with `skill-creator`.
 3. Verify exact-root containment, symlink safety, and secret safety.
-4. Display both complete diffs and the required pre-confirmation attestations.
+4. Display each new file's exact path and complete content, each existing
+   file's complete diff, and the required pre-confirmation attestations.
 5. Obtain one confirmation covering the two files and four canonical
    directories.
 6. Write `.ai-qa/config.yaml` and
@@ -204,8 +226,12 @@ The bundled global Skill and Web Work Protocol must state that:
 - the configuration action blocks all QA work;
 - Codex derives only unambiguous values and asks only about unresolved values;
 - user cancellation does not permit temporary defaults;
-- the existing validation, diff, confirmation, and write gates remain in
-  force;
+- validation precedes proposal presentation;
+- a missing destination is presented as complete content without synthetic
+  diff markers;
+- an existing destination is presented as a complete diff;
+- a mixed state uses the appropriate presentation independently per file;
+- one confirmation and the write gate remain in force;
 - the original QA request resumes only after the post-write doctor reports
   `ready`;
 - bare `status: "uninitialized"` remains a legacy-compatible trigger.
@@ -236,6 +262,10 @@ present them as AI QA settings.
 - Codex does not start QA until the approved configuration is written and the
   post-write doctor is `ready`.
 - Users are asked only for unresolved or conflicting project-specific values.
+- Initial creation presents the exact complete contents of new files without
+  synthetic diff output; updates continue to present complete diffs.
+- Mixed new/existing destinations use the correct presentation per file and
+  remain covered by one confirmation.
 - No target-root or repository-trust choice is added to the AI QA setup
   conversation.
 - Ready and repair scenarios preserve their existing behavior.
