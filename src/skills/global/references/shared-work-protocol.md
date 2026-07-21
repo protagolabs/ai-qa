@@ -4,7 +4,7 @@
 
 Resolve the exact project root. A missing `.ai-qa/config.yaml` blocks QA until the host completes the approved setup and post-write doctor returns `ready`.
 
-Ask for a non-empty deployed platform selection and collect every selected platform's target and tool fields. `targets` and `tools` must have identical platform keys. Always ask for `recordingPolicy.mode`. Draft schema 3 config and a project-owned Project Skill in scratch space, validate both, reject literal secrets and unsafe paths, display both complete diffs, obtain one confirmation, and write once. Create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/run-groups`, `.ai-qa/evidence`, `.ai-qa/reports/runs`, and `.ai-qa/reports/groups`.
+Ask for a non-empty deployed platform selection and collect every selected platform's target and tool fields. `targets` and `tools` must have identical platform keys. Always ask for `recordingPolicy.mode`. Draft schema 3 config and a project-owned Project Skill in scratch space, validate both, and reject literal secrets and unsafe paths. For each proposed file, display the missing destination's exact path and complete proposed content, or the existing destination's complete diff. Never render a synthetic diff for a missing destination. Obtain one confirmation and write once; cancellation must write nothing. Never ask the user or Codex to calculate a checksum. Create `.ai-qa/cases`, `.ai-qa/runs`, `.ai-qa/run-groups`, `.ai-qa/evidence`, `.ai-qa/reports/runs`, and `.ai-qa/reports/groups`.
 
 Immediately before confirmation, attest that config validation, Project Skill validation with `skill-creator`, exact-root/symlink safety, and literal-secret safety passed. Doctor every configured platform after the write.
 

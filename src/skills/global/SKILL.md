@@ -21,7 +21,7 @@ AI QA supports exactly web, ios-simulator, and android-emulator. Real devices ar
 3. Inspect existing result-management procedures. Always ask the user to explicitly choose `recordingPolicy.mode`; neither `local-only` nor `project-skill` has a default. Select `project-skill` only after the user confirms the exact existing procedure.
 4. Draft the complete schema 3 config and project-owned `.agents/skills/ai-qa-project/SKILL.md` together. Use `skill-creator` for the Project Skill. Keep literal secrets out; config may name environment variables.
 5. Run `ai-qa config validate --stdin-json`, validate the scratch Project Skill, and verify exact-root, target/parent symlink, and secret safety.
-6. The host displays both complete diffs. Obtain one confirmation, then write both files once and create the canonical `.ai-qa/` directories. If the user cancels, write nothing.
+6. For each proposed file, display the missing destination's exact path and complete proposed content, or the existing destination's complete diff. Never render a synthetic diff for a missing destination. Obtain one confirmation, then write both files once and create the canonical `.ai-qa/` directories. If the user cancels, write nothing. Never ask the user or Codex to calculate a checksum.
 7. Run doctor for every configured platform. Resume QA only when every requested platform is ready.
 
 Read [shared-work-protocol.md](references/shared-work-protocol.md) for setup, lifecycle, evidence, case, RunGroup, report, and recording contracts.

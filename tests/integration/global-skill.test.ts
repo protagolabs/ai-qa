@@ -503,15 +503,20 @@ describe("bundled global skill 2.0", () => {
   it("routes setup and execution across the three configured platforms", async () => {
     const root = join(process.cwd(), "src", "skills", "global");
     const skill = await readFile(join(root, "SKILL.md"), "utf8");
-    const references = await Promise.all(
+    const sharedProtocol = await readFile(
+      join(root, "references", "shared-work-protocol.md"),
+      "utf8",
+    );
+    const controllerReferences = await Promise.all(
       [
-        "shared-work-protocol.md",
         "web-controller.md",
         "ios-simulator-controller.md",
         "android-emulator-controller.md",
       ].map((name) => readFile(join(root, "references", name), "utf8")),
     );
-    const guidance = [skill, ...references].join("\n");
+    const guidance = [skill, sharedProtocol, ...controllerReferences].join(
+      "\n",
+    );
 
     expect.soft(skill).toContain("aiQaSkillVersion: 2.0.0");
     expect.soft(skill).toContain("aiQaProtocolRange: ^2.0.0");
@@ -535,7 +540,6 @@ describe("bundled global skill 2.0", () => {
       "collect every selected platform's required configuration",
       "Always ask the user to explicitly choose `recordingPolicy.mode`",
       "schema 3",
-      "displays both complete diffs",
       "Doctor every configured platform",
       "Real devices are unsupported",
       "The CLI never invokes controllers",
@@ -545,6 +549,24 @@ describe("bundled global skill 2.0", () => {
     ]) {
       expect.soft(guidance).toContain(fact);
     }
+    for (const setupGuidance of [skill, sharedProtocol]) {
+      expect
+        .soft(setupGuidance)
+        .toContain(
+          "missing destination's exact path and complete proposed content",
+        );
+      expect
+        .soft(setupGuidance)
+        .toContain("existing destination's complete diff");
+      expect
+        .soft(setupGuidance)
+        .toContain("Never render a synthetic diff for a missing destination");
+      expect.soft(setupGuidance).toContain("one confirmation");
+      expect.soft(setupGuidance).toContain("write nothing");
+      expect.soft(setupGuidance).toContain("calculate a checksum");
+    }
+    expect.soft(guidance).not.toContain("displays both complete diffs");
+    expect.soft(guidance).not.toContain("display both complete diffs");
     expect.soft(guidance).toContain("chrome-devtools-mcp");
     expect.soft(guidance).toContain("pepper");
     expect.soft(guidance).toContain("appium");
