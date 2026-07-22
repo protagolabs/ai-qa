@@ -1,9 +1,21 @@
 {
-  "name": "ai-qa",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@narra-im/ai-qa",
+  "version": "0.1.0",
+  "private": false,
   "description": "Agent-orchestrated QA CLI and skill",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/protagolabs/ai-qa.git"
+  },
+  "homepage": "https://github.com/protagolabs/ai-qa#readme",
+  "bugs": {
+    "url": "https://github.com/protagolabs/ai-qa/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "packageManager": "pnpm@11.9.0",
   "engines": {
