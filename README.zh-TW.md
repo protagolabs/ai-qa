@@ -271,7 +271,7 @@ pnpm build
 
 套件內附的 Skill 版本為 `2.0.0`，接受 work protocol `^2.0.0`。經確認的 sync 會安裝正好四個服務管理的 reference：shared protocol，以及 Web、iOS Simulator、Android Emulator controller guide。Managed marker 以外的使用者內容會保留。
 
-## 實機驗收
+## 實際驗收
 
 - [Web](docs/validation/web-live-acceptance.md)
 - [iOS Simulator](docs/validation/ios-simulator-live-acceptance.md)
