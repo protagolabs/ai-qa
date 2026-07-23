@@ -19,6 +19,7 @@ import {
   ensureProjectLocalDirectory,
   inspectOptionalProjectLocalRegularFile,
   prepareProjectLocalRemoval,
+  publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
 } from "../../src/core/fs/project-storage.js";
 
@@ -102,6 +103,33 @@ describe("project-local storage", () => {
     await expect(readFile(outsideFile, "utf8")).resolves.toBe(
       "outside bytes\n",
     );
+  });
+
+  it("does not overwrite a replacement created at final publication verification", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const destination = join(projectRoot, ".ai-qa", "recovered.bin");
+
+    await expect(
+      publishProjectLocalRegularFile({
+        projectRoot,
+        segments: [".ai-qa", "recovered.bin"],
+        content: Buffer.from("recovery bytes"),
+        hooks: {
+          afterFinalVerification: async () => {
+            await writeFile(destination, "replacement bytes");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(readFile(destination, "utf8")).resolves.toBe(
+      "replacement bytes",
+    );
+    expect(
+      (await readdir(join(projectRoot, ".ai-qa"))).filter((entry) =>
+        entry.includes(".tmp"),
+      ),
+    ).toEqual([]);
   });
 
   it("removes only the regular file prepared for removal", async () => {

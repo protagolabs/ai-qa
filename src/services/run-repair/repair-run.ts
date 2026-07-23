@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readFile, rename, rm, stat, unlink } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
@@ -20,7 +20,10 @@ import {
 import {
   ensureProjectLocalDirectory,
   inspectOptionalProjectLocalRegularFile,
+  prepareProjectLocalRemoval,
+  publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
+  type PreparedProjectLocalRemoval,
 } from "../../core/fs/project-storage.js";
 import { resolveRunPaths } from "../../core/runs/paths.js";
 import { RunRepository } from "../../core/runs/repository.js";
@@ -255,6 +258,32 @@ interface RepairContext {
   journalSignal: LockSignal;
   evidenceSignal: LockSignal;
   now: () => Date;
+  hooks: RepairRunHooks;
+}
+
+interface RepairRunHooks {
+  afterRecoveryPublishFinalVerification?: (input: {
+    recoveryPath: string;
+  }) => Promise<void>;
+  afterEvidenceDeleteFinalVerification?: (input: {
+    sourcePath: string;
+  }) => Promise<void>;
+  afterDurablePublish?: (input: {
+    step:
+      | "repair-manifest-planned"
+      | "evidence-file"
+      | "evidence-index-entry"
+      | "journal-tail"
+      | "evidence-index"
+      | "repair-manifest-completed";
+  }) => void | Promise<void>;
+  beforeDestructiveCommit?: (input: {
+    step: "journal-truncate" | "evidence-delete";
+  }) => void | Promise<void>;
+}
+
+export interface RepairRunOptions {
+  readonly hooks?: RepairRunHooks;
 }
 
 interface ClassifiedJournal {
@@ -278,11 +307,14 @@ export async function requireNoIncompleteRepair(
   }
 }
 
-export async function repairRun(input: {
-  projectRoot: string;
-  runId: string;
-  now: () => Date;
-}): Promise<RepairReport> {
+export async function repairRun(
+  input: {
+    projectRoot: string;
+    runId: string;
+    now: () => Date;
+  },
+  options: RepairRunOptions = {},
+): Promise<RepairReport> {
   const runId = runIdSchema.parse(input.runId);
   const project = await resolveProject({
     cwd: input.projectRoot,
@@ -336,7 +368,12 @@ export async function repairRun(input: {
       currentManifest !== undefined &&
       currentManifest.completedAt === undefined
     ) {
-      await preflightManifestPaths(projectRoot, runId, currentManifest);
+      await preflightManifestState(
+        projectRoot,
+        runId,
+        input.now,
+        currentManifest,
+      );
     }
     assertNotCompromised(journalSignal, runPaths.events);
     await ensureProjectLocalDirectory(projectRoot, [
@@ -353,6 +390,7 @@ export async function repairRun(input: {
         journalSignal,
         evidenceSignal,
         now: input.now,
+        hooks: options.hooks ?? {},
       };
       const reloaded = await loadManifest(projectRoot, runId);
       const manifest =
@@ -360,7 +398,14 @@ export async function repairRun(input: {
           ? reloaded
           : await computeManifest(context);
       if (manifest === undefined) return emptyReport(runId);
-      await executeManifest(context, manifest);
+      const preparedRemovals = await preflightManifestState(
+        context.projectRoot,
+        context.runId,
+        context.now,
+        manifest,
+        context,
+      );
+      await executeManifest(context, manifest, preparedRemovals);
       return reportFromManifest(manifest);
     });
   });
@@ -466,15 +511,15 @@ async function computeManifest(
 async function executeManifest(
   context: RepairContext,
   manifest: RepairManifest,
+  preparedRemovals: ReadonlyMap<string, PreparedProjectLocalRemoval>,
 ): Promise<void> {
-  await preflightManifestPaths(context.projectRoot, context.runId, manifest);
   await ensureRecoveryDirectory(context);
   for (const relocation of manifest.relocations) {
     await copyRelocation(context, manifest, relocation);
   }
   await rewriteEvidenceIndex(context, manifest);
   await truncateJournal(context, manifest);
-  await deleteEvidenceSources(context, manifest);
+  await deleteEvidenceSources(context, manifest, preparedRemovals);
   const completed = repairManifestSchema.parse({
     ...manifest,
     completedAt: context.now().toISOString(),
@@ -510,6 +555,21 @@ async function preflightManifestPaths(
           relocation,
         );
       }
+      if (source.state === "regular") {
+        const sourcePath = await requireProjectLocalRegularFile(
+          projectRoot,
+          pathSegments(relocation.sourcePath),
+        );
+        const actualHash = sha256(await readFile(sourcePath));
+        if (actualHash !== relocation.contentHash) {
+          throw repairIntegrityError(
+            runId,
+            "Repair deletion source content does not match its manifest",
+            relocation,
+            { actualHash },
+          );
+        }
+      }
     } else {
       await requireProjectLocalRegularFile(
         projectRoot,
@@ -537,6 +597,232 @@ async function preflightManifestPaths(
   }
 }
 
+async function preflightManifestState(
+  projectRoot: string,
+  runId: string,
+  now: () => Date,
+  manifest: RepairManifest,
+  context?: RepairContext,
+): Promise<ReadonlyMap<string, PreparedProjectLocalRemoval>> {
+  await preflightManifestPaths(projectRoot, runId, manifest);
+  const journal = await readVerifiedJournal(
+    projectRoot,
+    runId,
+    resolveRunPaths(projectRoot, runId).events,
+    now,
+  );
+  const records = await readEvidenceIndex(
+    projectRoot,
+    runId,
+    journal.workOrder,
+  );
+  const journalEvidenceIds = new Set(
+    journal.events.flatMap((event) =>
+      event.type === "evidence" ? [event.payload.id] : [],
+    ),
+  );
+  const plannedOrphans = new Set(manifest.orphanedEvidenceIds);
+  for (const record of records) {
+    if (!journalEvidenceIds.has(record.id) && !plannedOrphans.has(record.id)) {
+      throw repairIntegrityError(
+        runId,
+        "Evidence index contains an orphan outside the repair manifest",
+      );
+    }
+  }
+  for (const evidenceId of plannedOrphans) {
+    if (journalEvidenceIds.has(evidenceId)) {
+      throw repairIntegrityError(
+        runId,
+        "Repair manifest classifies journaled evidence as orphaned",
+        undefined,
+        { evidenceId },
+      );
+    }
+    await requireEvidencePlanBinding(
+      projectRoot,
+      runId,
+      manifest,
+      records,
+      journal.workOrder,
+      evidenceId,
+    );
+  }
+  await requireJournalTailBinding(projectRoot, runId, manifest, journal);
+  const preparedRemovals = new Map<string, PreparedProjectLocalRemoval>();
+  for (const relocation of manifest.relocations) {
+    if (relocation.kind !== "evidence-file") continue;
+    preparedRemovals.set(
+      relocation.sourcePath,
+      await prepareProjectLocalRemoval({
+        projectRoot,
+        segments: pathSegments(relocation.sourcePath),
+        expected: "file",
+        ...(context === undefined
+          ? {}
+          : {
+              hooks: {
+                afterFinalVerification: async () => {
+                  await context.hooks.afterEvidenceDeleteFinalVerification?.({
+                    sourcePath: relocation.sourcePath,
+                  });
+                },
+                beforeClaim: async () => {
+                  await context.hooks.beforeDestructiveCommit?.({
+                    step: "evidence-delete",
+                  });
+                  assertBothLocks(context);
+                },
+              },
+            }),
+      }),
+    );
+  }
+  return preparedRemovals;
+}
+
+async function requireEvidencePlanBinding(
+  projectRoot: string,
+  runId: string,
+  manifest: RepairManifest,
+  currentRecords: readonly EvidenceRecord[],
+  workOrder: WorkOrder,
+  evidenceId: string,
+): Promise<void> {
+  const fileRelocation = manifest.relocations.find(
+    (relocation) =>
+      relocation.kind === "evidence-file" &&
+      relocation.evidenceId === evidenceId,
+  );
+  const indexRelocation = manifest.relocations.find(
+    (relocation) =>
+      relocation.kind === "evidence-index-entry" &&
+      relocation.evidenceId === evidenceId,
+  );
+  if (fileRelocation === undefined || indexRelocation === undefined) {
+    throw repairIntegrityError(
+      runId,
+      "Repair manifest is missing an orphan relocation",
+      undefined,
+      { evidenceId },
+    );
+  }
+  const currentRecord = currentRecords.find(
+    (record) => record.id === evidenceId,
+  );
+  const record =
+    currentRecord ??
+    (await readRecoveredEvidenceRecord(projectRoot, runId, indexRelocation));
+  const expectedController = controllerForPlatform(workOrder.platform);
+  const indexBytes = Buffer.from(`${JSON.stringify(record)}\n`);
+  if (
+    record.id !== evidenceId ||
+    record.runId !== runId ||
+    record.platform !== workOrder.platform ||
+    record.sourceTool !== expectedController ||
+    record.projectRelativePath !== fileRelocation.sourcePath ||
+    record.contentHash !== fileRelocation.contentHash ||
+    sha256(indexBytes) !== indexRelocation.contentHash
+  ) {
+    throw repairIntegrityError(
+      runId,
+      "Repair evidence relocations do not match their index record",
+      undefined,
+      { evidenceId },
+    );
+  }
+}
+
+async function readRecoveredEvidenceRecord(
+  projectRoot: string,
+  runId: string,
+  relocation: RepairRelocation,
+): Promise<EvidenceRecord> {
+  const records = await readEvidenceIndexAtPath(
+    projectRoot,
+    runId,
+    relocation.recoveryPath,
+  );
+  const record = records[0];
+  if (records.length !== 1 || record === undefined) {
+    throw repairIntegrityError(
+      runId,
+      "Recovered evidence index relocation is not one complete record",
+      relocation,
+    );
+  }
+  return record;
+}
+
+async function requireJournalTailBinding(
+  projectRoot: string,
+  runId: string,
+  manifest: RepairManifest,
+  journal: {
+    classified: ClassifiedJournal;
+    events: RunEvent[];
+    workOrder: WorkOrder;
+  },
+): Promise<void> {
+  const plannedTail = manifest.journalTail;
+  if (plannedTail === undefined) {
+    if (journal.classified.tailBytes !== undefined) {
+      throw repairIntegrityError(
+        runId,
+        "Repair manifest omits the current torn journal tail",
+      );
+    }
+    return;
+  }
+  const relocation = manifest.relocations.find(
+    (candidate) => candidate.kind === "journal-tail",
+  );
+  if (relocation === undefined) {
+    throw repairIntegrityError(
+      runId,
+      "Repair manifest is missing its journal-tail relocation",
+    );
+  }
+  const currentTail = journal.classified.tailBytes;
+  if (currentTail !== undefined) {
+    if (
+      journal.classified.tailOffset !== plannedTail.truncateOffset ||
+      currentTail.byteLength !== plannedTail.byteLength ||
+      sha256(currentTail) !== plannedTail.contentHash
+    ) {
+      throw repairIntegrityError(
+        runId,
+        "Current torn journal tail does not match the repair manifest",
+        relocation,
+      );
+    }
+    return;
+  }
+  if (journal.classified.complete.byteLength !== plannedTail.truncateOffset) {
+    throw repairIntegrityError(
+      runId,
+      "Healthy journal bytes cannot satisfy a torn-tail repair plan",
+      relocation,
+      { byteLength: journal.classified.complete.byteLength },
+    );
+  }
+  const recovered = await requireProjectLocalRegularFile(
+    projectRoot,
+    pathSegments(relocation.recoveryPath),
+  );
+  const recoveredBytes = await readFile(recovered);
+  if (
+    recoveredBytes.byteLength !== plannedTail.byteLength ||
+    sha256(recoveredBytes) !== plannedTail.contentHash
+  ) {
+    throw repairIntegrityError(
+      runId,
+      "Truncated journal is not backed by its verified recovery copy",
+      relocation,
+    );
+  }
+}
+
 async function ensureRecoveryDirectory(
   context: RepairContext,
 ): Promise<string> {
@@ -561,6 +847,13 @@ async function writeManifest(
   );
   await atomicWriteFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
     preCommit: () => assertBothLocks(context),
+    durable: true,
+  });
+  await context.hooks.afterDurablePublish?.({
+    step:
+      manifest.completedAt === undefined
+        ? "repair-manifest-planned"
+        : "repair-manifest-completed",
   });
 }
 
@@ -605,14 +898,21 @@ async function copyRelocation(
       { actualHash },
     );
   }
-  const destinationSegments = pathSegments(relocation.recoveryPath);
-  assertBothLocks(context);
-  const parent = await ensureProjectLocalDirectory(
-    context.projectRoot,
-    destinationSegments.slice(0, -1),
-  );
-  const destination = resolve(parent, destinationSegments.at(-1)!);
-  await atomicWriteBuffer(destination, bytes, () => assertBothLocks(context));
+  await publishProjectLocalRegularFile({
+    projectRoot: context.projectRoot,
+    segments: pathSegments(relocation.recoveryPath),
+    content: bytes,
+    preCommit: () => assertBothLocks(context),
+    durable: true,
+    hooks: {
+      afterFinalVerification: async () => {
+        await context.hooks.afterRecoveryPublishFinalVerification?.({
+          recoveryPath: relocation.recoveryPath,
+        });
+      },
+    },
+  });
+  await context.hooks.afterDurablePublish?.({ step: relocation.kind });
 }
 
 async function relocationBytes(
@@ -705,8 +1005,9 @@ async function rewriteEvidenceIndex(
   await atomicWriteFile(
     context.evidenceIndexPath,
     serializeJsonLines(retained),
-    { preCommit: () => assertBothLocks(context) },
+    { preCommit: () => assertBothLocks(context), durable: true },
   );
+  await context.hooks.afterDurablePublish?.({ step: "evidence-index" });
 }
 
 async function truncateJournal(
@@ -746,6 +1047,9 @@ async function truncateJournal(
         "Run journal tail content does not match the repair manifest",
       );
     }
+    await context.hooks.beforeDestructiveCommit?.({
+      step: "journal-truncate",
+    });
     assertBothLocks(context);
     await handle.truncate(tail.truncateOffset);
     await handle.sync();
@@ -757,54 +1061,19 @@ async function truncateJournal(
 async function deleteEvidenceSources(
   context: RepairContext,
   manifest: RepairManifest,
+  preparedRemovals: ReadonlyMap<string, PreparedProjectLocalRemoval>,
 ): Promise<void> {
   for (const relocation of manifest.relocations) {
     if (relocation.kind !== "evidence-file") continue;
-    const inspected = await inspectOptionalProjectLocalRegularFile(
-      context.projectRoot,
-      pathSegments(relocation.sourcePath),
-    );
-    if (inspected.state === "missing") continue;
-    const source = await requireProjectLocalRegularFile(
-      context.projectRoot,
-      pathSegments(relocation.sourcePath),
-    );
-    const actualHash = sha256(await readFile(source));
-    if (actualHash !== relocation.contentHash) {
+    const prepared = preparedRemovals.get(relocation.sourcePath);
+    if (prepared === undefined) {
       throw repairIntegrityError(
         context.runId,
-        "Evidence source changed before repair deletion",
+        "Evidence source was not prepared for contained deletion",
         relocation,
-        { actualHash },
       );
     }
-    await requireProjectLocalRegularFile(
-      context.projectRoot,
-      pathSegments(relocation.sourcePath),
-    );
-    assertBothLocks(context);
-    await unlink(source);
-  }
-}
-
-async function atomicWriteBuffer(
-  path: string,
-  content: Buffer,
-  preCommit: () => void,
-): Promise<void> {
-  const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  let handle;
-  try {
-    handle = await open(temporaryPath, "wx", 0o600);
-    await handle.writeFile(content);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    preCommit();
-    await rename(temporaryPath, path);
-  } finally {
-    await handle?.close();
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    await prepared.remove();
   }
 }
 

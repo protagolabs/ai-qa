@@ -8,6 +8,7 @@ import {
   readFile,
   readdir,
   readlink,
+  rename,
   rm,
   symlink,
   truncate,
@@ -15,6 +16,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { EvidenceRecord } from "../../src/core/evidence/schema.js";
@@ -373,14 +375,14 @@ describe("run repair", () => {
     { timeout: 15_000 },
     async () => {
       for (let iteration = 0; iteration < 20; iteration += 1) {
-        const fixture = await createRepairFixture();
+        const fixture = await createRepairFixture({ orphan: true });
         const sourcePath = join(
           fixture.projectRoot,
           `concurrent-${iteration}.png`,
         );
         await writeFile(sourcePath, `concurrent-${iteration}`);
 
-        const [repair, evidence] = await Promise.all([
+        const [repair, evidence] = await Promise.allSettled([
           repairRun({
             projectRoot: fixture.projectRoot,
             runId,
@@ -404,9 +406,147 @@ describe("run repair", () => {
           }),
         ]);
 
-        expect(repair).toEqual({ runId, relocated: [] });
-        expect(evidence.id).toMatch(/^evidence-/u);
+        expect(repair).toMatchObject({
+          status: "fulfilled",
+          value: {
+            relocated: [
+              expect.objectContaining({ kind: "evidence-file" }),
+              expect.objectContaining({ kind: "evidence-index-entry" }),
+            ],
+          },
+        });
+        if (evidence.status === "fulfilled") {
+          expect(evidence.value.id).toMatch(/^evidence-/u);
+        } else {
+          expect(evidence.reason).toMatchObject({
+            code: "evidence.orphaned_entries",
+          });
+        }
       }
+    },
+  );
+
+  it(
+    "serializes repair and evidence registration through both locks",
+    { timeout: 15_000 },
+    async () => {
+      const fixture = await createRepairFixture({ orphan: true });
+      const indexPath = evidenceIndexPath(fixture.projectRoot);
+      const sourcePath = join(fixture.projectRoot, "barrier-evidence.png");
+      await writeFile(sourcePath, "barrier evidence");
+      const releaseEvidence = await lockfile.lock(indexPath, {
+        realpath: false,
+      });
+      let repairSettled = false;
+      let evidenceSettled = false;
+      const repair = repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }).finally(() => {
+        repairSettled = true;
+      });
+      await waitForPath(`${journalPath(fixture.projectRoot)}.lock`);
+      const evidence = registerEvidence({
+        projectRoot: fixture.projectRoot,
+        runId,
+        payload: {
+          sourcePath,
+          mediaType: "image/png",
+          sourceTool: "chrome-devtools-mcp",
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId: fixture.captureActionId,
+          idempotencyKey: "barrier-evidence",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }).finally(() => {
+        evidenceSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(repairSettled).toBe(false);
+      expect(evidenceSettled).toBe(false);
+      await releaseEvidence();
+      await expect(repair).resolves.toMatchObject({
+        runId,
+        relocated: [
+          { kind: "evidence-file" },
+          { kind: "evidence-index-entry" },
+        ],
+      });
+      await expect(evidence).resolves.toMatchObject({
+        idempotencyKey: "barrier-evidence",
+      });
+    },
+  );
+
+  it(
+    "gates a consumer after racing repair publishes an incomplete manifest",
+    { timeout: 15_000 },
+    async () => {
+      const fixture = await createRepairFixture({ orphan: true, torn: true });
+      await mkdir(recoveryDirectory(fixture.projectRoot), { recursive: true });
+      await writeFile(
+        join(recoveryDirectory(fixture.projectRoot), "evidence"),
+        "blocks recovery descendants",
+      );
+      const releaseEvidence = await lockfile.lock(
+        evidenceIndexPath(fixture.projectRoot),
+        { realpath: false },
+      );
+      let repairSettled = false;
+      let consumerSettled = false;
+      const repair = repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      })
+        .then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        )
+        .finally(() => {
+          repairSettled = true;
+        });
+      await waitForPath(`${journalPath(fixture.projectRoot)}.lock`);
+      const consumer = new RunProtocolService(
+        fixture.projectRoot,
+        runId,
+        fixedNow,
+      )
+        .planAction({
+          idempotencyKey: "racing-consumer",
+          kind: "observation",
+          intent: "Must wait for repair publication",
+          tool: "chrome-devtools-mcp",
+          target: { description: "Page" },
+        })
+        .then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        )
+        .finally(() => {
+          consumerSettled = true;
+        });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(repairSettled).toBe(false);
+      expect(consumerSettled).toBe(false);
+
+      await releaseEvidence();
+      await expect(repair).resolves.toMatchObject({
+        error: { code: "storage.integrity_error" },
+      });
+      await expect(consumer).resolves.toMatchObject({
+        error: { code: "run.repair_incomplete" },
+      });
+      const manifest = await readManifest(fixture.projectRoot);
+      expect(manifest.completedAt).toBeUndefined();
+      expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+        Buffer.concat([fixture.cleanJournal, tornBytes]),
+      );
     },
   );
 
@@ -502,6 +642,184 @@ describe("run repair", () => {
       symlinkedBefore,
     );
     expect(await snapshotTree(outsideRecovery)).toEqual(outsideBefore);
+  });
+
+  it("rejects a forged torn-tail plan for a healthy journal", async () => {
+    const healthyJournal = await createRepairFixture();
+    await registerLiveEvidence(healthyJournal, "healthy-journal-evidence");
+    const healthyBytes = await readFile(
+      journalPath(healthyJournal.projectRoot),
+    );
+    const forgedTail: StoredRepairManifest = {
+      schemaVersion: 1,
+      runId,
+      createdAt: fixedNow().toISOString(),
+      relocations: [
+        {
+          kind: "journal-tail",
+          sourcePath: `.ai-qa/runs/${runId}/events.jsonl`,
+          recoveryPath: `.ai-qa/recovery/${runId}/journal/forged.tail`,
+          contentHash: sha256(healthyBytes),
+        },
+      ],
+      journalTail: {
+        truncateOffset: 0,
+        byteLength: healthyBytes.byteLength,
+        contentHash: sha256(healthyBytes),
+      },
+      orphanedEvidenceIds: [],
+    };
+    await writeManifest(healthyJournal.projectRoot, forgedTail);
+    const healthyBefore = await snapshotTree(
+      join(healthyJournal.projectRoot, ".ai-qa"),
+    );
+
+    await expect(
+      repairRun({
+        projectRoot: healthyJournal.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+    expect(
+      await snapshotTree(join(healthyJournal.projectRoot, ".ai-qa")),
+    ).toEqual(healthyBefore);
+  });
+
+  it("rejects a forged orphan plan for live journaled evidence", async () => {
+    const liveEvidence = await createRepairFixture();
+    const liveRecord = await registerLiveEvidence(
+      liveEvidence,
+      "journaled-evidence",
+    );
+    await writeManifest(
+      liveEvidence.projectRoot,
+      await evidenceManifest(liveEvidence, liveRecord),
+    );
+    const evidenceBefore = await snapshotTree(
+      join(liveEvidence.projectRoot, ".ai-qa"),
+    );
+
+    await expect(
+      repairRun({
+        projectRoot: liveEvidence.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+    expect(
+      await snapshotTree(join(liveEvidence.projectRoot, ".ai-qa")),
+    ).toEqual(evidenceBefore);
+  });
+
+  it("preflights changed deletion sources after recovery copies exist", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const manifest = await orphanManifest(fixture);
+    await writeManifest(fixture.projectRoot, manifest);
+    await applyRecoveryCopies(fixture.projectRoot, manifest);
+    await writeFile(
+      resolveProjectPath(
+        fixture.projectRoot,
+        manifest.relocations[0]!.sourcePath,
+      ),
+      "replacement-after-copy",
+    );
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
+  it("preserves a source swapped to an outside symlink before deletion", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const source = resolveProjectPath(
+      fixture.projectRoot,
+      orphan.projectRelativePath,
+    );
+    const displaced = `${source}.displaced`;
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-repair-swap-"));
+    const outsideFile = join(outside, "outside.png");
+    await writeFile(outsideFile, "outside bytes");
+
+    let thrown: unknown;
+    try {
+      await repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterEvidenceDeleteFinalVerification: async () => {
+              await rename(source, displaced);
+              await symlink(outsideFile, source);
+            },
+          },
+        },
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "storage.recovery_required" });
+    expect(await readFile(displaced, "utf8")).toBe("orphaned-image");
+    expect(await readFile(outsideFile, "utf8")).toBe("outside bytes");
+    if (
+      !(thrown instanceof Error) ||
+      !("details" in thrown) ||
+      typeof (thrown as { details?: { recoveryPath?: unknown } }).details
+        ?.recoveryPath !== "string"
+    ) {
+      throw new Error("Expected a retained project-local removal claim");
+    }
+    const recoveryPath = (thrown as { details: { recoveryPath: string } })
+      .details.recoveryPath;
+    expect(await readlink(join(fixture.projectRoot, recoveryPath))).toBe(
+      outsideFile,
+    );
+  });
+
+  it("durably publishes recovery state before destructive repair steps", async () => {
+    const fixture = await createRepairFixture({ orphan: true, torn: true });
+    const order: string[] = [];
+
+    await repairRun(
+      {
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      },
+      {
+        hooks: {
+          afterDurablePublish: ({ step }) => {
+            order.push(`published:${step}`);
+          },
+          beforeDestructiveCommit: ({ step }) => {
+            order.push(`destructive:${step}`);
+          },
+        },
+      },
+    );
+
+    expect(order).toEqual([
+      "published:repair-manifest-planned",
+      "published:evidence-file",
+      "published:evidence-index-entry",
+      "published:journal-tail",
+      "published:evidence-index",
+      "destructive:journal-truncate",
+      "destructive:evidence-delete",
+      "published:repair-manifest-completed",
+    ]);
   });
 });
 
@@ -660,10 +978,16 @@ function emptyIncompleteManifest(): StoredRepairManifest {
 async function orphanManifest(
   fixture: RepairFixture,
 ): Promise<StoredRepairManifest> {
-  const orphan = requiredOrphan(fixture);
-  const indexLine = Buffer.from(`${JSON.stringify(orphan)}\n`);
+  return evidenceManifest(fixture, requiredOrphan(fixture));
+}
+
+async function evidenceManifest(
+  fixture: RepairFixture,
+  evidence: EvidenceRecord,
+): Promise<StoredRepairManifest> {
+  const indexLine = Buffer.from(`${JSON.stringify(evidence)}\n`);
   const fileBytes = await readFile(
-    resolveProjectPath(fixture.projectRoot, orphan.projectRelativePath),
+    resolveProjectPath(fixture.projectRoot, evidence.projectRelativePath),
   );
   return {
     schemaVersion: 1,
@@ -672,23 +996,45 @@ async function orphanManifest(
     relocations: [
       {
         kind: "evidence-file",
-        evidenceId: orphan.id,
-        sourcePath: orphan.projectRelativePath,
+        evidenceId: evidence.id,
+        sourcePath: evidence.projectRelativePath,
         recoveryPath: `.ai-qa/recovery/${runId}/evidence/files/${basename(
-          orphan.projectRelativePath,
+          evidence.projectRelativePath,
         )}`,
         contentHash: sha256(fileBytes),
       },
       {
         kind: "evidence-index-entry",
-        evidenceId: orphan.id,
+        evidenceId: evidence.id,
         sourcePath: `.ai-qa/evidence/${runId}/index.jsonl`,
-        recoveryPath: `.ai-qa/recovery/${runId}/evidence/index/${orphan.id}.jsonl`,
+        recoveryPath: `.ai-qa/recovery/${runId}/evidence/index/${evidence.id}.jsonl`,
         contentHash: sha256(indexLine),
       },
     ],
-    orphanedEvidenceIds: [orphan.id],
+    orphanedEvidenceIds: [evidence.id],
   };
+}
+
+async function registerLiveEvidence(
+  fixture: RepairFixture,
+  idempotencyKey: string,
+): Promise<EvidenceRecord> {
+  return registerEvidence({
+    projectRoot: fixture.projectRoot,
+    runId,
+    payload: {
+      sourcePath: fixture.sourcePath,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: fixture.captureActionId,
+      idempotencyKey,
+    },
+    criterionIds: ["authenticated-home-visible"],
+    observationIds: [],
+    now: fixedNow,
+  });
 }
 
 async function cloneProject(sourceRoot: string): Promise<string> {
@@ -820,4 +1166,23 @@ async function snapshotTree(root: string): Promise<Record<string, string>> {
     }
     snapshot[key] = "other";
   }
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      await lstat(path);
+      return;
+    } catch (error: unknown) {
+      if (!(
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      )) {
+        throw error;
+      }
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
 }

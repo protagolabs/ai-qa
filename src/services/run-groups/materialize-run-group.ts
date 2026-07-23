@@ -5,6 +5,7 @@ import { runGroupIdSchema } from "../../core/run-groups/schema.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
 import { resolveProject } from "../project-root/resolve-project.js";
+import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
 
 export async function materializeRunGroup(input: {
   projectRoot: string;
@@ -32,8 +33,18 @@ export async function materializeRunGroup(input: {
       for (const member of manifest.members) {
         let stored: WorkOrder;
         try {
-          stored = await readVerifiedWorkOrder(runRepository, member.runId);
+          stored = await readVerifiedWorkOrder(
+            project.projectRoot,
+            runRepository,
+            member.runId,
+          );
         } catch (error: unknown) {
+          if (
+            error instanceof AiQaError &&
+            error.code === "run.repair_incomplete"
+          ) {
+            throw error;
+          }
           if (!(error instanceof AiQaError) || error.code !== "run.not_found") {
             throw memberIntegrityError(runGroupId, member.runId);
           }
@@ -51,8 +62,18 @@ export async function materializeRunGroup(input: {
             }
           }
           try {
-            stored = await readVerifiedWorkOrder(runRepository, member.runId);
-          } catch {
+            stored = await readVerifiedWorkOrder(
+              project.projectRoot,
+              runRepository,
+              member.runId,
+            );
+          } catch (error: unknown) {
+            if (
+              error instanceof AiQaError &&
+              error.code === "run.repair_incomplete"
+            ) {
+              throw error;
+            }
             throw memberIntegrityError(runGroupId, member.runId);
           }
         }
@@ -71,12 +92,15 @@ export async function materializeRunGroup(input: {
 }
 
 async function readVerifiedWorkOrder(
+  projectRoot: string,
   repository: RunRepository,
   runId: string,
 ): Promise<WorkOrder> {
   return repository
     .journal(runId)
-    .readLocked((events) => repository.readVerifiedWorkOrder(runId, events));
+    .readLocked((events) => repository.readVerifiedWorkOrder(runId, events), {
+      beforeRead: () => requireNoIncompleteRepair(projectRoot, runId),
+    });
 }
 
 function memberIntegrityError(runGroupId: string, runId: string): AiQaError {

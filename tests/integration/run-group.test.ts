@@ -1,5 +1,6 @@
 import {
   access,
+  appendFile,
   mkdtemp,
   mkdir,
   readFile,
@@ -21,6 +22,7 @@ import type { Platform } from "../../src/core/platforms/schema.js";
 import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import { workOrderSchema, type WorkOrder } from "../../src/core/runs/schema.js";
+import { generateRunGroupReport } from "../../src/services/report-generation/generate-group-report.js";
 import { cancelRunGroup } from "../../src/services/run-groups/cancel-run-group.js";
 import { finishRunGroup } from "../../src/services/run-groups/finish-run-group.js";
 import { materializeRunGroup } from "../../src/services/run-groups/materialize-run-group.js";
@@ -127,7 +129,173 @@ async function createActiveCase(input: {
   return revision;
 }
 
+async function singleMemberGroup() {
+  const { projectRoot, cases } = await fixture(["web"]);
+  await createActiveCase({ cases, caseId: "repair-gate", platforms: ["web"] });
+  const started = await startRunGroup({
+    projectRoot,
+    selection: { mode: "explicit", caseIds: ["repair-gate"] },
+    platforms: ["web"],
+    execution: "local",
+    readiness: readinessByPlatform(["web"]),
+    now,
+  });
+  return {
+    projectRoot,
+    runGroupId: started.manifest.id,
+    memberRunId: started.manifest.members[0]!.runId,
+  };
+}
+
+async function writeIncompleteRepairWithTornJournal(
+  projectRoot: string,
+  runId: string,
+): Promise<void> {
+  await writeIncompleteRepairManifest(projectRoot, runId);
+  await appendFile(
+    join(projectRoot, ".ai-qa", "runs", runId, "events.jsonl"),
+    '{"schemaVersion":2,"id":"torn-group-member"',
+  );
+}
+
+async function writeIncompleteRepairManifest(
+  projectRoot: string,
+  runId: string,
+): Promise<void> {
+  const recovery = join(projectRoot, ".ai-qa", "recovery", runId);
+  await mkdir(recovery, { recursive: true });
+  await writeFile(
+    join(recovery, "repair-manifest.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        runId,
+        createdAt: now().toISOString(),
+        relocations: [],
+        orphanedEvidenceIds: [],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
 describe("immutable run groups", () => {
+  it.each(["resume", "finish", "cancel", "report"] as const)(
+    "gates run-group %s before parsing a torn member journal",
+    async (operation) => {
+      const group = await singleMemberGroup();
+      if (operation === "report") {
+        await cancelRun({
+          projectRoot: group.projectRoot,
+          runId: group.memberRunId,
+          reason: "terminal report fixture",
+          now,
+        });
+        await finishRunGroup({
+          projectRoot: group.projectRoot,
+          runGroupId: group.runGroupId,
+          now,
+        });
+      }
+      await writeIncompleteRepairWithTornJournal(
+        group.projectRoot,
+        group.memberRunId,
+      );
+      const groupEventsPath = resolveRunGroupPaths(
+        group.projectRoot,
+        group.runGroupId,
+      ).events;
+      const memberEventsPath = join(
+        group.projectRoot,
+        ".ai-qa",
+        "runs",
+        group.memberRunId,
+        "events.jsonl",
+      );
+      const beforeGroupEvents = await readFile(groupEventsPath);
+      const beforeMemberEvents = await readFile(memberEventsPath);
+      const invoke =
+        operation === "resume"
+          ? materializeRunGroup({
+              projectRoot: group.projectRoot,
+              runGroupId: group.runGroupId,
+              now,
+            })
+          : operation === "finish"
+            ? finishRunGroup({
+                projectRoot: group.projectRoot,
+                runGroupId: group.runGroupId,
+                now,
+              })
+            : operation === "cancel"
+              ? cancelRunGroup({
+                  projectRoot: group.projectRoot,
+                  runGroupId: group.runGroupId,
+                  reason: "blocked by repair",
+                  now,
+                })
+              : generateRunGroupReport({
+                  projectRoot: group.projectRoot,
+                  runGroupId: group.runGroupId,
+                  now,
+                });
+
+      await expect(invoke).rejects.toMatchObject({
+        code: "run.repair_incomplete",
+      });
+      await expect(readFile(groupEventsPath)).resolves.toEqual(
+        beforeGroupEvents,
+      );
+      await expect(readFile(memberEventsPath)).resolves.toEqual(
+        beforeMemberEvents,
+      );
+    },
+  );
+
+  it("preserves the repair gate after resume creates a missing member", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({
+      cases,
+      caseId: "repair-gate-create",
+      platforms: ["web"],
+    });
+    const create = vi
+      .spyOn(RunRepository.prototype, "create")
+      .mockRejectedValueOnce(new Error("injected child creation failure"));
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: {
+          mode: "explicit",
+          caseIds: ["repair-gate-create"],
+        },
+        platforms: ["web"],
+        execution: "local",
+        readiness: readinessByPlatform(["web"]),
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_group.materialization_failed" });
+    create.mockRestore();
+    const [runGroupId] = await readdir(
+      join(projectRoot, ".ai-qa", "run-groups"),
+    );
+    const repository = new RunGroupRepository(projectRoot, now);
+    const manifest = await repository.readManifest(runGroupId!);
+    const member = manifest.members[0]!;
+    await writeIncompleteRepairManifest(projectRoot, member.runId);
+    const groupEventsPath = resolveRunGroupPaths(
+      projectRoot,
+      runGroupId!,
+    ).events;
+    const beforeGroupEvents = await readFile(groupEventsPath);
+
+    await expect(
+      materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
+    ).rejects.toMatchObject({ code: "run.repair_incomplete" });
+    await expect(readFile(groupEventsPath)).resolves.toEqual(beforeGroupEvents);
+  });
+
   it("starts explicit multi-platform members and never rewrites group.json", async () => {
     const { projectRoot, cases } = await fixture();
     await createActiveCase({

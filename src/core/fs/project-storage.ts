@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -13,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { AiQaError } from "../errors.js";
+import { syncDirectoryWhereSupported } from "./atomic-write.js";
 
 function validateSegments(segments: readonly string[]): void {
   if (
@@ -108,7 +111,87 @@ export interface PreparedProjectLocalRemoval {
 
 export interface ProjectLocalRemovalHooks {
   afterFinalVerification?: (input: { path: string }) => Promise<void>;
+  beforeClaim?: (input: { path: string }) => void | Promise<void>;
   afterClaim?: (input: { path: string; recoveryPath: string }) => Promise<void>;
+}
+
+export interface ProjectLocalPublishHooks {
+  afterFinalVerification?: (input: { path: string }) => Promise<void>;
+}
+
+export async function publishProjectLocalRegularFile(input: {
+  projectRoot: string;
+  segments: readonly string[];
+  content: Buffer;
+  preCommit?: () => void;
+  durable?: boolean;
+  hooks?: ProjectLocalPublishHooks;
+}): Promise<string> {
+  validateSegments(input.segments);
+  const parentSegments = input.segments.slice(0, -1);
+  const parent = await ensureProjectLocalDirectory(
+    input.projectRoot,
+    parentSegments,
+  );
+  const destination = resolve(parent, input.segments.at(-1)!);
+  const temporaryPath = resolve(
+    parent,
+    `.${basename(destination)}.${randomUUID()}.tmp`,
+  );
+  let handle;
+  try {
+    handle = await open(temporaryPath, "wx", 0o600);
+    await handle.writeFile(input.content);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const verifiedParent = await requireProjectLocalDirectory(
+      input.projectRoot,
+      parentSegments,
+    );
+    if (verifiedParent !== parent) {
+      throw storageError(
+        "Project-local publication parent changed during verification",
+        parent,
+      );
+    }
+    try {
+      await lstat(destination);
+      throw storageError(
+        "Project-local publication destination already exists",
+        destination,
+      );
+    } catch (error: unknown) {
+      if (error instanceof AiQaError) throw error;
+      if (!isNodeError(error, "ENOENT")) {
+        throw storageError(
+          "Project-local publication destination verification failed",
+          destination,
+          nodeErrorCode(error),
+        );
+      }
+    }
+    await input.hooks?.afterFinalVerification?.({ path: destination });
+    input.preCommit?.();
+    try {
+      await link(temporaryPath, destination);
+    } catch (error: unknown) {
+      throw storageError(
+        "Project-local publication destination changed before commit",
+        destination,
+        nodeErrorCode(error),
+      );
+    }
+    await unlink(temporaryPath);
+    if (input.durable === true) {
+      await syncDirectoryWhereSupported(parent);
+    }
+    return destination;
+  } finally {
+    await handle?.close();
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
 }
 
 const removalClaimPrefix = ".ai-qa-removal-claim-";
@@ -155,6 +238,7 @@ export async function prepareProjectLocalRemoval(
     expected: input.expected,
   };
   const afterFinalVerification = input.hooks?.afterFinalVerification;
+  const beforeClaim = input.hooks?.beforeClaim;
   const afterClaim = input.hooks?.afterClaim;
   validateSegments(spec.segments);
   const projectRoot = await realpath(input.projectRoot);
@@ -167,6 +251,7 @@ export async function prepareProjectLocalRemoval(
         projectRoot,
         inspected,
         afterFinalVerification,
+        beforeClaim,
         afterClaim,
       ),
   };
@@ -250,6 +335,7 @@ async function removePreparedProjectLocalEntry(
   projectRoot: string,
   prepared: InspectedProjectLocalRemoval,
   afterFinalVerification?: ProjectLocalRemovalHooks["afterFinalVerification"],
+  beforeClaim?: ProjectLocalRemovalHooks["beforeClaim"],
   afterClaim?: ProjectLocalRemovalHooks["afterClaim"],
 ): Promise<boolean> {
   if (prepared.state === "missing") return false;
@@ -271,6 +357,7 @@ async function removePreparedProjectLocalEntry(
   const claimedPath = resolve(claimDirectory, removalClaimEntry);
   const recoveryPath = `${basename(claimDirectory)}/${removalClaimEntry}`;
   try {
+    await beforeClaim?.({ path: prepared.path });
     await rename(prepared.path, claimedPath);
   } catch (error: unknown) {
     if (isNodeError(error, "ENOENT")) {

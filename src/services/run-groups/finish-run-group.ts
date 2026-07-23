@@ -9,6 +9,7 @@ import {
 import { RunRepository } from "../../core/runs/repository.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
 import { resolveProject } from "../project-root/resolve-project.js";
+import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
 import {
   readRunState,
   type RunStateSnapshot,
@@ -74,8 +75,12 @@ export async function readVerifiedRunGroupMemberStates(input: {
   for (const member of input.manifest.members) {
     const workOrder = await repository
       .journal(member.runId)
-      .readLocked((events) =>
-        repository.readVerifiedWorkOrder(member.runId, events),
+      .readLocked(
+        (events) => repository.readVerifiedWorkOrder(member.runId, events),
+        {
+          beforeRead: () =>
+            requireNoIncompleteRepair(input.projectRoot, member.runId),
+        },
       );
     requireMemberIdentity(input.manifest, member, workOrder);
     const state = await readRunState({

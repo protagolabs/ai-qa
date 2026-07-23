@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 export async function atomicWriteFile(
   path: string,
   content: string,
-  options: { preCommit?: () => void } = {},
+  options: { preCommit?: () => void; durable?: boolean } = {},
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
@@ -18,6 +18,9 @@ export async function atomicWriteFile(
     closed = true;
     options.preCommit?.();
     await rename(temporaryPath, path);
+    if (options.durable === true) {
+      await syncDirectoryWhereSupported(dirname(path));
+    }
   } catch (error: unknown) {
     if (!closed) {
       try {
@@ -33,4 +36,36 @@ export async function atomicWriteFile(
     }
     throw error;
   }
+}
+
+export async function syncDirectoryWhereSupported(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch (error: unknown) {
+    if (!isUnsupportedDirectorySync(error)) throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function isUnsupportedDirectorySync(error: unknown): boolean {
+  return [
+    "EBADF",
+    "EINVAL",
+    "EISDIR",
+    "ENOSYS",
+    "ENOTSUP",
+    "EOPNOTSUPP",
+    "EPERM",
+  ].some((code) => isNodeError(error, code));
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
