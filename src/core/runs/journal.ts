@@ -186,6 +186,7 @@ export class RunJournal {
       events: readonly RunEvent[],
       signal: LockSignal,
     ) => T | Promise<T>,
+    options: { beforeRead?: () => Promise<void> } = {},
   ): Promise<T> {
     try {
       await requireProjectLocalRegularFile(this.projectRoot, [
@@ -194,9 +195,10 @@ export class RunJournal {
         this.runId,
         "events.jsonl",
       ]);
-      return await withLock(this.path, "hot", async (signal) =>
-        inspect(await this.readAll(), signal),
-      );
+      return await withLock(this.path, "hot", async (signal) => {
+        await options.beforeRead?.();
+        return inspect(await this.readAll(), signal);
+      });
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
       throw error;

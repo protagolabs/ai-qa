@@ -29,6 +29,7 @@ import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { effectiveInteractionSuccesses } from "../run-protocol/effective-interactions.js";
 import { validateFinalization } from "../run-protocol/finalize-run.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
+import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
 import {
   effectiveVerdictFrom,
   validateVerdictHistory,
@@ -295,69 +296,74 @@ async function readCompletedExploratoryRun(
 ): Promise<SourceRunSnapshot> {
   const now = () => new Date(0);
   const repository = new RunRepository(projectRoot, now);
-  return repository.journal(runId).readLocked(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId, events);
-    if (workOrder.kind !== "exploratory") {
-      throw new AiQaError(
-        "case.source_run_not_exploratory",
-        "Only exploratory runs can be promoted into cases",
-        { runId },
-      );
-    }
-    const evidenceResult = await readVerifiedEvidence(
-      projectRoot,
-      runId,
-      events,
-      now,
-      workOrder.platform,
-    );
-    validateProtocolEvents(events, workOrder, runId, {
-      evidenceParityAuthoritative: !evidenceResult.valid,
-    });
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    if (lifecycle.current.payload.phase !== "completed") {
-      throw new AiQaError(
-        "case.source_run_incomplete",
-        "Only completed exploratory runs can be promoted",
-        { runId },
-      );
-    }
-    const effective = effectiveVerdictFrom(
-      validateVerdictHistory(events, workOrder),
-    );
-    if (
-      effective === undefined ||
-      lifecycle.current.payload.verdictId !== effective.event.id
-    ) {
-      throw new AiQaError(
-        "case.source_run_integrity_error",
-        "Completed source run does not match its effective verdict",
-        { runId },
-      );
-    }
-    let evidenceValid = evidenceResult.valid;
-    if (evidenceValid) {
-      try {
-        validateFinalization({
-          workOrder,
-          events,
-          evidence: evidenceResult.evidence,
-          verdict: effective,
-          completionTime: new Date(lifecycle.current.event.timestamp),
-        });
-      } catch (error: unknown) {
-        if (!(error instanceof AiQaError)) throw error;
-        evidenceValid = false;
+  return repository.journal(runId).readLocked(
+    async (events) => {
+      const workOrder = await repository.readVerifiedWorkOrder(runId, events);
+      if (workOrder.kind !== "exploratory") {
+        throw new AiQaError(
+          "case.source_run_not_exploratory",
+          "Only exploratory runs can be promoted into cases",
+          { runId },
+        );
       }
-    }
-    return {
-      workOrder,
-      events,
-      verdict: effective.payload,
-      evidence: evidenceResult.evidence,
-      evidenceValid,
-    };
-  });
+      const evidenceResult = await readVerifiedEvidence(
+        projectRoot,
+        runId,
+        events,
+        now,
+        workOrder.platform,
+      );
+      validateProtocolEvents(events, workOrder, runId, {
+        evidenceParityAuthoritative: !evidenceResult.valid,
+      });
+      const lifecycle = validateRunLifecycleHistory(events, runId);
+      if (lifecycle.current.payload.phase !== "completed") {
+        throw new AiQaError(
+          "case.source_run_incomplete",
+          "Only completed exploratory runs can be promoted",
+          { runId },
+        );
+      }
+      const effective = effectiveVerdictFrom(
+        validateVerdictHistory(events, workOrder),
+      );
+      if (
+        effective === undefined ||
+        lifecycle.current.payload.verdictId !== effective.event.id
+      ) {
+        throw new AiQaError(
+          "case.source_run_integrity_error",
+          "Completed source run does not match its effective verdict",
+          { runId },
+        );
+      }
+      let evidenceValid = evidenceResult.valid;
+      if (evidenceValid) {
+        try {
+          validateFinalization({
+            workOrder,
+            events,
+            evidence: evidenceResult.evidence,
+            verdict: effective,
+            completionTime: new Date(lifecycle.current.event.timestamp),
+          });
+        } catch (error: unknown) {
+          if (!(error instanceof AiQaError)) throw error;
+          evidenceValid = false;
+        }
+      }
+      return {
+        workOrder,
+        events,
+        verdict: effective.payload,
+        evidence: evidenceResult.evidence,
+        evidenceValid,
+      };
+    },
+    {
+      beforeRead: () => requireNoIncompleteRepair(projectRoot, runId),
+    },
+  );
 }
 
 async function readVerifiedEvidence(

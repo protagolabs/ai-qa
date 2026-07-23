@@ -1415,7 +1415,13 @@ describe("typed run protocol", () => {
     expect(subcommands("recovery")).toEqual(["resolve"]);
     expect(subcommands("blocker")).toEqual(["record"]);
     expect(subcommands("verdict")).toEqual(["set", "revise"]);
-    expect(subcommands("run")).toEqual(["start", "resume", "cancel", "finish"]);
+    expect(subcommands("run")).toEqual([
+      "start",
+      "resume",
+      "cancel",
+      "finish",
+      "repair",
+    ]);
     expect(commandNames.some((commandName) => commandName === "event")).toBe(
       false,
     );

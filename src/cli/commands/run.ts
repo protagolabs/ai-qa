@@ -24,6 +24,7 @@ import { startRegressionRun } from "../../services/run-protocol/start-regression
 import { checkGlobalSkill } from "../../services/skill-management/global-skill.js";
 import type { CliContext } from "../context.js";
 import { readJsonInput, writeJson } from "../io.js";
+import { registerRunRepairCommand } from "./repair.js";
 
 const startOptionsSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -275,6 +276,8 @@ export function registerRunCommands(
       permittedNextActions: result.permittedNextActions,
     });
   });
+
+  registerRunRepairCommand(runCommand, context);
 }
 
 async function resolveRunTarget(

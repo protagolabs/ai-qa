@@ -20,6 +20,7 @@ import {
 } from "../../core/runs/schema.js";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
+import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
 import { deriveRunState, type RunStateSummary } from "./read-run-state.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
 import { validateProtocolEvents } from "./run-protocol-service.js";
@@ -121,25 +122,30 @@ export async function withRunSession<T>(
   const repository = new RunRepository(project.projectRoot, input.now);
   const journal = repository.journal(runId);
   const journalPath = resolveRunPaths(project.projectRoot, runId).events;
-  return journal.readLocked(async (events, signal) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId, events);
-    await input.beforeValidate?.(createRunInspection(workOrder, events));
-    const snapshot = createValidatedSnapshot(workOrder, events);
-    const session = new LockedRunSession(
-      runId,
-      journal,
-      signal,
-      journalPath,
-      input.now,
-      snapshot,
-    );
-    sessionGuards.set(session, { signal, path: journalPath });
-    try {
-      return await callback(session);
-    } finally {
-      sessionGuards.delete(session);
-    }
-  });
+  return journal.readLocked(
+    async (events, signal) => {
+      const workOrder = await repository.readVerifiedWorkOrder(runId, events);
+      await input.beforeValidate?.(createRunInspection(workOrder, events));
+      const snapshot = createValidatedSnapshot(workOrder, events);
+      const session = new LockedRunSession(
+        runId,
+        journal,
+        signal,
+        journalPath,
+        input.now,
+        snapshot,
+      );
+      sessionGuards.set(session, { signal, path: journalPath });
+      try {
+        return await callback(session);
+      } finally {
+        sessionGuards.delete(session);
+      }
+    },
+    {
+      beforeRead: () => requireNoIncompleteRepair(project.projectRoot, runId),
+    },
+  );
 }
 
 export function assertRunSessionActive(session: RunSession): void {

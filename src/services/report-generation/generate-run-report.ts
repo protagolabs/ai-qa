@@ -47,6 +47,7 @@ import {
 } from "../../core/verdicts/schema.js";
 import { REPORT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
+import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -238,9 +239,8 @@ async function buildVerifiedRunReport(
   });
   const config = await readProjectConfig(project.projectRoot);
   const repository = new RunRepository(project.projectRoot, input.now);
-  const verified = await repository
-    .journal(runId)
-    .readLocked(async (events) => {
+  const verified = await repository.journal(runId).readLocked(
+    async (events) => {
       const workOrder = await repository.readVerifiedWorkOrder(runId, events);
       if (workOrder.projectId !== config.project.id) {
         throw new AiQaError(
@@ -364,7 +364,11 @@ async function buildVerifiedRunReport(
           : { projectSkill: workOrder.projectSkill }),
         report,
       };
-    });
+    },
+    {
+      beforeRead: () => requireNoIncompleteRepair(project.projectRoot, runId),
+    },
+  );
   return { projectRoot: project.projectRoot, config, ...verified };
 }
 
