@@ -3,11 +3,7 @@ import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
-import {
-  assertNotCompromised,
-  withLock,
-  type LockSignal,
-} from "../fs/locking.js";
+import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -134,7 +130,10 @@ export class RunJournal {
   }
 
   async appendPrepared<T>(
-    prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
+    prepare: (
+      events: readonly RunEvent[],
+      preCommit: () => void,
+    ) => Promise<PreparedRunAppend<T>>,
   ): Promise<T> {
     try {
       await requireProjectLocalRegularFile(this.projectRoot, [
@@ -145,14 +144,15 @@ export class RunJournal {
       ]);
       return await withLock(this.path, "hot", async (signal) => {
         const events = await this.readAll();
-        const prepared = await prepare(events);
+        const preCommit = () => assertNotCompromised(signal, this.path);
+        const prepared = await prepare(events, preCommit);
         const timestamp = this.now().toISOString();
         prepared.validateTimestamp?.(timestamp);
         const event = await this.appendToSnapshot(
           events,
           prepared.input,
           timestamp,
-          signal,
+          preCommit,
         );
         return prepared.resolve(event);
       });
@@ -187,7 +187,7 @@ export class RunJournal {
     events: RunEvent[],
     input: AppendRunEvent,
     timestamp: string,
-    signal: LockSignal,
+    preCommit: () => void,
   ): Promise<RunEvent> {
     const immutablePlatform = events[0]?.platform;
     if (
@@ -225,9 +225,7 @@ export class RunJournal {
       ...input,
     });
     const nextEvents = [...events, event];
-    await writeJsonLines(this.path, nextEvents, {
-      preCommit: () => assertNotCompromised(signal, this.path),
-    });
+    await writeJsonLines(this.path, nextEvents, { preCommit });
     events.push(event);
     return event;
   }

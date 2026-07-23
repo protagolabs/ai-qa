@@ -130,7 +130,10 @@ export class EvidenceRepository {
     this.paths = resolveEvidencePaths(this.projectRoot, this.runId);
   }
 
-  async registerRaw(input: RegisterRawEvidenceInput): Promise<EvidenceRecord> {
+  async registerRaw(
+    input: RegisterRawEvidenceInput,
+    options: { preCommit?: () => void } = {},
+  ): Promise<EvidenceRecord> {
     input = registerRawEvidenceInputSchema.parse(input);
     const expectedController = controllerForPlatform(this.platform);
     if (input.sourceTool !== expectedController) {
@@ -147,8 +150,12 @@ export class EvidenceRepository {
       );
     }
     await this.ensureStorageRoots();
-    await this.ensureIndex();
     return withLock(this.paths.index, "cold", async (signal) => {
+      const preCommit = () => {
+        options.preCommit?.();
+        assertNotCompromised(signal, this.paths.index);
+      };
+      await this.ensureIndex(preCommit);
       let copiedPath: string | undefined;
       let ownsCopiedPath = false;
       try {
@@ -187,7 +194,7 @@ export class EvidenceRepository {
           this.paths.root,
           resolve(this.paths.files, fileName),
         );
-        assertNotCompromised(signal, this.paths.index);
+        preCommit();
         await copyFile(input.sourcePath, copiedPath, constants.COPYFILE_EXCL);
         ownsCopiedPath = true;
         const contentHash = sha256(await readFile(copiedPath));
@@ -211,7 +218,7 @@ export class EvidenceRepository {
         });
 
         await writeJsonLines(this.paths.index, [...records, record], {
-          preCommit: () => assertNotCompromised(signal, this.paths.index),
+          preCommit,
         });
         ownsCopiedPath = false;
         return record;
@@ -334,9 +341,10 @@ export class EvidenceRepository {
     requireDescendant(roots.root, await realpath(this.paths.index));
   }
 
-  private async ensureIndex(): Promise<void> {
+  private async ensureIndex(preCommit: () => void): Promise<void> {
     let handle;
     try {
+      preCommit();
       handle = await open(this.paths.index, "wx", 0o600);
       await handle.sync();
     } catch (error: unknown) {

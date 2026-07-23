@@ -63,6 +63,7 @@ export class RunRepository {
 
   async create(
     workOrder: WorkOrder,
+    options: { preCommit?: () => void } = {},
   ): Promise<{ journal: RunJournal; workOrderHash: string }> {
     const validated = workOrderSchema.parse(workOrder);
     resolveRunPaths(this.projectRoot, validated.runId);
@@ -117,6 +118,7 @@ export class RunRepository {
           throw runAlreadyExists(validated.runId);
         }
         try {
+          options.preCommit?.();
           assertNotCompromised(signal, runsRoot);
           await rename(stagingDirectory, finalDirectory);
         } catch (error: unknown) {

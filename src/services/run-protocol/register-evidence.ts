@@ -58,7 +58,7 @@ export async function registerEvidence(input: {
   });
   const runRepository = new RunRepository(project.projectRoot, input.now);
   const journal = runRepository.journal(input.runId);
-  const record = await journal.appendPrepared(async (events) => {
+  const record = await journal.appendPrepared(async (events, preCommit) => {
     const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
     const expectedController = controllerForPlatform(workOrder.platform);
     if (payload.sourceTool !== expectedController) {
@@ -151,7 +151,7 @@ export async function registerEvidence(input: {
       }
     }
 
-    const record = await repository.registerRaw(payload);
+    const record = await repository.registerRaw(payload, { preCommit });
     const eventPayload = evidenceEventPayloadSchema.parse({
       ...record,
       criterionIds: citations.criterionIds,

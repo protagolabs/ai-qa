@@ -1,4 +1,5 @@
 import {
+  access,
   mkdtemp,
   mkdir,
   readFile,
@@ -509,6 +510,61 @@ describe("immutable run groups", () => {
       events.filter((event) => event.payload.phase === "materialized"),
     ).toHaveLength(1);
   });
+
+  it("does not publish a member after the outer group lock is compromised", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const initialCreate = vi
+      .spyOn(RunRepository.prototype, "create")
+      .mockRejectedValueOnce(new Error("injected pre-publication failure"));
+    await expect(
+      startRunGroup({
+        projectRoot,
+        selection: { mode: "explicit", caseIds: ["login"] },
+        platforms: ["web"],
+        execution: "local",
+        readiness: readinessByPlatform(["web"]),
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "run_group.materialization_failed" });
+    initialCreate.mockRestore();
+
+    const [runGroupId] = await readdir(
+      join(projectRoot, ".ai-qa", "run-groups"),
+    );
+    expect(runGroupId).toMatch(/^run-group-/u);
+    const repository = new RunGroupRepository(projectRoot, now);
+    const manifest = await repository.readManifest(runGroupId!);
+    const member = manifest.members[0]!;
+    const groupEventsPath = resolveRunGroupPaths(
+      projectRoot,
+      runGroupId!,
+    ).events;
+    const originalRepository = new RunRepository(projectRoot, now);
+    const originalCreate = originalRepository.create.bind(originalRepository);
+    vi.spyOn(RunRepository.prototype, "create").mockImplementation(
+      async function (...args: Parameters<RunRepository["create"]>) {
+        await rm(`${groupEventsPath}.lock`, {
+          recursive: true,
+          force: true,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        return originalCreate(...args);
+      },
+    );
+
+    await expect(
+      materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
+    ).rejects.toMatchObject({ code: "storage.lock_compromised" });
+    await expect(
+      access(join(projectRoot, ".ai-qa", "runs", member.runId)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await repository.readEvents(runGroupId!)).map(
+        (event) => event.payload.phase,
+      ),
+    ).toEqual(["started"]);
+  }, 30_000);
 
   it("materializes missing children before cancelling a prefix-failed group", async () => {
     const { projectRoot, cases } = await fixture(["web", "ios-simulator"]);

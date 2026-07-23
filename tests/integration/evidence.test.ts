@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import {
@@ -889,6 +889,70 @@ describe("EvidenceRepository", () => {
 });
 
 describe("registerEvidence", () => {
+  it("does not publish evidence after the outer journal lock is compromised", async () => {
+    const { projectRoot, captureActionId, runRepository } = await createRun();
+    const source = join(projectRoot, "outer-compromise.png");
+    await writeFile(source, Buffer.from("outer-compromise-image"));
+    const journalPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const journalBefore = await readFile(journalPath, "utf8");
+    const originalRepository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      fixedNow,
+      "web",
+    );
+    const originalRegisterRaw =
+      originalRepository.registerRaw.bind(originalRepository);
+    const registerRaw = vi
+      .spyOn(EvidenceRepository.prototype, "registerRaw")
+      .mockImplementation(async function (
+        ...args: Parameters<EvidenceRepository["registerRaw"]>
+      ) {
+        await rm(`${journalPath}.lock`, { recursive: true, force: true });
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+        return originalRegisterRaw(...args);
+      });
+
+    try {
+      await expect(
+        registerEvidence({
+          projectRoot,
+          runId: "run-1",
+          payload: {
+            sourcePath: source,
+            mediaType: "image/png",
+            sourceTool: "chrome-devtools-mcp",
+            sensitivity: "internal",
+            evidenceKinds: ["post-action-screenshot"],
+            captureActionId,
+            idempotencyKey: "outer-compromise-evidence",
+          },
+          criterionIds: ["authenticated-home-visible"],
+          observationIds: [],
+          now: fixedNow,
+        }),
+      ).rejects.toMatchObject({ code: "storage.lock_compromised" });
+    } finally {
+      registerRaw.mockRestore();
+    }
+
+    await expect(readFile(journalPath, "utf8")).resolves.toBe(journalBefore);
+    const evidenceRoot = join(projectRoot, ".ai-qa", "evidence", "run-1");
+    await expect(
+      access(join(evidenceRoot, "index.jsonl")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readdir(join(evidenceRoot, "files"))).resolves.toEqual([]);
+    await expect(
+      runRepository.journal("run-1").readAll(),
+    ).resolves.toHaveLength(3);
+  }, 30_000);
+
   it("preserves run.not_found when evidence targets a missing run", async () => {
     const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "missing-run.png");

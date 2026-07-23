@@ -28,7 +28,7 @@ export async function materializeRunGroup(input: {
   const runRepository = new RunRepository(project.projectRoot, input.now);
   const result = await groupRepository.materialize(
     runGroupId,
-    async (manifest, allowCreate) => {
+    async (manifest, allowCreate, preCommit) => {
       for (const member of manifest.members) {
         let stored: WorkOrder;
         try {
@@ -41,7 +41,7 @@ export async function materializeRunGroup(input: {
             throw memberIntegrityError(runGroupId, member.runId);
           }
           try {
-            await runRepository.create(member.workOrder);
+            await runRepository.create(member.workOrder, { preCommit });
           } catch (createError: unknown) {
             if (
               !(createError instanceof AiQaError) ||

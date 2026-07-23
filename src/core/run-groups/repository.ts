@@ -200,6 +200,7 @@ export class RunGroupRepository {
     beforeAppend: (
       manifest: RunGroupManifest,
       allowCreate: boolean,
+      preCommit: () => void,
     ) => Promise<void>,
   ): Promise<RunGroupTransitionResult> {
     const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
@@ -216,7 +217,8 @@ export class RunGroupRepository {
       const allowCreate =
         latest?.payload.phase !== "completed" &&
         latest?.payload.phase !== "cancelled";
-      await beforeAppend(snapshot.manifest, allowCreate);
+      const preCommit = () => assertNotCompromised(signal, paths.events);
+      await beforeAppend(snapshot.manifest, allowCreate, preCommit);
       const existing = snapshot.events.find(
         (event) => event.payload.phase === "materialized",
       );
@@ -243,7 +245,7 @@ export class RunGroupRepository {
         relatedIds: snapshot.manifest.members.map((member) => member.runId),
       });
       await writeJsonLines(paths.events, [...snapshot.events, event], {
-        preCommit: () => assertNotCompromised(signal, paths.events),
+        preCommit,
       });
       return { event, manifest: snapshot.manifest };
     });
