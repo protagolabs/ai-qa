@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, open, readFile, realpath, rm } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
@@ -10,6 +10,7 @@ import { readJsonLines, serializeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   atomicReplaceProjectLocalRegularFile,
+  ensureProjectLocalDirectoryDurable,
   publishProjectLocalRegularFile,
   synchronizeProjectLocalRegularFile,
 } from "../fs/project-storage.js";
@@ -35,6 +36,7 @@ export interface RegisterRawEvidenceInput {
 }
 
 export interface EvidenceRegistrationDurabilityHooks {
+  afterEvidenceAncestorsDurable?: () => void | Promise<void>;
   afterEvidenceFileDurable?: () => void | Promise<void>;
   afterEvidenceIndexDurable?: () => void | Promise<void>;
 }
@@ -158,6 +160,7 @@ export class EvidenceRepository {
       );
     }
     await this.ensureStorageRoots();
+    await options.hooks?.afterEvidenceAncestorsDurable?.();
     return withLock(this.paths.index, "cold", async (signal) => {
       const preCommit = () => {
         options.preCommit?.();
@@ -440,12 +443,26 @@ export class EvidenceRepository {
   }
 
   private async ensureStorageRoots(): Promise<void> {
-    const canonicalProjectRoot = await realpath(this.projectRoot);
-    const paths = this.canonicalStoragePaths(canonicalProjectRoot);
-    await this.ensureRealDirectory(paths.aiQa);
-    await this.ensureRealDirectory(paths.evidence);
-    await this.ensureRealDirectory(paths.root);
-    await this.ensureRealDirectory(paths.files);
+    try {
+      await ensureProjectLocalDirectoryDurable(this.projectRoot, [
+        ".ai-qa",
+        "evidence",
+        this.runId,
+        "files",
+      ]);
+    } catch (error: unknown) {
+      if (
+        error instanceof AiQaError &&
+        error.code === "storage.integrity_error"
+      ) {
+        const path =
+          typeof error.details.path === "string"
+            ? error.details.path
+            : this.paths.root;
+        throw invalidStorageRoot(path);
+      }
+      throw error;
+    }
   }
 
   private canonicalStoragePaths(canonicalProjectRoot: string): {
@@ -459,15 +476,6 @@ export class EvidenceRepository {
     const root = resolve(evidence, this.runId);
     const files = resolve(root, "files");
     return { aiQa, evidence, root, files };
-  }
-
-  private async ensureRealDirectory(path: string): Promise<void> {
-    try {
-      await mkdir(path, { mode: 0o700 });
-    } catch (error: unknown) {
-      if (!isNodeError(error, "EEXIST")) throw error;
-    }
-    await this.requireRealDirectory(path);
   }
 
   private async requireRealDirectory(path: string): Promise<void> {

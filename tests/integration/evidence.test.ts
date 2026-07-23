@@ -1191,6 +1191,68 @@ describe("registerEvidence", () => {
     },
   );
 
+  it("never appends a journal event when first-registration ancestor durability fails", async () => {
+    const { projectRoot, captureActionId, runRepository } = await createRun();
+    const source = join(projectRoot, "ancestor-durability.png");
+    await writeFile(source, Buffer.from("ancestor-durability-bytes"));
+    const journalPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const journalBefore = await readFile(journalPath);
+    const order: string[] = [];
+    const failure = new Error("injected evidence ancestor failure");
+
+    await expect(
+      registerEvidence(
+        {
+          projectRoot,
+          runId: "run-1",
+          payload: {
+            sourcePath: source,
+            mediaType: "image/png",
+            sourceTool: controllerForPlatform("web"),
+            sensitivity: "internal",
+            evidenceKinds: ["post-action-screenshot"],
+            captureActionId,
+            idempotencyKey: "ancestor-durability",
+          },
+          criterionIds: ["authenticated-home-visible"],
+          observationIds: [],
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterEvidenceAncestorsDurable: () => {
+              order.push("evidence-ancestors");
+              throw failure;
+            },
+            afterEvidenceFileDurable: () => {
+              order.push("evidence-file");
+            },
+            afterEvidenceIndexDurable: () => {
+              order.push("evidence-index");
+            },
+            beforeJournalAppend: () => {
+              order.push("journal");
+            },
+          },
+        },
+      ),
+    ).rejects.toBe(failure);
+
+    expect(await readFile(journalPath)).toEqual(journalBefore);
+    expect(
+      (await runRepository.journal("run-1").readAll()).filter(
+        (event) => event.type === "evidence",
+      ),
+    ).toEqual([]);
+    expect(order).toEqual(["evidence-ancestors"]);
+  });
+
   it("durably publishes evidence file and index before journal append", async () => {
     const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "durability-order.png");
@@ -1216,6 +1278,9 @@ describe("registerEvidence", () => {
       },
       {
         hooks: {
+          afterEvidenceAncestorsDurable: () => {
+            order.push("evidence-ancestors");
+          },
           afterEvidenceFileDurable: () => {
             order.push("evidence-file");
           },
@@ -1229,7 +1294,12 @@ describe("registerEvidence", () => {
       },
     );
 
-    expect(order).toEqual(["evidence-file", "evidence-index", "journal"]);
+    expect(order).toEqual([
+      "evidence-ancestors",
+      "evidence-file",
+      "evidence-index",
+      "journal",
+    ]);
   });
 
   it("rejects duplicate index records after an idempotent retry", async () => {
