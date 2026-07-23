@@ -27,8 +27,4 @@ export class VerdictService {
   effectiveVerdict() {
     return this.service.effectiveVerdict();
   }
-
-  async recordCancellation(reason: string) {
-    return (await this.service.recordCancellation(reason)).event;
-  }
 }

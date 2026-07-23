@@ -137,55 +137,18 @@ export class VerdictService {
     );
   }
 
-  async recordCancellation(reason: string): Promise<ProtocolCommandResult> {
-    const summary = reason.trim();
-    if (summary.length === 0) {
-      throw new AiQaError(
-        "run.cancel_reason_required",
-        "Cancel reason is required",
-      );
-    }
-    return this.appendValidated(
-      (workOrder, events, verdicts) => {
-        requireMutableRun(events);
-        const current = effectiveVerdictFrom(verdicts);
-        if (
-          current?.payload.classification === "not_verified" &&
-          current.payload.reasonCode === "cancelled" &&
-          current.payload.summary === summary &&
-          current.payload.criterionResults.length === 0
-        ) {
-          return appendInput(current.event);
-        }
-        const payload = verdictPayloadSchema.parse({
-          classification: "not_verified",
-          reasonCode: "cancelled",
-          summary,
-          criterionResults: [],
-          ...(current === undefined ? {} : { supersedes: current.event.id }),
-        });
-        return verdictAppendInput(workOrder.platform, payload);
-      },
-      { allowInterrupted: true },
-    );
-  }
-
   private async appendValidated(
     prepare: (
       workOrder: WorkOrder,
       events: readonly RunEvent[],
       verdicts: readonly VerdictEntry[],
     ) => AppendRunEvent,
-    options: { allowInterrupted?: boolean } = {},
   ): Promise<ProtocolCommandResult> {
     return withRunSession(
       { projectRoot: this.projectRoot, runId: this.runId, now: this.now },
       async (session) => {
         const { events, lifecycle, workOrder } = session.snapshot;
-        if (
-          lifecycle.current.payload.phase === "interrupted" &&
-          options.allowInterrupted !== true
-        ) {
+        if (lifecycle.current.payload.phase === "interrupted") {
           throw new AiQaError(
             "run.interrupted",
             "Interrupted runs must be resumed or cancelled before verdict mutation",
@@ -324,20 +287,6 @@ function verdictAppendInput(
     payload,
     relatedIds: verdictRelatedIds(payload),
   });
-}
-
-function appendInput(event: RunEvent): AppendRunEvent {
-  return {
-    type: event.type,
-    actor: event.actor,
-    platform: event.platform,
-    tool: event.tool,
-    ...(event.idempotencyKey === undefined
-      ? {}
-      : { idempotencyKey: event.idempotencyKey }),
-    payload: event.payload,
-    relatedIds: event.relatedIds,
-  } as AppendRunEvent;
 }
 
 type TypedAppendInputByType = {

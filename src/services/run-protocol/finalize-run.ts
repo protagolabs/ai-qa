@@ -29,14 +29,19 @@ import {
 } from "../../core/verdicts/schema.js";
 import { validatePassEvidenceFreshness } from "./evidence-semantics.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
-import { withRunSession } from "./run-session.js";
+import {
+  sessionCommandState,
+  withRunSession,
+  type RunSession,
+  type SessionCommandState,
+} from "./run-session.js";
 import type { VerdictEntry } from "./verdict-service.js";
 
-export interface FinalizeRunResult {
-  runId: string;
-  status: "completed";
-  verdict: "pass" | "fail" | "blocked" | "not_verified";
-  completedAt: string;
+export interface FinalizeRunResult extends SessionCommandState {
+  readonly runId: string;
+  readonly status: "completed";
+  readonly verdict: "pass" | "fail" | "blocked" | "not_verified";
+  readonly completedAt: string;
 }
 
 export async function finalizeRun(input: {
@@ -103,6 +108,7 @@ export async function finalizeRun(input: {
           completionTime: new Date(lifecycle.current.event.timestamp),
         });
         return completionResult(
+          session,
           runId,
           effective.payload,
           lifecycle.current.event.timestamp,
@@ -138,7 +144,12 @@ export async function finalizeRun(input: {
       if (event === undefined) {
         throw new Error("completion append returned no event");
       }
-      return completionResult(runId, effective.payload, event.timestamp);
+      return completionResult(
+        session,
+        runId,
+        effective.payload,
+        event.timestamp,
+      );
     },
   );
 }
@@ -599,6 +610,7 @@ function completionAppendInput(
 }
 
 function completionResult(
+  session: RunSession,
   runId: string,
   verdict: VerdictPayload,
   completedAt: string,
@@ -608,6 +620,7 @@ function completionResult(
     status: "completed",
     verdict: verdict.classification,
     completedAt,
+    ...sessionCommandState(session),
   };
 }
 

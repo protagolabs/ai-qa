@@ -21,6 +21,7 @@ import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
+  type AppendRunEvent,
   type RunEvent,
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
@@ -29,6 +30,11 @@ import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
 import { validateProtocolEvents } from "../../src/services/run-protocol/run-protocol-service.js";
+import {
+  validateRunSnapshot,
+  withRunSession,
+  type RunSession,
+} from "../../src/services/run-protocol/run-session.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
@@ -1147,6 +1153,164 @@ describe("durable journal concurrency", () => {
 });
 
 describe("run session command atomicity", () => {
+  it("rejects a supplied lifecycle that disagrees with event history", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-lifecycle-coherence-"),
+    );
+    await createRepositoryRun(projectRoot);
+
+    await withRunSession(
+      { projectRoot, runId: "run-1", now: fixedNow },
+      (session) => {
+        const snapshot = session.snapshot;
+        expect(() =>
+          validateRunSnapshot({
+            ...snapshot,
+            lifecycle: {
+              ...snapshot.lifecycle,
+              current: {
+                ...snapshot.lifecycle.current,
+                payload: {
+                  phase: "interrupted",
+                  previousLifecycleEventId: snapshot.lifecycle.current.event.id,
+                },
+              },
+            },
+          }),
+        ).toThrowError(
+          expect.objectContaining({ code: "run_protocol.integrity_error" }),
+        );
+      },
+    );
+  });
+
+  it("deep-freezes the session graph and append results", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-immutable-snapshot-"),
+    );
+    await createRepositoryRun(projectRoot);
+    await new VerdictService(projectRoot, "run-1", fixedNow).set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "Coverage remains incomplete",
+      criterionResults: [],
+    });
+
+    await withRunSession(
+      { projectRoot, runId: "run-1", now: fixedNow },
+      async (session) => {
+        const snapshot = session.snapshot;
+        const effectiveVerdict = snapshot.lifecycle.effectiveVerdict;
+        if (effectiveVerdict === undefined)
+          throw new Error("missing effective verdict");
+        const verdictEvent = snapshot.events.find(
+          (event) => event.type === "verdict",
+        );
+        if (verdictEvent === undefined)
+          throw new Error("missing verdict event");
+
+        expect(Object.isFrozen(snapshot)).toBe(true);
+        expect(Object.isFrozen(snapshot.workOrder)).toBe(true);
+        expect(Object.isFrozen(snapshot.workOrder.acceptanceCriteria[0])).toBe(
+          true,
+        );
+        expect(
+          Object.isFrozen(
+            snapshot.workOrder.acceptanceCriteria[0]!.requiredEvidence,
+          ),
+        ).toBe(true);
+        expect(Object.isFrozen(snapshot.events)).toBe(true);
+        expect(Object.isFrozen(snapshot.events[0])).toBe(true);
+        expect(Object.isFrozen(snapshot.events[0]!.payload)).toBe(true);
+        expect(Object.isFrozen(snapshot.events[0]!.relatedIds)).toBe(true);
+        expect(Object.isFrozen(verdictEvent.payload.criterionResults)).toBe(
+          true,
+        );
+        expect(Object.isFrozen(snapshot.lifecycle)).toBe(true);
+        expect(Object.isFrozen(snapshot.lifecycle.current)).toBe(true);
+        expect(Object.isFrozen(snapshot.lifecycle.current.payload)).toBe(true);
+        expect(Object.isFrozen(effectiveVerdict)).toBe(true);
+        expect(Object.isFrozen(effectiveVerdict.payload)).toBe(true);
+        expect(Object.isFrozen(effectiveVerdict.payload.criterionResults)).toBe(
+          true,
+        );
+
+        expect(
+          Reflect.set(
+            snapshot.lifecycle.current.payload,
+            "phase",
+            "interrupted",
+          ),
+        ).toBe(false);
+        expect(
+          Reflect.set(snapshot.events[0]!.payload, "phase", "interrupted"),
+        ).toBe(false);
+        expect(() =>
+          snapshot.events[0]!.relatedIds.push("caller-mutation"),
+        ).toThrow(TypeError);
+        expect(() =>
+          (verdictEvent.payload.criterionResults as unknown[]).push({
+            criterionId: "caller-mutation",
+          }),
+        ).toThrow(TypeError);
+        expect(() =>
+          snapshot.workOrder.acceptanceCriteria[0]!.requiredEvidence.push(
+            "caller-mutation",
+          ),
+        ).toThrow(TypeError);
+        expect(() =>
+          (effectiveVerdict.payload.criterionResults as unknown[]).push({
+            criterionId: "caller-mutation",
+          }),
+        ).toThrow(TypeError);
+
+        const decisionPayload = {
+          kind: "semantic" as const,
+          rationale: "The immutable snapshot still permits a valid append",
+          relatedIds: [],
+        };
+        const [decision] = await session.append([
+          {
+            type: "decision",
+            actor: "agent",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+            payload: decisionPayload,
+            relatedIds: [],
+          },
+        ]);
+        expect(decision).toBeDefined();
+        expect(Object.isFrozen(decision)).toBe(true);
+        expect(Object.isFrozen(decision!.payload)).toBe(true);
+        expect(Object.isFrozen(decision!.relatedIds)).toBe(true);
+        expect(session.state()).toMatchObject({
+          status: "running",
+          effectiveVerdict: "not_verified",
+        });
+      },
+    );
+  });
+
+  it("rejects snapshot access after the session callback escapes", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-escaped-snapshot-"),
+    );
+    await createRepositoryRun(projectRoot);
+    let escaped: RunSession | undefined;
+
+    await withRunSession(
+      { projectRoot, runId: "run-1", now: fixedNow },
+      (session) => {
+        escaped = session;
+      },
+    );
+
+    expect(() => escaped?.snapshot).toThrowError(
+      expect.objectContaining({ code: "storage.lock_compromised" }),
+    );
+  });
+
   it("returns state computed from the same critical section as the append", async () => {
     const { projectRoot } = await initializeProject();
     const repository = new RunRepository(projectRoot, fixedNow);
@@ -1258,6 +1422,79 @@ describe("run session command atomicity", () => {
     });
   });
 
+  it("prints resume state from its command session without a second read", async () => {
+    const { projectRoot } = await initializeProject();
+    const repository = new RunRepository(projectRoot, fixedNow);
+    await repository.create(makeWorkOrder());
+    const concurrentJournal = repository.journal("run-1");
+    let commandReads = 0;
+    let interruptionInjected = false;
+    // The test must invoke the original method with each intercepted journal.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalReadLocked = RunJournal.prototype.readLocked;
+    const readBack = vi
+      .spyOn(RunJournal.prototype, "readLocked")
+      .mockImplementation(async function <T>(
+        this: RunJournal,
+        inspect: (
+          events: readonly RunEvent[],
+          signal: LockSignal,
+        ) => T | Promise<T>,
+      ): Promise<T> {
+        if (this === concurrentJournal) {
+          return originalReadLocked.call(this, inspect) as Promise<T>;
+        }
+        commandReads += 1;
+        const result = (await originalReadLocked.call(this, inspect)) as T;
+        if (!interruptionInjected) {
+          interruptionInjected = true;
+          const current = (await concurrentJournal.readAll()).findLast(
+            (event) => event.type === "run",
+          );
+          if (current === undefined) throw new Error("missing lifecycle event");
+          await concurrentJournal.append({
+            type: "run",
+            actor: "ai-qa",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `interrupt:run-1:${current.id}`,
+            payload: {
+              phase: "interrupted",
+              previousLifecycleEventId: current.id,
+            },
+            relatedIds: [current.id],
+          });
+        }
+        return result;
+      });
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      now: fixedNow,
+    });
+
+    try {
+      expect(
+        await runCli(
+          ["--project", projectRoot, "run", "resume", "run-1"],
+          captured.context,
+        ),
+      ).toBe(0);
+    } finally {
+      readBack.mockRestore();
+    }
+
+    expect(commandReads).toBe(1);
+    expect(JSON.parse(captured.stdout[0]!)).toEqual({
+      runId: "run-1",
+      status: "running",
+      requiresFreshObservation: true,
+      permittedNextActions: ["action.plan:observation"],
+    });
+    expect((await concurrentJournal.readAll()).at(-1)?.payload).toMatchObject({
+      phase: "interrupted",
+    });
+  });
+
   it("commits cancellation verdict and lifecycle together", async () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-session-cancel-batch-"),
@@ -1298,6 +1535,12 @@ describe("run session command atomicity", () => {
       runId: "run-1",
       status: "cancelled",
       verdict: "not_verified",
+      state: {
+        status: "cancelled",
+        effectiveVerdict: "not_verified",
+        requiresFreshObservation: false,
+      },
+      permittedNextActions: ["report.generate"],
     });
     await expect(
       readRunState({ projectRoot, runId: "run-1", now: fixedNow }),
@@ -1332,11 +1575,30 @@ describe("run session command atomicity", () => {
     if (verdict === undefined) throw new Error("missing completed verdict");
     const eventsPath = join(runDirectory(projectRoot), "events.jsonl");
     const before = await readFile(eventsPath);
+    const decisionPayload = {
+      kind: "semantic" as const,
+      rationale: "This first batch member is protocol-valid",
+      relatedIds: [],
+    };
+    const validDecision: RunEvent = {
+      schemaVersion: EVENT_SCHEMA_VERSION,
+      id: "event-valid-post-completion-decision",
+      runId: "run-1",
+      sequence: events.length + 1,
+      timestamp: fixedNow().toISOString(),
+      type: "decision",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+      payload: decisionPayload,
+      relatedIds: [],
+    };
     const invalidLifecycle: RunEvent = {
       schemaVersion: EVENT_SCHEMA_VERSION,
       id: "event-invalid-post-completion-cancel",
       runId: "run-1",
-      sequence: events.length + 1,
+      sequence: events.length + 2,
       timestamp: fixedNow().toISOString(),
       type: "run",
       actor: "ai-qa",
@@ -1351,26 +1613,37 @@ describe("run session command atomicity", () => {
       relatedIds: [verdict.id],
     };
     expect(() =>
-      validateProtocolEvents([...events, invalidLifecycle], workOrder, "run-1"),
+      validateProtocolEvents(
+        [...events, validDecision, invalidLifecycle],
+        workOrder,
+        "run-1",
+      ),
     ).not.toThrow();
-    const { withRunSession } =
-      await import("../../src/services/run-protocol/run-session.js");
-
+    const inputs: AppendRunEvent[] = [
+      {
+        type: "decision",
+        actor: "agent",
+        platform: "web",
+        tool: "ai-qa",
+        idempotencyKey: validDecision.idempotencyKey,
+        payload: decisionPayload,
+        relatedIds: [],
+      },
+      {
+        type: "run",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        idempotencyKey: "cancel:run-1",
+        payload: invalidLifecycle.payload,
+        relatedIds: [verdict.id],
+      },
+    ];
+    expect(inputs).toHaveLength(2);
     await expect(
       withRunSession(
         { projectRoot, runId: "run-1", now: fixedNow },
-        (session) =>
-          session.append([
-            {
-              type: "run",
-              actor: "ai-qa",
-              platform: "web",
-              tool: "ai-qa",
-              idempotencyKey: "cancel:run-1",
-              payload: invalidLifecycle.payload,
-              relatedIds: [verdict.id],
-            },
-          ]),
+        (session) => session.append(inputs),
       ),
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
     expect(await readFile(eventsPath)).toEqual(before);

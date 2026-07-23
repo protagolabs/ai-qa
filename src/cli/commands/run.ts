@@ -15,7 +15,6 @@ import { exploratoryRunInputSchema } from "../../core/runs/schema.js";
 import { resolveProject } from "../../services/project-root/resolve-project.js";
 import { createPreflightResultRun } from "../../services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../services/run-protocol/finalize-run.js";
-import { readRunState } from "../../services/run-protocol/read-run-state.js";
 import {
   cancelRun,
   resumeRun,
@@ -230,10 +229,11 @@ export function registerRunCommands(
   resumeCommand.action(async (runId: string) => {
     const target = await resolveRunTarget(resumeCommand, context);
     const result = await resumeRun({ ...target, runId, now: context.now });
-    const state = await readRunState({ ...target, runId, now: context.now });
     writeJson(context, {
-      ...result,
-      permittedNextActions: state.permittedNextActions,
+      runId: result.runId,
+      status: result.status,
+      requiresFreshObservation: result.requiresFreshObservation,
+      permittedNextActions: result.permittedNextActions,
     });
   });
 
@@ -249,10 +249,11 @@ export function registerRunCommands(
       reason: options.reason,
       now: context.now,
     });
-    const state = await readRunState({ ...target, runId, now: context.now });
     writeJson(context, {
-      ...result,
-      permittedNextActions: state.permittedNextActions,
+      runId: result.runId,
+      status: result.status,
+      verdict: result.verdict,
+      permittedNextActions: result.permittedNextActions,
     });
   });
 
@@ -266,10 +267,12 @@ export function registerRunCommands(
       runId,
       now: context.now,
     });
-    const state = await readRunState({ ...target, runId, now: context.now });
     writeJson(context, {
-      ...result,
-      permittedNextActions: state.permittedNextActions,
+      runId: result.runId,
+      status: result.status,
+      verdict: result.verdict,
+      completedAt: result.completedAt,
+      permittedNextActions: result.permittedNextActions,
     });
   });
 }

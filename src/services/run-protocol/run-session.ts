@@ -42,10 +42,13 @@ export interface RunSnapshot {
   readonly lifecycle: LifecycleState;
 }
 
-export interface ProtocolCommandResult {
-  readonly event: RunEvent;
+export interface SessionCommandState {
   readonly state: RunStateSummary;
   readonly permittedNextActions: readonly string[];
+}
+
+export interface ProtocolCommandResult extends SessionCommandState {
+  readonly event: RunEvent;
 }
 
 export interface RunSession {
@@ -76,16 +79,24 @@ export function validateRunSnapshot(snapshot: RunSnapshot): void {
   if (workOrder.kind === "regression") {
     validateRegressionFidelity(workOrder, [...events]);
   }
-  validatedLifecycle.set(
-    snapshot,
-    Object.freeze({
-      current: Object.freeze({
-        event: lifecycle.current.event,
-        payload: lifecycle.current.payload,
-      }),
-      ...(effectiveVerdict === undefined ? {} : { effectiveVerdict }),
-    }),
-  );
+  const derivedLifecycle: LifecycleState = {
+    current: {
+      event: lifecycle.current.event,
+      payload: lifecycle.current.payload,
+    },
+    ...(effectiveVerdict === undefined ? {} : { effectiveVerdict }),
+  };
+  if (
+    snapshot.lifecycle !== undefined &&
+    !hasCanonicalLifecycle(snapshot.lifecycle, derivedLifecycle)
+  ) {
+    throw new AiQaError(
+      "run_protocol.integrity_error",
+      "Run snapshot lifecycle does not match its event history",
+      { runId },
+    );
+  }
+  validatedLifecycle.set(snapshot, derivedLifecycle);
 }
 
 export async function withRunSession<T>(
@@ -147,6 +158,14 @@ export function withPreparedRunEventId(
   return input;
 }
 
+export function sessionCommandState(session: RunSession): SessionCommandState {
+  const { permittedNextActions, ...state } = session.state();
+  return {
+    state: Object.freeze(state),
+    permittedNextActions: Object.freeze([...permittedNextActions]),
+  };
+}
+
 class LockedRunSession implements RunSession {
   private currentSnapshot: RunSnapshot;
 
@@ -162,6 +181,7 @@ class LockedRunSession implements RunSession {
   }
 
   get snapshot(): RunSnapshot {
+    assertRunSessionActive(this);
     return this.currentSnapshot;
   }
 
@@ -224,7 +244,18 @@ class LockedRunSession implements RunSession {
       }
     }
     this.currentSnapshot = prospective;
-    return Object.freeze(resolvedEvents);
+    const prospectiveById = new Map(
+      prospective.events.map((event) => [event.id, event]),
+    );
+    return Object.freeze(
+      resolvedEvents.map((event) => {
+        const immutableEvent = prospectiveById.get(event.id);
+        if (immutableEvent === undefined) {
+          throw new Error("validated append result is missing");
+        }
+        return immutableEvent;
+      }),
+    );
   }
 
   state(): RunStateSummary & {
@@ -239,9 +270,11 @@ function createValidatedSnapshot(
   workOrder: Readonly<WorkOrder>,
   events: readonly RunEvent[],
 ): RunSnapshot {
+  const immutableWorkOrder = immutableClone(workOrder);
+  const immutableEvents = immutableClone([...events]);
   const candidate: RunSnapshot = {
-    workOrder,
-    events: Object.freeze([...events]),
+    workOrder: immutableWorkOrder,
+    events: immutableEvents,
     lifecycle: undefined as never,
   };
   validateRunSnapshot(candidate);
@@ -249,11 +282,37 @@ function createValidatedSnapshot(
   if (lifecycle === undefined) {
     throw new Error("validated lifecycle state was not derived");
   }
-  return Object.freeze({
-    workOrder,
+  return deepFreeze({
+    workOrder: immutableWorkOrder,
     events: candidate.events,
     lifecycle,
   });
+}
+
+function hasCanonicalLifecycle(
+  supplied: LifecycleState,
+  derived: LifecycleState,
+): boolean {
+  try {
+    return canonicalJson(supplied) === canonicalJson(derived);
+  } catch {
+    return false;
+  }
+}
+
+function immutableClone<T>(value: T): T {
+  return deepFreeze(structuredClone(value));
+}
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) {
+    return value;
+  }
+  seen.add(value);
+  for (const child of Object.values(value)) {
+    deepFreeze(child, seen);
+  }
+  return Object.freeze(value);
 }
 
 function requireImmutablePlatform(

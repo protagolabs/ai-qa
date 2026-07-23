@@ -1,10 +1,11 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { RunJournal } from "../../src/core/runs/journal.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
@@ -94,6 +95,18 @@ async function createPreflightProject() {
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-preflight-project-"));
   await initializeTestProject({ projectRoot, config });
   return { projectRoot };
+}
+
+async function countRunJournalReads<T>(
+  operation: () => Promise<T>,
+): Promise<{ result: T; reads: number }> {
+  const readLocked = vi.spyOn(RunJournal.prototype, "readLocked");
+  try {
+    const result = await operation();
+    return { result, reads: readLocked.mock.calls.length };
+  } finally {
+    readLocked.mockRestore();
+  }
 }
 
 async function recordSupportedCriterion(
@@ -1069,6 +1082,12 @@ describe("run lifecycle", () => {
       runId: "run-1",
       status: "cancelled",
       verdict: "not_verified",
+      state: {
+        status: "cancelled",
+        effectiveVerdict: "not_verified",
+        requiresFreshObservation: false,
+      },
+      permittedNextActions: ["report.generate"],
     });
   });
 
@@ -1204,6 +1223,11 @@ describe("run lifecycle", () => {
       runId: "run-1",
       status: "running",
       requiresFreshObservation: true,
+      state: {
+        status: "running",
+        requiresFreshObservation: true,
+      },
+      permittedNextActions: ["action.plan:observation"],
     });
     await expect(
       fixture.protocol.planAction({
@@ -1262,6 +1286,12 @@ describe("run lifecycle", () => {
       runId: "run-1",
       status: "cancelled",
       verdict: "not_verified",
+      state: {
+        status: "cancelled",
+        effectiveVerdict: "not_verified",
+        requiresFreshObservation: false,
+      },
+      permittedNextActions: ["report.generate"],
     });
     await expect(
       finalizeRun({
@@ -1697,12 +1727,14 @@ describe("verdict and lifecycle CLI", () => {
       permittedNextActions: ["run.finish", "verdict.revise"],
     });
 
-    expect(
-      await runCli(
+    const finish = await countRunJournalReads(() =>
+      runCli(
         ["--project", fixture.projectRoot, "run", "finish", "run-1"],
         captured.context,
       ),
-    ).toBe(0);
+    );
+    expect(finish.result).toBe(0);
+    expect(finish.reads).toBe(1);
     expect(JSON.parse(captured.stdout.pop()!)).toMatchObject({
       runId: "run-1",
       status: "completed",
@@ -1718,12 +1750,15 @@ describe("verdict and lifecycle CLI", () => {
       now,
     });
 
-    const resumeExit = await runCli(
-      ["--project", fixture.projectRoot, "run", "resume", "run-1"],
-      captured.context,
+    const resume = await countRunJournalReads(() =>
+      runCli(
+        ["--project", fixture.projectRoot, "run", "resume", "run-1"],
+        captured.context,
+      ),
     );
     expect(captured.stderr).toEqual([]);
-    expect(resumeExit).toBe(0);
+    expect(resume.result).toBe(0);
+    expect(resume.reads).toBe(1);
     expect(JSON.parse(captured.stdout.pop()!)).toMatchObject({
       runId: "run-1",
       status: "running",
@@ -1731,8 +1766,8 @@ describe("verdict and lifecycle CLI", () => {
       permittedNextActions: ["action.plan:observation"],
     });
 
-    expect(
-      await runCli(
+    const cancel = await countRunJournalReads(() =>
+      runCli(
         [
           "run",
           "cancel",
@@ -1744,7 +1779,9 @@ describe("verdict and lifecycle CLI", () => {
         ],
         captured.context,
       ),
-    ).toBe(0);
+    );
+    expect(cancel.result).toBe(0);
+    expect(cancel.reads).toBe(1);
     expect(JSON.parse(captured.stdout.pop()!)).toMatchObject({
       runId: "run-1",
       status: "cancelled",

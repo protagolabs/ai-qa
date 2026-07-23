@@ -9,6 +9,7 @@ import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
+import { VerdictService as ProductionVerdictService } from "../../src/services/run-protocol/verdict-service.js";
 import { VerdictService } from "../helpers/verdict-service.js";
 
 const now = () => new Date("2026-07-13T00:00:00.000Z");
@@ -47,6 +48,12 @@ async function createRun() {
 }
 
 describe("VerdictService", () => {
+  it("does not expose a verdict-only cancellation writer", () => {
+    expect("recordCancellation" in ProductionVerdictService.prototype).toBe(
+      false,
+    );
+  });
+
   it("returns the original event for an exact initial verdict retry", async () => {
     const { service, repository } = await createRun();
     const input = {

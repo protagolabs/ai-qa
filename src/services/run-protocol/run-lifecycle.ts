@@ -21,17 +21,24 @@ import {
   verdictPayloadSchema,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
-import { withPreparedRunEventId, withRunSession } from "./run-session.js";
+import {
+  sessionCommandState,
+  withPreparedRunEventId,
+  withRunSession,
+  type SessionCommandState,
+} from "./run-session.js";
+
+export interface ResumeRunResult extends SessionCommandState {
+  readonly runId: string;
+  readonly status: "running";
+  readonly requiresFreshObservation: true;
+}
 
 export async function resumeRun(input: {
   projectRoot: string;
   runId: string;
   now: () => Date;
-}): Promise<{
-  runId: string;
-  status: "running";
-  requiresFreshObservation: true;
-}> {
+}): Promise<ResumeRunResult> {
   const runId = runIdSchema.parse(input.runId);
   return withRunSession(
     {
@@ -67,12 +74,17 @@ export async function resumeRun(input: {
           resumedAppend(workOrder.platform, runId, interruptedEventId),
         ]);
       }
-      return { runId, status: "running", requiresFreshObservation: true };
+      return {
+        runId,
+        status: "running",
+        requiresFreshObservation: true,
+        ...sessionCommandState(session),
+      };
     },
   );
 }
 
-export interface CancelRunResult {
+export interface CancelRunResult extends SessionCommandState {
   readonly runId: string;
   readonly status: "cancelled";
   readonly verdict: "not_verified";
@@ -131,7 +143,12 @@ export async function cancelRun(input: {
         verdictId,
       ]),
     ]);
-    return { runId, status: "cancelled", verdict: "not_verified" };
+    return {
+      runId,
+      status: "cancelled",
+      verdict: "not_verified",
+      ...sessionCommandState(session),
+    };
   });
 }
 
