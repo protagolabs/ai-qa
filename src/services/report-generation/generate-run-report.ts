@@ -450,10 +450,11 @@ function reportVerdict(payload: VerdictPayload): RunReport["verdict"] {
 function validateTerminalVerdict(
   phase: "completed" | "cancelled",
   verdict: VerdictPayload,
-  terminal: RunEvent,
+  terminal: Extract<RunEvent, { type: "run" }>,
 ): void {
   if (phase === "cancelled") {
-    const reason = isRecord(terminal.payload) ? terminal.payload.reason : null;
+    const reason =
+      terminal.payload.phase === "cancelled" ? terminal.payload.reason : null;
     if (
       verdict.classification !== "not_verified" ||
       verdict.reasonCode !== "cancelled" ||
@@ -525,14 +526,9 @@ function eventSummary(event: RunEvent): string {
   let value: string;
   switch (event.type) {
     case "run": {
-      const phase =
-        isRecord(event.payload) && typeof event.payload.phase === "string"
-          ? event.payload.phase
-          : canonicalJson(event.payload);
+      const phase = event.payload.phase;
       const reason =
-        isRecord(event.payload) && typeof event.payload.reason === "string"
-          ? `: ${event.payload.reason}`
-          : "";
+        event.payload.phase === "cancelled" ? `: ${event.payload.reason}` : "";
       value = `Run ${phase}${reason}`;
       break;
     }
@@ -571,8 +567,4 @@ function eventSummary(event: RunEvent): string {
       break;
   }
   return value.replace(/\s+/gu, " ").trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

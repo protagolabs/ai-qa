@@ -122,7 +122,11 @@ describe("VerdictService", () => {
       platform: "web",
       tool: "ai-qa",
       idempotencyKey: "malformed-resume",
-      payload: { phase: "resumed" },
+      payload: {
+        phase: "resumed",
+        interruptedEventId: "event-missing-interruption",
+        requiresFreshObservation: true,
+      },
       relatedIds: [],
     });
 

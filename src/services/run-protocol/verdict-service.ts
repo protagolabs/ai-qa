@@ -336,16 +336,16 @@ function appendInput(event: RunEvent): AppendRunEvent {
       : { idempotencyKey: event.idempotencyKey }),
     payload: event.payload,
     relatedIds: event.relatedIds,
-  };
+  } as AppendRunEvent;
 }
 
-function typedAppendInput(
+function typedAppendInput<Type extends "blocker" | "verdict">(
   platform: WorkOrder["platform"],
-  type: "blocker" | "verdict",
+  type: Type,
   idempotencyKey: string,
-  payload: unknown,
+  payload: Extract<AppendRunEvent, { type: Type }>["payload"],
   relatedIds: string[],
-): AppendRunEvent {
+): Extract<AppendRunEvent, { type: Type }> {
   assertJsonValue(payload);
   return {
     type,
@@ -355,7 +355,7 @@ function typedAppendInput(
     idempotencyKey,
     payload,
     relatedIds,
-  };
+  } as Extract<AppendRunEvent, { type: Type }>;
 }
 
 function verdictRelatedIds(payload: VerdictPayload): string[] {

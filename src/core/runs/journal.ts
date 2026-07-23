@@ -27,7 +27,7 @@ function appendInput(event: RunEvent): AppendRunEvent {
       : { idempotencyKey: event.idempotencyKey }),
     payload: event.payload,
     relatedIds: event.relatedIds,
-  };
+  } as AppendRunEvent;
 }
 
 export interface PreparedRunAppend<T> {

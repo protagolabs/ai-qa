@@ -2,7 +2,6 @@ import { z } from "zod";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { eventIdSchema } from "./ids.js";
-import { type RunEvent } from "./schema.js";
 
 export const interruptedRunPayloadSchema = z
   .object({
@@ -41,7 +40,7 @@ const startedRunPayloadSchema = z
   })
   .strict();
 
-const lifecyclePayloadSchema = z.union([
+export const lifecyclePayloadSchema = z.union([
   startedRunPayloadSchema,
   interruptedRunPayloadSchema,
   resumedRunPayloadSchema,
@@ -51,24 +50,40 @@ const lifecyclePayloadSchema = z.union([
 
 export type LifecyclePayload = z.infer<typeof lifecyclePayloadSchema>;
 
-export interface LifecycleEntry {
-  event: RunEvent;
+export interface LifecycleHistoryEvent {
+  type: string;
+  id: string;
+  timestamp: string;
+  actor: string;
+  tool: string;
+  idempotencyKey?: string | undefined;
+  relatedIds: string[];
+  payload: unknown;
+}
+
+export interface LifecycleEntry<
+  Event extends LifecycleHistoryEvent = LifecycleHistoryEvent,
+> {
+  event: Event;
   payload: LifecyclePayload;
 }
 
-export function validateRunLifecycleHistory(
-  events: readonly RunEvent[],
+export function validateRunLifecycleHistory<
+  Event extends LifecycleHistoryEvent,
+>(
+  events: readonly Event[],
   runId: string,
-): { current: LifecycleEntry } {
+): { current: LifecycleEntry<Extract<Event, { type: "run" }>> } {
   try {
-    let current: LifecycleEntry | undefined;
+    let current: LifecycleEntry<Extract<Event, { type: "run" }>> | undefined;
     for (const event of events) {
       if (event.type !== "run") continue;
-      const payload = lifecyclePayloadSchema.parse(event.payload);
+      const lifecycleEvent = event as Extract<Event, { type: "run" }>;
+      const payload = lifecyclePayloadSchema.parse(lifecycleEvent.payload);
       switch (payload.phase) {
         case "started":
           requireLifecycle(current === undefined);
-          requireMetadata(event, `start-${runId}`, []);
+          requireMetadata(lifecycleEvent, `start-${runId}`, []);
           break;
         case "interrupted":
           requireLifecycle(
@@ -78,23 +93,29 @@ export function validateRunLifecycleHistory(
           requireLifecycle(
             payload.previousLifecycleEventId === current.event.id,
           );
-          requireMetadata(event, `interrupt:${runId}:${current.event.id}`, [
-            current.event.id,
-          ]);
+          requireMetadata(
+            lifecycleEvent,
+            `interrupt:${runId}:${current.event.id}`,
+            [current.event.id],
+          );
           break;
         case "resumed":
           requireLifecycle(current?.payload.phase === "interrupted");
           requireLifecycle(payload.interruptedEventId === current.event.id);
-          requireMetadata(event, `resume:${runId}:${current.event.id}`, [
-            current.event.id,
-          ]);
+          requireMetadata(
+            lifecycleEvent,
+            `resume:${runId}:${current.event.id}`,
+            [current.event.id],
+          );
           break;
         case "completed":
           requireLifecycle(
             current?.payload.phase === "started" ||
               current?.payload.phase === "resumed",
           );
-          requireMetadata(event, `finish:${runId}`, [payload.verdictId]);
+          requireMetadata(lifecycleEvent, `finish:${runId}`, [
+            payload.verdictId,
+          ]);
           break;
         case "cancelled":
           requireLifecycle(
@@ -102,10 +123,12 @@ export function validateRunLifecycleHistory(
               current.payload.phase !== "completed" &&
               current.payload.phase !== "cancelled",
           );
-          requireMetadata(event, `cancel:${runId}`, [payload.verdictId]);
+          requireMetadata(lifecycleEvent, `cancel:${runId}`, [
+            payload.verdictId,
+          ]);
           break;
       }
-      current = { event, payload };
+      current = { event: lifecycleEvent, payload };
     }
     requireLifecycle(current !== undefined);
     return { current };
@@ -119,7 +142,7 @@ export function validateRunLifecycleHistory(
 }
 
 function requireMetadata(
-  event: RunEvent,
+  event: LifecycleHistoryEvent,
   idempotencyKey: string,
   relatedIds: string[],
 ): void {

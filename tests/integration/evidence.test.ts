@@ -1350,10 +1350,14 @@ describe("registerEvidence", () => {
     const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, "original-image");
-    const invalidObservation = await runRepository.journal("run-1").append({
+    const journal = runRepository.journal("run-1");
+    const existingEvents = await journal.readAll();
+    const invalidObservation = {
+      ...existingEvents.at(-1)!,
+      id: "event-invalid-observation",
+      sequence: existingEvents.length + 1,
       type: "observation",
       actor: "agent",
-      platform: "web",
       tool: "chrome-devtools-mcp",
       payload: {
         summary: "Current page",
@@ -1362,7 +1366,13 @@ describe("registerEvidence", () => {
         unexpected: true,
       },
       relatedIds: [captureActionId],
-    });
+    };
+    await writeFile(
+      join(projectRoot, ".ai-qa", "runs", "run-1", "events.jsonl"),
+      `${[...existingEvents, invalidObservation]
+        .map((event) => JSON.stringify(event))
+        .join("\n")}\n`,
+    );
 
     await expect(
       registerEvidence({
@@ -1476,7 +1486,11 @@ describe("registerEvidence", () => {
       platform: "web",
       tool: "ai-qa",
       idempotencyKey: "capture-collision",
-      payload: { kind: "semantic", rationale: "Existing decision" },
+      payload: {
+        kind: "semantic",
+        rationale: "Existing decision",
+        relatedIds: [],
+      },
       relatedIds: [],
     });
 
@@ -1584,7 +1598,7 @@ describe("registerEvidence", () => {
     );
 
     await expect(registerEvidence(input)).rejects.toMatchObject({
-      code: "run_protocol.integrity_error",
+      code: "journal.integrity_error",
     });
     expect(
       await readdir(join(projectRoot, ".ai-qa", "evidence", "run-1", "files")),

@@ -469,25 +469,9 @@ function requireController(
   }
 }
 
-function protocolAppendInput(input: {
-  platform: Platform;
-  type: "action" | "observation" | "assertion" | "decision" | "recovery";
-  actor: "agent" | "ai-qa";
-  tool: string;
-  idempotencyKey: string;
-  payload: unknown;
-  relatedIds: string[];
-}): AppendRunEvent {
+function protocolAppendInput(input: AppendRunEvent): AppendRunEvent {
   assertJsonValue(input.payload);
-  return {
-    type: input.type,
-    actor: input.actor,
-    platform: input.platform,
-    tool: input.tool,
-    idempotencyKey: input.idempotencyKey,
-    payload: input.payload,
-    relatedIds: input.relatedIds,
-  };
+  return input;
 }
 
 function actionAppendInput(
@@ -519,7 +503,7 @@ function prospectiveEvent(
     sequence: events.length + 1,
     timestamp: workOrder.startedAt,
     ...input,
-  };
+  } as RunEvent;
 }
 
 function appendInput(event: RunEvent): AppendRunEvent {
@@ -533,7 +517,7 @@ function appendInput(event: RunEvent): AppendRunEvent {
       : { idempotencyKey: event.idempotencyKey }),
     payload: event.payload,
     relatedIds: event.relatedIds,
-  };
+  } as AppendRunEvent;
 }
 
 function matchesPlanRetry(event: RunEvent, input: PlanActionInput): boolean {

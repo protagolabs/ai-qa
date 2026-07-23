@@ -26,14 +26,15 @@ function startedWorkOrderHash(
   platform: WorkOrder["platform"],
 ): string {
   const startEvents = events.filter(
-    (event) =>
-      event.type === "run" &&
-      isRecord(event.payload) &&
-      event.payload.phase === "started",
+    (event) => event.type === "run" && event.payload.phase === "started",
   );
   if (startEvents.length !== 1) throw new Error("invalid start anchor count");
   const [event] = startEvents;
-  if (event === undefined || !isRecord(event.payload)) {
+  if (
+    event === undefined ||
+    event.type !== "run" ||
+    event.payload.phase !== "started"
+  ) {
     throw new Error("missing start anchor");
   }
   const payloadKeys = Object.keys(event.payload).sort();
@@ -247,10 +248,6 @@ function isMissingStoragePath(error: unknown): boolean {
       error.code === "storage.integrity_error" &&
       error.details.causeCode === "ENOENT")
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown, code: string): boolean {

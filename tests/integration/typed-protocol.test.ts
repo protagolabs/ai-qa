@@ -1263,16 +1263,26 @@ describe("typed run protocol", () => {
   });
 
   it("rejects malformed typed events before appending more protocol state", async () => {
-    const { service, repository } = await createRun();
-    await repository.journal("run-1").append({
+    const { projectRoot, service, repository } = await createRun();
+    const journal = repository.journal("run-1");
+    const existingEvents = await journal.readAll();
+    const malformedAction = {
+      ...existingEvents.at(-1)!,
+      id: "event-malformed-action",
+      sequence: existingEvents.length + 1,
       type: "action",
       actor: "agent",
-      platform: "web",
       tool: "chrome-devtools-mcp",
       idempotencyKey: "malformed-action",
       payload: { phase: "planned", intent: "missing required fields" },
       relatedIds: [],
-    });
+    };
+    await writeFile(
+      resolveRunPaths(projectRoot, "run-1").events,
+      `${[...existingEvents, malformedAction]
+        .map((event) => JSON.stringify(event))
+        .join("\n")}\n`,
+    );
     await expect(
       service.planAction({
         idempotencyKey: "after-malformed",
@@ -1281,7 +1291,7 @@ describe("typed run protocol", () => {
         tool: "chrome-devtools-mcp",
         target: { description: "Page" },
       }),
-    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    ).rejects.toMatchObject({ code: "journal.integrity_error" });
   });
 
   it("exposes typed CLI output for protocol commands", async () => {

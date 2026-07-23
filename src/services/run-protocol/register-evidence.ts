@@ -187,7 +187,7 @@ function evidenceAppendInput(
     platform,
     tool: "ai-qa",
     idempotencyKey: payload.idempotencyKey,
-    payload: jsonPayload,
+    payload,
     relatedIds: [payload.captureActionId, ...payload.observationIds],
   };
 }

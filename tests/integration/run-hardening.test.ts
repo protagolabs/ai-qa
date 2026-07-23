@@ -536,7 +536,11 @@ describe("journal and start-anchor integrity", () => {
       actor: "agent",
       platform: "web",
       tool: "browser",
-      payload: { state: "visible" },
+      payload: {
+        summary: "The page is visible",
+        state: { visible: true },
+        actionId: "event-action",
+      },
       relatedIds: [],
     });
     await writeFile(
@@ -564,7 +568,11 @@ describe("journal and start-anchor integrity", () => {
       actor: "agent",
       tool: "browser",
       type: "observation",
-      payload: { state: "visible" },
+      payload: {
+        summary: "The page is visible",
+        state: { visible: true },
+        actionId: "event-action",
+      },
     };
     const moved = { ...anchor, id: "event-moved", sequence: 2 };
     await writeFile(
@@ -719,7 +727,11 @@ describe("durable journal concurrency", () => {
         actor: "agent",
         platform: "web",
         tool: "browser",
-        payload: { side: "left" },
+        payload: {
+          summary: "Left append",
+          state: { side: "left" },
+          actionId: "event-left-action",
+        },
         relatedIds: [],
       }),
       right.append({
@@ -727,7 +739,11 @@ describe("durable journal concurrency", () => {
         actor: "agent",
         platform: "web",
         tool: "browser",
-        payload: { side: "right" },
+        payload: {
+          summary: "Right append",
+          state: { side: "right" },
+          actionId: "event-right-action",
+        },
         relatedIds: [],
       }),
     ]);
@@ -742,30 +758,36 @@ describe("durable journal concurrency", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-canonical-retry-"));
     const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
     const first = await journal.append({
-      type: "decision",
+      type: "observation",
       actor: "agent",
       platform: "web",
       tool: "agent",
       idempotencyKey: "decision-1",
       payload: {
-        phase: "continue",
-        nested: { left: 1, right: 2 },
-        values: [null, true, "ok", { finite: 1.5 }],
+        summary: "Canonical observation",
+        state: {
+          nested: { left: 1, right: 2 },
+          values: [null, true, "ok", { finite: 1.5 }],
+        },
+        actionId: "event-canonical-action",
       },
       relatedIds: ["one", "two"],
     });
     const retry = await journal.append({
       relatedIds: ["one", "two"],
       payload: {
-        values: [null, true, "ok", { finite: 1.5 }],
-        nested: { right: 2, left: 1 },
-        phase: "continue",
+        actionId: "event-canonical-action",
+        state: {
+          values: [null, true, "ok", { finite: 1.5 }],
+          nested: { right: 2, left: 1 },
+        },
+        summary: "Canonical observation",
       },
       idempotencyKey: "decision-1",
       tool: "agent",
       platform: "web",
       actor: "agent",
-      type: "decision",
+      type: "observation",
     });
 
     expect(retry.id).toBe(first.id);

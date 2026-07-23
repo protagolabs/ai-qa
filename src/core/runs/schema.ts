@@ -4,7 +4,6 @@ import {
   WORK_ORDER_SCHEMA_VERSION,
   WORK_PROTOCOL_VERSION,
 } from "../../schemas/versions.js";
-import { jsonValueSchema } from "../json-value.js";
 import { controllerMatchesPlatform } from "../platforms/registry.js";
 import {
   controllerSchema,
@@ -13,11 +12,24 @@ import {
 } from "../platforms/schema.js";
 import { platformReadinessSchema } from "../readiness/schema.js";
 import {
+  actionPayloadSchema,
+  assertionPayloadSchema,
+  decisionPayloadSchema,
+  evidenceEventPayloadSchema,
+  observationPayloadSchema,
+  recoveryPayloadSchema,
+} from "./event-payloads.js";
+import {
   criterionIdSchema,
   eventIdSchema,
   runIdSchema,
   stepIdSchema,
 } from "./ids.js";
+import { lifecyclePayloadSchema } from "./lifecycle.js";
+import {
+  blockerPayloadSchema,
+  verdictPayloadSchema,
+} from "../verdicts/schema.js";
 
 export * from "./ids.js";
 
@@ -336,35 +348,90 @@ export function createExploratoryWorkOrder(input: {
   return deepFreezeWorkOrder(value);
 }
 
-export const runEventSchema = z
-  .object({
-    schemaVersion: z.literal(EVENT_SCHEMA_VERSION),
-    id: eventIdSchema,
-    runId: runIdSchema,
-    sequence: z.number().int().positive(),
-    timestamp: z.string().datetime(),
-    actor: z.enum(["agent", "user", "ai-qa"]),
-    platform: platformSchema,
-    tool: z.string(),
-    type: z.enum([
-      "run",
-      "action",
-      "observation",
-      "assertion",
-      "evidence",
-      "decision",
-      "blocker",
-      "verdict",
-      "recovery",
-    ]),
-    idempotencyKey: z.string().optional(),
-    payload: jsonValueSchema,
-    relatedIds: z.array(z.string()),
-  })
-  .strict();
+const runEventBase = {
+  schemaVersion: z.literal(EVENT_SCHEMA_VERSION),
+  id: eventIdSchema,
+  runId: runIdSchema,
+  sequence: z.number().int().positive(),
+  timestamp: z.string().datetime(),
+  actor: z.enum(["agent", "user", "ai-qa"]),
+  platform: platformSchema,
+  tool: z.string(),
+  idempotencyKey: z.string().optional(),
+  relatedIds: z.array(z.string()),
+};
+
+export const runEventSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("run"),
+      payload: lifecyclePayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("action"),
+      payload: actionPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("observation"),
+      payload: observationPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("assertion"),
+      payload: assertionPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("evidence"),
+      payload: evidenceEventPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("decision"),
+      payload: decisionPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("blocker"),
+      payload: blockerPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("verdict"),
+      payload: verdictPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...runEventBase,
+      type: z.literal("recovery"),
+      payload: recoveryPayloadSchema,
+    })
+    .strict(),
+]);
 
 export type RunEvent = z.infer<typeof runEventSchema>;
-export type AppendRunEvent = Omit<
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+export type AppendRunEvent = DistributiveOmit<
   RunEvent,
   "schemaVersion" | "id" | "runId" | "sequence" | "timestamp"
 >;

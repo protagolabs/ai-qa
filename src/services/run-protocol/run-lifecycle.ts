@@ -9,6 +9,7 @@ import {
   resumedRunPayloadSchema,
   validateRunLifecycleHistory,
   type LifecycleEntry,
+  type LifecyclePayload,
 } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
@@ -203,10 +204,11 @@ function resumedAppend(
 function lifecycleAppend(
   platform: Platform,
   idempotencyKey: string,
-  payload: unknown,
+  payload: LifecyclePayload,
   relatedIds: string[],
 ): AppendRunEvent {
-  assertJsonValue(payload);
+  const jsonPayload: unknown = payload;
+  assertJsonValue(jsonPayload);
   return {
     type: "run",
     actor: "ai-qa",
@@ -232,9 +234,5 @@ function requireMutableLifecycle(entry: LifecycleEntry): void {
 }
 
 function isRunPhase(event: RunEvent, phase: string): boolean {
-  return isRecord(event.payload) && event.payload.phase === phase;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return event.type === "run" && event.payload.phase === phase;
 }

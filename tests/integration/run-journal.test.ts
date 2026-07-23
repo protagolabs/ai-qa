@@ -208,7 +208,11 @@ describe("RunJournal", () => {
         actor: "agent",
         platform: "web",
         tool: "ai-qa",
-        payload: { reason: "forged platform" },
+        payload: {
+          kind: "semantic",
+          rationale: "Forged platform",
+          relatedIds: [],
+        },
         relatedIds: [],
       }),
     ).rejects.toMatchObject({ code: "journal.integrity_error" });
@@ -243,7 +247,11 @@ describe("RunJournal", () => {
         actor: "ai-qa",
         platform: "web",
         tool: "ai-qa",
-        payload: { reason: "missing journal" },
+        payload: {
+          kind: "semantic",
+          rationale: "Missing journal",
+          relatedIds: [],
+        },
         relatedIds: [],
       }),
     ).rejects.toMatchObject({
@@ -298,7 +306,11 @@ describe("RunJournal", () => {
         actor: "ai-qa",
         platform: "web",
         tool: "ai-qa",
-        payload: { reason: "invalid journal storage" },
+        payload: {
+          kind: "semantic",
+          rationale: "Invalid journal storage",
+          relatedIds: [],
+        },
         relatedIds: [],
       }),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
@@ -370,7 +382,7 @@ describe("RunJournal", () => {
       platform: "web",
       tool: "ai-qa",
       idempotencyKey: "start-run-1",
-      payload: { phase: "started" },
+      payload: { phase: "started", workOrderHash: "sha256:existing" },
       relatedIds: [],
     });
     await journal.append({
@@ -379,7 +391,11 @@ describe("RunJournal", () => {
       platform: "web",
       tool: "ai-qa",
       idempotencyKey: "decision-run-1",
-      payload: { reason: "persist both events" },
+      payload: {
+        kind: "semantic",
+        rationale: "Persist both events",
+        relatedIds: [],
+      },
       relatedIds: [],
     });
     const path = join(projectRoot, ".ai-qa", "runs", "run-1", "events.jsonl");
@@ -402,7 +418,10 @@ describe("RunJournal", () => {
       platform: "web" as const,
       tool: "ai-qa",
       idempotencyKey: "start-run-1",
-      payload: { phase: "started" },
+      payload: {
+        phase: "started" as const,
+        workOrderHash: "sha256:stable",
+      },
       relatedIds: [],
     };
 
@@ -422,24 +441,32 @@ describe("RunJournal", () => {
       () => new Date("2026-07-13T00:00:00.000Z"),
     );
     await journal.append({
-      type: "run",
+      type: "decision",
       actor: "ai-qa",
       platform: "web",
       tool: "ai-qa",
       idempotencyKey: "start-run-1",
-      payload: { phase: "started", nested: { left: 1, right: 2 } },
+      payload: {
+        kind: "semantic",
+        rationale: "First input",
+        relatedIds: [],
+      },
       relatedIds: [],
     });
 
     await expect(
       journal.append({
         relatedIds: [],
-        payload: { nested: { right: 2, left: 1 }, phase: "finished" },
+        payload: {
+          kind: "semantic",
+          rationale: "Different input",
+          relatedIds: [],
+        },
         idempotencyKey: "start-run-1",
         tool: "ai-qa",
         platform: "web",
         actor: "ai-qa",
-        type: "run",
+        type: "decision",
       }),
     ).rejects.toMatchObject({ code: "event.idempotency_conflict" });
   });
@@ -469,7 +496,11 @@ describe("RunJournal", () => {
           platform: "web" as const,
           tool: "ai-qa",
           idempotencyKey: "coordinated-key",
-          payload: { source: "prepared" },
+          payload: {
+            kind: "semantic",
+            rationale: "Prepared",
+            relatedIds: [],
+          },
           relatedIds: [],
         },
         resolve: (event: { id: string }) => event.id,
@@ -484,7 +515,11 @@ describe("RunJournal", () => {
         platform: "web",
         tool: "ai-qa",
         idempotencyKey: "coordinated-key",
-        payload: { source: "competitor" },
+        payload: {
+          kind: "semantic",
+          rationale: "Competitor",
+          relatedIds: [],
+        },
         relatedIds: [],
       })
       .then(
