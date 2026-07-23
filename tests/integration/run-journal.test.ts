@@ -336,9 +336,10 @@ describe("RunJournal", () => {
 
     expect(error).toBeInstanceOf(AiQaError);
     expect((error as AiQaError).code).toBe("journal.integrity_error");
+    const anyString: unknown = expect.any(String);
     expect((error as AiQaError).details.cause).toEqual({
-      code: expect.any(String),
-      message: expect.any(String),
+      code: anyString,
+      message: anyString,
     });
   });
 

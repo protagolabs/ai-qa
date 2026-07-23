@@ -249,6 +249,7 @@ describe("typed run protocol", () => {
       },
       relatedIds: [planned.id],
     });
+    const anyString: unknown = expect.any(String);
     await expect(
       service.recordDecision({
         kind: "semantic",
@@ -260,7 +261,7 @@ describe("typed run protocol", () => {
       details: {
         cause: {
           code: "parse_error",
-          message: expect.any(String),
+          message: anyString,
         },
       },
     });
