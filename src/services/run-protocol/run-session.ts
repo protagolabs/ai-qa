@@ -124,7 +124,7 @@ export async function withRunSession<T>(
   const journal = repository.journal(runId);
   const journalPath = resolveRunPaths(project.projectRoot, runId).events;
   return journal.readLocked(
-    async (events, signal) => {
+    async (events, signal, serialized) => {
       const workOrder = await repository.readVerifiedWorkOrder(runId, events);
       await input.beforeValidate?.(createRunInspection(workOrder, events));
       const snapshot = createValidatedSnapshot(workOrder, events);
@@ -135,6 +135,7 @@ export async function withRunSession<T>(
         journalPath,
         input.now,
         snapshot,
+        serialized,
       );
       sessionGuards.set(session, { signal, path: journalPath });
       try {
@@ -186,9 +187,13 @@ class LockedRunSession implements RunSession {
     private readonly journalPath: string,
     private readonly now: () => Date,
     snapshot: RunSnapshot,
+    serialized: Buffer,
   ) {
     this.currentSnapshot = snapshot;
+    this.currentSerialized = Buffer.from(serialized);
   }
+
+  private currentSerialized: Buffer;
 
   get snapshot(): RunSnapshot {
     assertRunSessionActive(this);
@@ -250,8 +255,20 @@ class LockedRunSession implements RunSession {
       if (inputs.length === 1 && createdEvents.length === 1) {
         await this.journal.appendLine(createdEvents[0]!, this.signal);
       } else {
-        await this.journal.appendBatch(createdEvents, priorEvents, this.signal);
+        await this.journal.appendBatch(
+          createdEvents,
+          priorEvents,
+          this.signal,
+          this.currentSerialized,
+        );
       }
+      this.currentSerialized = Buffer.concat([
+        this.currentSerialized,
+        Buffer.from(
+          createdEvents.map((event) => `${JSON.stringify(event)}\n`).join(""),
+          "utf8",
+        ),
+      ]);
     }
     this.currentSnapshot = prospective;
     const prospectiveById = new Map(

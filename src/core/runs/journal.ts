@@ -1,15 +1,21 @@
-import { open, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
-import { AiQaError, normalizeUnknownError, toErrorCause } from "../errors.js";
-import { writeJsonLines } from "../fs/json-lines.js";
+import {
+  AiQaError,
+  errorCauseCode,
+  extractErrorCause,
+  toErrorCause,
+} from "../errors.js";
 import {
   assertNotCompromised,
   withLock,
   type LockSignal,
 } from "../fs/locking.js";
-import { requireProjectLocalRegularFile } from "../fs/project-storage.js";
+import {
+  atomicReplaceProjectLocalRegularFile,
+  requireProjectLocalRegularFile,
+  withProjectLocalRegularFile,
+} from "../fs/project-storage.js";
 import { createId } from "../ids.js";
 import { isNodeError } from "../node-errors.js";
 import { resolveRunPaths } from "./paths.js";
@@ -47,29 +53,51 @@ export class RunJournal {
   }
 
   async readAll(): Promise<RunEvent[]> {
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "runs",
-      this.runId,
-      "events.jsonl",
-    ]);
+    return (await this.readSnapshot()).events;
+  }
+
+  private async readSnapshot(): Promise<{
+    events: RunEvent[];
+    serialized: Buffer;
+  }> {
     let content: Buffer;
     try {
-      content = await readFile(this.path);
-    } catch (error: unknown) {
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        typeof (error as NodeJS.ErrnoException).code === "string" &&
-        (error as NodeJS.ErrnoException).code !== undefined
-      ) {
-        throw normalizeUnknownError(error);
-      }
-      throw new AiQaError(
-        "journal.integrity_error",
-        "Run journal integrity verification failed",
-        { runId: this.runId, cause: toErrorCause(error) },
+      content = await withProjectLocalRegularFile(
+        {
+          projectRoot: this.projectRoot,
+          segments: [".ai-qa", "runs", this.runId, "events.jsonl"],
+          mode: "read",
+        },
+        async ({ handle, revalidate }) => {
+          await revalidate();
+          const before = await handle.stat({ bigint: true });
+          const bytes = await handle.readFile();
+          const after = await handle.stat({ bigint: true });
+          if (
+            before.dev !== after.dev ||
+            before.ino !== after.ino ||
+            before.size !== after.size ||
+            before.mtimeNs !== after.mtimeNs
+          ) {
+            throw new AiQaError(
+              "storage.integrity_error",
+              "Run journal changed while it was being read",
+              { runId: this.runId },
+            );
+          }
+          await revalidate();
+          return bytes;
+        },
       );
+    } catch (error: unknown) {
+      if (isFilesystemOperationFailure(error)) {
+        throw new AiQaError(
+          "filesystem.operation_failed",
+          "A filesystem operation failed",
+          { cause: extractErrorCause(error) ?? toErrorCause(error) },
+        );
+      }
+      throw error;
     }
     try {
       const classified = classifyJournalTail(content);
@@ -100,7 +128,7 @@ export class RunJournal {
           throw new Error("journal invariant mismatch");
         }
       }
-      return events;
+      return { events, serialized: classified.complete };
     } catch (error: unknown) {
       if (error instanceof AiQaError) throw error;
       throw new AiQaError(
@@ -157,6 +185,7 @@ export class RunJournal {
     inspect: (
       events: readonly RunEvent[],
       signal: LockSignal,
+      serialized: Buffer,
     ) => T | Promise<T>,
     options: { beforeRead?: () => Promise<void> } = {},
   ): Promise<T> {
@@ -169,7 +198,12 @@ export class RunJournal {
       ]);
       return await withLock(this.path, "hot", async (signal) => {
         await options.beforeRead?.();
-        return inspect(await this.readAll(), signal);
+        const snapshot = await this.readSnapshot();
+        return inspect(
+          snapshot.events,
+          signal,
+          Buffer.from(snapshot.serialized),
+        );
       });
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
@@ -182,15 +216,25 @@ export class RunJournal {
    * pass its signal; the journal path is revalidated before it is opened.
    */
   async appendLine(event: RunEvent, signal: LockSignal): Promise<void> {
-    await this.requireExistingJournal();
-    const serialized = `${JSON.stringify(event)}\n`;
-    const handle = await open(this.path, "a", 0o600);
     try {
       assertNotCompromised(signal, this.path);
-      await handle.writeFile(serialized, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      await withProjectLocalRegularFile(
+        {
+          projectRoot: this.projectRoot,
+          segments: [".ai-qa", "runs", this.runId, "events.jsonl"],
+          mode: "append",
+        },
+        async ({ handle, revalidate }) => {
+          await revalidate();
+          assertNotCompromised(signal, this.path);
+          await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
+          await handle.sync();
+          await revalidate();
+        },
+      );
+    } catch (error: unknown) {
+      if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
+      throw error;
     }
   }
 
@@ -202,23 +246,26 @@ export class RunJournal {
     events: readonly RunEvent[],
     priorEvents: readonly RunEvent[],
     signal: LockSignal,
+    priorSerialized?: Buffer,
   ): Promise<void> {
-    await this.requireExistingJournal();
-    assertNotCompromised(signal, this.path);
-    await writeJsonLines(this.path, [...priorEvents, ...events], {
-      preCommit: () => assertNotCompromised(signal, this.path),
-    });
-    await syncDirectoryWhereSupported(dirname(this.path));
-  }
-
-  private async requireExistingJournal(): Promise<void> {
     try {
-      await requireProjectLocalRegularFile(this.projectRoot, [
-        ".ai-qa",
-        "runs",
-        this.runId,
-        "events.jsonl",
-      ]);
+      assertNotCompromised(signal, this.path);
+      const historical =
+        priorSerialized ??
+        Buffer.from(
+          priorEvents.map((event) => `${JSON.stringify(event)}\n`).join(""),
+          "utf8",
+        );
+      const appended = Buffer.from(
+        events.map((event) => `${JSON.stringify(event)}\n`).join(""),
+        "utf8",
+      );
+      await atomicReplaceProjectLocalRegularFile({
+        projectRoot: this.projectRoot,
+        segments: [".ai-qa", "runs", this.runId, "events.jsonl"],
+        content: Buffer.concat([historical, appended]),
+        preCommit: () => assertNotCompromised(signal, this.path),
+      });
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
       throw error;
@@ -267,35 +314,23 @@ function classifyJournalTail(content: Buffer):
   };
 }
 
-async function syncDirectoryWhereSupported(path: string): Promise<void> {
-  let handle;
-  try {
-    handle = await open(path, "r");
-    await handle.sync();
-  } catch (error: unknown) {
-    if (!isUnsupportedDirectorySync(error)) throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-function isUnsupportedDirectorySync(error: unknown): boolean {
-  return [
-    "EBADF",
-    "EINVAL",
-    "EISDIR",
-    "ENOSYS",
-    "ENOTSUP",
-    "EOPNOTSUPP",
-    "EPERM",
-  ].some((code) => isNodeError(error, code));
-}
-
 function isMissingStoragePath(error: unknown): boolean {
   return (
     isNodeError(error, "ENOENT") ||
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
-      error.details.causeCode === "ENOENT")
+      errorCauseCode(error) === "ENOENT")
+  );
+}
+
+function isFilesystemOperationFailure(error: unknown): boolean {
+  const code = errorCauseCode(error);
+  return (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "EIO" ||
+    code === "ENOSPC" ||
+    code === "EMFILE" ||
+    code === "ENFILE"
   );
 }

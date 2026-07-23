@@ -56,6 +56,23 @@ describe("withLock", () => {
     expect((error as AiQaError).retryable).toBe(false);
   }, 30_000);
 
+  it("reports compromise even when the callback also rejects", async () => {
+    const callbackError = new Error("callback failed after compromise");
+    const error = await withLock(target, "hot", async (signal) => {
+      await rm(`${target}.lock`, { recursive: true, force: true });
+      const deadline = Date.now() + 5_000;
+      while (!signal.compromised() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw callbackError;
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).not.toBe(callbackError);
+    expect(error).toBeInstanceOf(AiQaError);
+    expect((error as AiQaError).code).toBe("storage.lock_compromised");
+    expect((error as AiQaError).retryable).toBe(false);
+  }, 30_000);
+
   it("blocks a write after compromise is observed", async () => {
     const original = await readFile(target);
     const error = await withLock(target, "hot", async (signal) => {

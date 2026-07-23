@@ -23,9 +23,21 @@ describe("normalizeUnknownError", () => {
     expect(normalized).toMatchObject({
       code: "filesystem.operation_failed",
       message: "A filesystem operation failed",
-      details: { code: "EIO", syscall: "read" },
+      details: {
+        cause: {
+          code: "EIO",
+          message: "A filesystem operation failed",
+        },
+        syscall: "read",
+      },
     });
-    expect(normalized.details).toEqual({ code: "EIO", syscall: "read" });
+    expect(normalized.details).toEqual({
+      cause: {
+        code: "EIO",
+        message: "A filesystem operation failed",
+      },
+      syscall: "read",
+    });
     expect(JSON.stringify(normalized.details)).not.toContain("private");
   });
 

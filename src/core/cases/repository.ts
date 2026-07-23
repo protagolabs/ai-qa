@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { CASE_INDEX_SCHEMA_VERSION } from "../../schemas/versions.js";
-import { AiQaError } from "../errors.js";
+import { AiQaError, errorCauseCode } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
@@ -571,5 +571,5 @@ export class CaseRepository {
 }
 
 function isMissingStoragePath(error: AiQaError): boolean {
-  return error.details.causeCode === "ENOENT";
+  return errorCauseCode(error) === "ENOENT";
 }

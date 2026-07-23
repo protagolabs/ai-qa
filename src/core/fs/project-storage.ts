@@ -13,8 +13,9 @@ import {
   rmdir,
   unlink,
 } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import { AiQaError } from "../errors.js";
+import { AiQaError, toErrorCause } from "../errors.js";
 import { isNodeError } from "../node-errors.js";
 import { syncDirectoryWhereSupported } from "./atomic-write.js";
 
@@ -71,7 +72,7 @@ async function walkDirectories(
       throw storageError(
         "Project-local storage directory verification failed",
         current,
-        nodeErrorCode(error),
+        error,
       );
     }
     if (created && durable) {
@@ -139,11 +140,7 @@ export async function sweepStaleStaging(
   } catch (error: unknown) {
     if (isNodeError(error, "ENOENT")) return [];
     if (error instanceof AiQaError) throw error;
-    throw storageError(
-      "Staging root verification failed",
-      resolvedRoot,
-      nodeErrorCode(error),
-    );
+    throw storageError("Staging root verification failed", resolvedRoot, error);
   }
 
   const cutoff = now().getTime() - staleStagingAgeMs;
@@ -153,11 +150,7 @@ export async function sweepStaleStaging(
     entries = await readdir(canonicalRoot, { withFileTypes: true });
   } catch (error: unknown) {
     if (isNodeError(error, "ENOENT")) return [];
-    throw storageError(
-      "Staging root enumeration failed",
-      canonicalRoot,
-      nodeErrorCode(error),
-    );
+    throw storageError("Staging root enumeration failed", canonicalRoot, error);
   }
   for (const entry of entries.sort((left, right) =>
     left.name.localeCompare(right.name),
@@ -197,11 +190,7 @@ export async function sweepStaleStaging(
     } catch (error: unknown) {
       if (isNodeError(error, "ENOENT")) continue;
       if (error instanceof AiQaError) throw error;
-      throw storageError(
-        "Staging directory cleanup failed",
-        path,
-        nodeErrorCode(error),
-      );
+      throw storageError("Staging directory cleanup failed", path, error);
     }
   }
   return removed;
@@ -224,11 +213,7 @@ async function requireUnchangedSweepRoot(
     }
   } catch (error: unknown) {
     if (error instanceof AiQaError) throw error;
-    throw storageError(
-      "Staging root verification failed",
-      root,
-      nodeErrorCode(error),
-    );
+    throw storageError("Staging root verification failed", root, error);
   }
 }
 
@@ -257,6 +242,7 @@ export interface PreparedProjectLocalRemoval {
 export interface ProjectLocalRemovalHooks {
   afterFinalVerification?: (input: { path: string }) => Promise<void>;
   beforeClaim?: (input: { path: string }) => void | Promise<void>;
+  beforeUnlink?: (input: { path: string }) => void | Promise<void>;
   afterClaim?: (input: { path: string; recoveryPath: string }) => Promise<void>;
   afterClaimDirectoryDurable?: (input: { path: string }) => Promise<void>;
   afterClaimRenameDurable?: (input: { path: string }) => Promise<void>;
@@ -278,6 +264,359 @@ export interface ProjectLocalPublishHooks {
     parentPath: string;
   }) => Promise<void>;
   afterLink?: (input: { path: string }) => Promise<void>;
+}
+
+export type ProjectLocalRegularFileMode = "read" | "append" | "read-write";
+
+export interface ProjectLocalRegularFileHooks {
+  afterPathIdentity?: (input: { path: string }) => Promise<void>;
+}
+
+export interface OpenProjectLocalRegularFile {
+  path: string;
+  parentPath: string;
+  handle: FileHandle;
+  revalidate(this: void): Promise<void>;
+}
+
+export async function withProjectLocalRegularFile<T>(
+  input: {
+    projectRoot: string;
+    segments: readonly string[];
+    mode: ProjectLocalRegularFileMode;
+    hooks?: ProjectLocalRegularFileHooks;
+  },
+  callback: (file: OpenProjectLocalRegularFile) => T | Promise<T>,
+): Promise<T> {
+  const segments = [...input.segments];
+  validateSegments(segments);
+  const parentSegments = segments.slice(0, -1);
+  const parent = await requireProjectLocalDirectory(
+    input.projectRoot,
+    parentSegments,
+  );
+  const parentIdentity = await lstat(parent, { bigint: true });
+  const path = resolve(parent, segments.at(-1)!);
+  let pathIdentity: BigIntFileIdentity;
+  try {
+    const stats = await lstat(path, { bigint: true });
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw storageError(
+        "Project-local artifact is not a real regular file",
+        path,
+      );
+    }
+    pathIdentity = fileIdentity(stats);
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local artifact verification failed",
+      path,
+      error,
+    );
+  }
+  await input.hooks?.afterPathIdentity?.({ path });
+
+  const flags =
+    input.mode === "read"
+      ? constants.O_RDONLY
+      : input.mode === "append"
+        ? constants.O_WRONLY | constants.O_APPEND
+        : constants.O_RDWR;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, flags | constants.O_NOFOLLOW);
+    const opened = await handle.stat({ bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.dev !== pathIdentity.dev ||
+      opened.ino !== pathIdentity.ino
+    ) {
+      throw storageError(
+        "Project-local artifact changed before it was opened",
+        path,
+      );
+    }
+    const revalidate = async (): Promise<void> => {
+      await requireUnchangedProjectLocalParent({
+        projectRoot: input.projectRoot,
+        parentSegments,
+        parent,
+        parentIdentity,
+      });
+      const handleStats = await handle!.stat({ bigint: true });
+      const pathStats = await lstat(path, { bigint: true });
+      if (
+        !handleStats.isFile() ||
+        pathStats.isSymbolicLink() ||
+        !pathStats.isFile() ||
+        handleStats.dev !== pathStats.dev ||
+        handleStats.ino !== pathStats.ino
+      ) {
+        throw storageError(
+          "Project-local artifact changed during open-file verification",
+          path,
+        );
+      }
+      await requireUnchangedProjectLocalParent({
+        projectRoot: input.projectRoot,
+        parentSegments,
+        parent,
+        parentIdentity,
+      });
+    };
+    await revalidate();
+    const result = await callback({
+      path,
+      parentPath: parent,
+      handle,
+      revalidate,
+    });
+    await revalidate();
+    return result;
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local open-existing operation failed",
+      path,
+      error,
+    );
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function synchronizeProjectLocalRegularFile(
+  projectRoot: string,
+  segments: readonly string[],
+): Promise<string> {
+  return withProjectLocalRegularFile(
+    { projectRoot, segments, mode: "read-write" },
+    async ({ path, parentPath, handle, revalidate }) => {
+      await revalidate();
+      await handle.sync();
+      await revalidate();
+      await syncDirectoryWhereSupported(parentPath);
+      return path;
+    },
+  );
+}
+
+export interface ProjectLocalAtomicReplaceHooks {
+  afterFinalVerification?: (input: {
+    path: string;
+    temporaryPath: string;
+    parentPath: string;
+  }) => Promise<void>;
+}
+
+export async function atomicReplaceProjectLocalRegularFile(input: {
+  projectRoot: string;
+  segments: readonly string[];
+  content: string | Buffer;
+  allowMissing?: boolean;
+  preCommit?: () => void;
+  hooks?: ProjectLocalAtomicReplaceHooks;
+}): Promise<string> {
+  const segments = [...input.segments];
+  validateSegments(segments);
+  const parentSegments = segments.slice(0, -1);
+  const parent = await requireProjectLocalDirectory(
+    input.projectRoot,
+    parentSegments,
+  );
+  const parentIdentity = await lstat(parent, { bigint: true });
+  const destination = resolve(parent, segments.at(-1)!);
+  const expectedDestination = await inspectReplaceDestination(
+    destination,
+    input.allowMissing === true,
+  );
+  const temporaryPath = resolve(
+    parent,
+    `.${basename(destination)}.${randomUUID()}.tmp`,
+  );
+  let handle: FileHandle | undefined;
+  let temporaryIdentity: BigIntFileIdentity | undefined;
+  try {
+    handle = await open(temporaryPath, "wx", 0o600);
+    await handle.writeFile(input.content);
+    await handle.sync();
+    const temporaryStats = await handle.stat({ bigint: true });
+    if (!temporaryStats.isFile()) {
+      throw storageError(
+        "Project-local atomic-replace temporary artifact is not a regular file",
+        temporaryPath,
+      );
+    }
+    temporaryIdentity = fileIdentity(temporaryStats);
+    const verifyCommitState = () =>
+      verifyAtomicReplaceCommitState({
+        projectRoot: input.projectRoot,
+        parentSegments,
+        parent,
+        parentIdentity,
+        destination,
+        expectedDestination,
+        temporaryPath,
+        temporaryIdentity: temporaryIdentity!,
+      });
+    await verifyCommitState();
+    await input.hooks?.afterFinalVerification?.({
+      path: destination,
+      temporaryPath,
+      parentPath: parent,
+    });
+    await verifyCommitState();
+    input.preCommit?.();
+    await verifyCommitState();
+    await rename(temporaryPath, destination);
+    const published = await lstat(destination, { bigint: true });
+    if (
+      published.isSymbolicLink() ||
+      !published.isFile() ||
+      published.dev !== temporaryIdentity.dev ||
+      published.ino !== temporaryIdentity.ino
+    ) {
+      throw storageError(
+        "Project-local atomic-replace destination changed during commit",
+        destination,
+      );
+    }
+    await requireUnchangedProjectLocalParent({
+      projectRoot: input.projectRoot,
+      parentSegments,
+      parent,
+      parentIdentity,
+    });
+    await syncDirectoryWhereSupported(parent);
+    return destination;
+  } finally {
+    await handle?.close();
+    if (temporaryIdentity !== undefined) {
+      const current = await lstat(temporaryPath, { bigint: true }).catch(
+        () => undefined,
+      );
+      if (
+        current !== undefined &&
+        current.dev === temporaryIdentity.dev &&
+        current.ino === temporaryIdentity.ino
+      ) {
+        await unlink(temporaryPath).catch(() => undefined);
+      }
+    }
+  }
+}
+
+async function inspectReplaceDestination(
+  path: string,
+  allowMissing: boolean,
+): Promise<BigIntFileIdentity | undefined> {
+  try {
+    const stats = await lstat(path, { bigint: true });
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw storageError(
+        "Project-local atomic-replace destination is not a regular file",
+        path,
+      );
+    }
+    return fileIdentity(stats);
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT") && allowMissing) return undefined;
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local atomic-replace destination verification failed",
+      path,
+      error,
+    );
+  }
+}
+
+async function verifyAtomicReplaceCommitState(input: {
+  projectRoot: string;
+  parentSegments: readonly string[];
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+  destination: string;
+  expectedDestination: BigIntFileIdentity | undefined;
+  temporaryPath: string;
+  temporaryIdentity: BigIntFileIdentity;
+}): Promise<void> {
+  await requireUnchangedProjectLocalParent(input);
+  const temporary = await lstat(input.temporaryPath, { bigint: true });
+  if (
+    temporary.isSymbolicLink() ||
+    !temporary.isFile() ||
+    !sameFileIdentity(temporary, input.temporaryIdentity)
+  ) {
+    throw storageError(
+      "Project-local atomic-replace temporary artifact changed",
+      input.temporaryPath,
+    );
+  }
+  let destination: BigIntFileIdentity | undefined;
+  try {
+    const stats = await lstat(input.destination, { bigint: true });
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw storageError(
+        "Project-local atomic-replace destination changed",
+        input.destination,
+      );
+    }
+    destination = fileIdentity(stats);
+  } catch (error: unknown) {
+    if (!isNodeError(error, "ENOENT")) throw error;
+  }
+  if (
+    (input.expectedDestination === undefined) !== (destination === undefined) ||
+    (input.expectedDestination !== undefined &&
+      destination !== undefined &&
+      !sameFileIdentity(input.expectedDestination, destination))
+  ) {
+    throw storageError(
+      "Project-local atomic-replace destination changed before commit",
+      input.destination,
+    );
+  }
+  await requireUnchangedProjectLocalParent(input);
+}
+
+async function requireUnchangedProjectLocalParent(input: {
+  projectRoot: string;
+  parentSegments: readonly string[];
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+}): Promise<void> {
+  const verified = await requireProjectLocalDirectory(
+    input.projectRoot,
+    input.parentSegments,
+  );
+  const current = await lstat(input.parent, { bigint: true });
+  if (
+    verified !== input.parent ||
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    current.dev !== input.parentIdentity.dev ||
+    current.ino !== input.parentIdentity.ino
+  ) {
+    throw storageError(
+      "Project-local storage parent changed during commit",
+      input.parent,
+    );
+  }
+}
+
+function fileIdentity(stats: {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+}): BigIntFileIdentity {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeNs: stats.mtimeNs,
+  };
 }
 
 export async function publishProjectLocalRegularFile(input: {
@@ -355,7 +694,7 @@ export async function publishProjectLocalRegularFile(input: {
       throw storageError(
         "Project-local publication destination changed before commit",
         destination,
-        nodeErrorCode(error),
+        error,
       );
     }
     await input.hooks?.afterLink?.({ path: destination });
@@ -458,7 +797,7 @@ async function verifyPublishedRegularFile(input: {
     throw storageError(
       "Project-local publication destination verification failed",
       input.destination,
-      nodeErrorCode(error),
+      error,
     );
   } finally {
     await publishedHandle?.close();
@@ -564,7 +903,7 @@ async function verifyPublicationCommitState(input: {
     throw storageError(
       "Project-local publication commit state verification failed",
       input.destination,
-      nodeErrorCode(error),
+      error,
     );
   }
 }
@@ -754,6 +1093,7 @@ async function removePreparedClaimedFile(
   if (claim.state === "populated") {
     await verifyClaimedFile(claim.path);
     await hooks?.beforeClaim?.({ path: claim.path });
+    await hooks?.beforeUnlink?.({ path: claim.path });
     await unlink(claim.path);
     await syncDirectoryWhereSupported(claim.directory);
     await hooks?.afterClaimUnlinkDurable?.({ path: claim.path });
@@ -807,6 +1147,7 @@ async function removePreparedClaimedFile(
       );
     }
     await verifyClaimedFile(claimed.path);
+    await hooks?.beforeUnlink?.({ path: claimed.path });
     await unlink(claimed.path);
     await syncDirectoryWhereSupported(claimDirectory);
     await hooks?.afterClaimUnlinkDurable?.({ path: claimed.path });
@@ -868,7 +1209,7 @@ async function inspectProjectLocalRemoval(
       throw storageError(
         "Project-local removal ancestor inspection failed",
         current,
-        nodeErrorCode(error),
+        error,
       );
     }
   }
@@ -883,7 +1224,7 @@ async function inspectProjectLocalRemoval(
     throw storageError(
       "Project-local removal target inspection failed",
       path,
-      nodeErrorCode(error),
+      error,
     );
   }
   const entryKind = stats.isSymbolicLink()
@@ -967,7 +1308,7 @@ async function removePreparedProjectLocalEntry(
     throw storageError(
       "Project-local removal target could not be claimed",
       prepared.path,
-      nodeErrorCode(error),
+      error,
     );
   }
 
@@ -1012,7 +1353,7 @@ async function assertNoRetainedRemovalClaim(
     throw storageError(
       "Project-local removal recovery scan failed",
       projectRoot,
-      nodeErrorCode(error),
+      error,
     );
   }
   const retainedClaims = entries
@@ -1075,13 +1416,12 @@ async function removalClaimFailureError(
   const claimPath = basename(claimDirectory);
   const recoveryPath = await retainedClaimRecoveryPath(projectRoot, claimPath);
   if (recoveryPath === undefined) {
-    const causeCode = errorCauseCode(cause);
     return new AiQaError(
       "storage.integrity_error",
       "Project-local removal claim disappeared after it was claimed",
       {
         claimPath,
-        ...(causeCode === undefined ? {} : { causeCode }),
+        cause: toErrorCause(cause),
       },
     );
   }
@@ -1098,7 +1438,7 @@ async function createRemovalClaimDirectory(
     throw storageError(
       "Project-local removal claim creation failed",
       projectRoot,
-      nodeErrorCode(error),
+      error,
     );
   }
   try {
@@ -1152,7 +1492,7 @@ async function inspectClaimedProjectLocalRemoval(claimedPath: string): Promise<{
     throw storageError(
       "Project-local removal claim inspection failed",
       claimedPath,
-      nodeErrorCode(error),
+      error,
     );
   }
 }
@@ -1187,7 +1527,7 @@ export async function inspectOptionalProjectLocalRegularFile(
       throw storageError(
         "Project-local storage directory verification failed",
         current,
-        nodeErrorCode(error),
+        error,
       );
     }
     if (
@@ -1209,7 +1549,7 @@ export async function inspectOptionalProjectLocalRegularFile(
     throw storageError(
       "Project-local artifact verification failed",
       path,
-      nodeErrorCode(error),
+      error,
     );
   }
   if (
@@ -1275,7 +1615,7 @@ export async function inspectOptionalProjectLocalRegularFile(
     throw storageError(
       "Project-local artifact verification failed",
       path,
-      nodeErrorCode(error),
+      error,
     );
   } finally {
     await handle?.close();
@@ -1329,7 +1669,7 @@ export async function requireProjectLocalRegularFile(
     throw storageError(
       "Project-local artifact verification failed",
       path,
-      nodeErrorCode(error),
+      error,
     );
   }
 }
@@ -1337,12 +1677,12 @@ export async function requireProjectLocalRegularFile(
 function storageError(
   message: string,
   path?: string,
-  causeCode?: string,
+  cause?: unknown,
   details: Readonly<Record<string, unknown>> = {},
 ): AiQaError {
   return new AiQaError("storage.integrity_error", message, {
     ...(path === undefined ? {} : { path }),
-    ...(causeCode === undefined ? {} : { causeCode }),
+    ...(cause === undefined ? {} : { cause: toErrorCause(cause) }),
     ...details,
   });
 }
@@ -1352,24 +1692,8 @@ function recoveryRequiredError(
   recoveryPath: string,
   cause?: unknown,
 ): AiQaError {
-  const causeCode = errorCauseCode(cause);
   return new AiQaError("storage.recovery_required", message, {
     recoveryPath,
-    ...(causeCode === undefined ? {} : { causeCode }),
+    ...(cause === undefined ? {} : { cause: toErrorCause(cause) }),
   });
-}
-
-function errorCauseCode(error: unknown): string | undefined {
-  return (
-    nodeErrorCode(error) ??
-    (error instanceof AiQaError ? error.code : undefined)
-  );
-}
-
-function nodeErrorCode(error: unknown): string | undefined {
-  return error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-    ? (error as NodeJS.ErrnoException).code
-    : undefined;
 }

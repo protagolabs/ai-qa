@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { satisfies } from "semver";
 import { readStoredProjectConfig } from "../../core/config/repository.js";
 import type { ProjectConfig } from "../../core/config/schema.js";
-import { AiQaError } from "../../core/errors.js";
+import { AiQaError, errorCauseCode } from "../../core/errors.js";
 import { isNodeError } from "../../core/node-errors.js";
 import { checkGlobalSkill } from "../skill-management/global-skill.js";
 
@@ -177,7 +177,7 @@ async function readConfig(projectRoot: string): Promise<ConfigInspection> {
     if (
       error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
-      error.details.causeCode === "ENOENT"
+      errorCauseCode(error) === "ENOENT"
     ) {
       return { state: "missing" };
     }

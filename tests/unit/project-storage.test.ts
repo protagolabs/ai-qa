@@ -18,12 +18,15 @@ import { basename, dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AiQaError } from "../../src/core/errors.js";
 import {
+  atomicReplaceProjectLocalRegularFile,
   ensureProjectLocalDirectory,
   inspectOptionalProjectLocalRegularFile,
+  prepareProjectLocalClaimedFileRemoval,
   prepareProjectLocalRemoval,
   publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
   sweepStaleStaging,
+  withProjectLocalRegularFile,
 } from "../../src/core/fs/project-storage.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -157,7 +160,12 @@ describe("project-local storage", () => {
         ),
       ).rejects.toMatchObject({
         code: "storage.integrity_error",
-        details: { causeCode: "EACCES" },
+        details: {
+          cause: {
+            code: "EACCES",
+            message: "injected unreadable root",
+          },
+        },
       });
     } finally {
       readdirMock.mockReset();
@@ -304,6 +312,123 @@ describe("project-local storage", () => {
     ).toEqual([]);
   });
 
+  it("opens an existing regular file without following a commit-time replacement", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const destination = join(projectRoot, ".ai-qa", "events.jsonl");
+    const displaced = join(projectRoot, ".ai-qa", "events.displaced.jsonl");
+    const outsideFile = join(outside, "outside.jsonl");
+    await writeFile(destination, "inside\n");
+    await writeFile(outsideFile, "outside\n");
+
+    await expect(
+      withProjectLocalRegularFile(
+        {
+          projectRoot,
+          segments: [".ai-qa", "events.jsonl"],
+          mode: "append",
+          hooks: {
+            afterPathIdentity: async () => {
+              await rename(destination, displaced);
+              await symlink(outsideFile, destination);
+            },
+          },
+        },
+        async ({ handle, revalidate }) => {
+          await revalidate();
+          await handle.writeFile("appended\n");
+        },
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    await expect(readFile(displaced, "utf8")).resolves.toBe("inside\n");
+    await expect(readFile(outsideFile, "utf8")).resolves.toBe("outside\n");
+  });
+
+  it("atomically replaces only the captured project-local destination", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(join(projectRoot, ".ai-qa"));
+    const destination = join(projectRoot, ".ai-qa", "index.jsonl");
+    const displaced = join(projectRoot, ".ai-qa", "index.displaced.jsonl");
+    await writeFile(destination, "original\n");
+
+    await expect(
+      atomicReplaceProjectLocalRegularFile({
+        projectRoot,
+        segments: [".ai-qa", "index.jsonl"],
+        content: Buffer.from("replacement\n"),
+        hooks: {
+          afterFinalVerification: async () => {
+            await rename(destination, displaced);
+            await writeFile(destination, "racing replacement\n");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    await expect(readFile(destination, "utf8")).resolves.toBe(
+      "racing replacement\n",
+    );
+    await expect(readFile(displaced, "utf8")).resolves.toBe("original\n");
+    expect(
+      (await readdir(join(projectRoot, ".ai-qa"))).filter((entry) =>
+        entry.includes(".tmp"),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each(["fresh", "resumed"] as const)(
+    "runs the final before-unlink guard for a %s deterministic claim",
+    async (state) => {
+      const projectRoot = await mkdtemp(
+        join(tmpdir(), "ai-qa-storage-project-"),
+      );
+      const sourceSegments = [
+        ".ai-qa",
+        "evidence",
+        "run-1",
+        "files",
+        "evidence-1.png",
+      ] as const;
+      const claimSegments = [
+        ".ai-qa",
+        "recovery",
+        "run-1",
+        "deletion-claims",
+        "evidence-1",
+      ] as const;
+      const source = join(projectRoot, ...sourceSegments);
+      const claim = join(projectRoot, ...claimSegments, "entry");
+      await mkdir(dirname(source), { recursive: true });
+      if (state === "fresh") {
+        await writeFile(source, "evidence bytes");
+      } else {
+        await mkdir(dirname(claim), { recursive: true });
+        await writeFile(claim, "evidence bytes");
+      }
+      const stop = new Error("stop before permanent unlink");
+      let guardCalls = 0;
+      const prepared = await prepareProjectLocalClaimedFileRemoval({
+        projectRoot,
+        segments: sourceSegments,
+        claimDirectorySegments: claimSegments,
+        verifyClaimedFile: () => Promise.resolve(),
+        hooks: {
+          beforeUnlink: () => {
+            guardCalls += 1;
+            throw stop;
+          },
+        },
+      });
+
+      await expect(prepared.remove()).rejects.toBeDefined();
+
+      expect(guardCalls).toBe(1);
+      await expect(readFile(claim, "utf8")).resolves.toBe("evidence bytes");
+    },
+  );
+
   it("removes only the regular file prepared for removal", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
     await mkdir(join(projectRoot, ".ai-qa"));
@@ -446,7 +571,12 @@ describe("project-local storage", () => {
       throw new Error("Expected AiQaError");
     }
     expect(firstError.code).toBe("storage.recovery_required");
-    expect(firstError.details).toMatchObject({ causeCode: "EIO" });
+    expect(firstError.details).toMatchObject({
+      cause: {
+        code: "EIO",
+        message: "injected post-claim failure",
+      },
+    });
     const recoveryPath = firstError.details.recoveryPath;
     expect(recoveryPath).toMatch(/^\.ai-qa-removal-claim-.+\/entry$/u);
     if (typeof recoveryPath !== "string") {

@@ -1133,6 +1133,76 @@ describe("durable journal concurrency", () => {
 });
 
 describe("run session command atomicity", () => {
+  it("preserves historical JSON field order during a batch rewrite", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-historical-bytes-"),
+    );
+    await createRepositoryRun(projectRoot);
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const started = JSON.parse(await readFile(eventsPath, "utf8")) as RunEvent;
+    const historicalLine = JSON.stringify({
+      payload: started.payload,
+      type: started.type,
+      relatedIds: started.relatedIds,
+      tool: started.tool,
+      platform: started.platform,
+      actor: started.actor,
+      timestamp: started.timestamp,
+      sequence: started.sequence,
+      runId: started.runId,
+      id: started.id,
+      schemaVersion: started.schemaVersion,
+      idempotencyKey: started.idempotencyKey,
+    });
+    await writeFile(eventsPath, `${historicalLine}\n`);
+    const firstPayload = {
+      kind: "semantic" as const,
+      rationale: "First decision in one atomic batch",
+      relatedIds: [],
+    };
+    const secondPayload = {
+      kind: "semantic" as const,
+      rationale: "Second decision in one atomic batch",
+      relatedIds: [],
+    };
+
+    await withRunSession(
+      { projectRoot, runId: "run-1", now: fixedNow },
+      (session) =>
+        session.append([
+          {
+            type: "decision",
+            actor: "agent",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(firstPayload)}`,
+            payload: firstPayload,
+            relatedIds: [],
+          },
+          {
+            type: "decision",
+            actor: "agent",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(secondPayload)}`,
+            payload: secondPayload,
+            relatedIds: [],
+          },
+        ]),
+    );
+
+    const [rewrittenHistoricalLine] = (await readFile(eventsPath, "utf8"))
+      .trimEnd()
+      .split("\n");
+    expect(rewrittenHistoricalLine).toBe(historicalLine);
+  });
+
   it("isolates beforeValidate from the parsed session graph", async () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-session-before-validate-immutable-"),
@@ -1392,6 +1462,7 @@ describe("run session command atomicity", () => {
         inspect: (
           events: readonly RunEvent[],
           signal: LockSignal,
+          serialized: Buffer,
         ) => T | Promise<T>,
       ): Promise<T> {
         if (this === concurrentJournal) {
@@ -1499,6 +1570,7 @@ describe("run session command atomicity", () => {
         inspect: (
           events: readonly RunEvent[],
           signal: LockSignal,
+          serialized: Buffer,
         ) => T | Promise<T>,
       ): Promise<T> {
         if (this === concurrentJournal) {

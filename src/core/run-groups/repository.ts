@@ -2,7 +2,7 @@ import { lstat, mkdtemp, readFile, rename } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { RUN_GROUP_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
-import { AiQaError } from "../errors.js";
+import { AiQaError, errorCauseCode } from "../errors.js";
 import {
   atomicWriteFile,
   syncDirectoryWhereSupported,
@@ -454,6 +454,6 @@ function isMissingStoragePath(error: unknown): boolean {
     isNodeError(error, "ENOENT") ||
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
-      error.details.causeCode === "ENOENT")
+      errorCauseCode(error) === "ENOENT")
   );
 }
