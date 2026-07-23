@@ -28,7 +28,6 @@ The stderr error contract becomes:
   "error": {
     "code": "input.schema_invalid",
     "message": "stdin JSON does not match the expected schema",
-    "details": {},
     "issues": [
       { "path": ["readiness", "status"], "code": "invalid_value", "message": "..." }
     ]
