@@ -49,7 +49,7 @@ export async function resumeRun(input: {
           runId,
           input.now,
           workOrder.platform,
-        ).verifyAll();
+        ).readAll();
         validateEvidenceParity(events, evidence, runId);
       },
     },

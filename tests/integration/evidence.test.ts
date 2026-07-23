@@ -1071,7 +1071,7 @@ describe("registerEvidence", () => {
     });
   });
 
-  it("repairs an indexed registration by appending one typed evidence event", async () => {
+  it("classifies an indexed registration without its event for repair", async () => {
     const { projectRoot, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");
     await writeFile(source, Buffer.from("original-image"));
@@ -1102,34 +1102,26 @@ describe("registerEvidence", () => {
       "web",
     ).registerRaw(payload);
 
-    const registered = await registerEvidence({
-      projectRoot,
-      runId: "run-1",
-      payload,
-      criterionIds: ["authenticated-home-visible"],
-      observationIds: [],
-      now: fixedNow,
+    await expect(
+      registerEvidence({
+        projectRoot,
+        runId: "run-1",
+        payload,
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({
+      code: "evidence.orphaned_entries",
+      details: {
+        runId: "run-1",
+        orphanedEvidenceIds: [indexed.id],
+      },
     });
-    const retried = await registerEvidence({
-      projectRoot,
-      runId: "run-1",
-      payload,
-      criterionIds: ["authenticated-home-visible"],
-      observationIds: [],
-      now: fixedNow,
-    });
-
-    expect(registered).toEqual(indexed);
-    expect(retried).toEqual(indexed);
     const evidenceEvents = (
       await runRepository.journal("run-1").readAll()
     ).filter((event) => event.type === "evidence");
-    expect(evidenceEvents).toHaveLength(1);
-    expect(evidenceEvents[0]?.payload).toMatchObject({
-      ...indexed,
-      criterionIds: ["authenticated-home-visible"],
-      observationIds: [],
-    });
+    expect(evidenceEvents).toHaveLength(0);
   });
 
   it("rejects duplicate index records after an idempotent retry", async () => {
@@ -1607,6 +1599,106 @@ describe("registerEvidence", () => {
 });
 
 describe("evidence add CLI", () => {
+  it("reports a crash-orphaned index entry from add, resume, and finish", async () => {
+    const { projectRoot, captureActionId } = await createRun();
+    const source = join(projectRoot, "orphaned.png");
+    const nextSource = join(projectRoot, "next.png");
+    await writeFile(source, "orphaned-image");
+    await writeFile(nextSource, "next-image");
+    const orphaned = await registerEvidence({
+      projectRoot,
+      runId: "run-1",
+      payload: {
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId,
+        idempotencyKey: "capture-orphaned",
+      },
+      criterionIds: ["authenticated-home-visible"],
+      observationIds: [],
+      now: fixedNow,
+    });
+    const journalPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    const journalLines = (await readFile(journalPath, "utf8"))
+      .trimEnd()
+      .split("\n");
+    expect(JSON.parse(journalLines.at(-1)!)).toMatchObject({
+      type: "evidence",
+      payload: { id: orphaned.id },
+    });
+    await writeFile(journalPath, `${journalLines.slice(0, -1).join("\n")}\n`);
+
+    const add = createCapturedCli({
+      cwd: projectRoot,
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            mediaType: "image/png",
+            sourceTool: "chrome-devtools-mcp",
+            sensitivity: "internal",
+            evidenceKinds: ["post-action-screenshot"],
+            captureActionId,
+            idempotencyKey: "capture-next",
+            criterionIds: ["authenticated-home-visible"],
+            observationIds: [],
+          }),
+        ),
+    });
+    const resume = createCapturedCli({ cwd: projectRoot });
+    const finish = createCapturedCli({ cwd: projectRoot });
+
+    const results = [
+      await runCli(
+        [
+          "--project",
+          projectRoot,
+          "evidence",
+          "add",
+          "--run",
+          "run-1",
+          "--file",
+          nextSource,
+          "--stdin-json",
+        ],
+        add.context,
+      ),
+      await runCli(
+        ["--project", projectRoot, "run", "resume", "run-1"],
+        resume.context,
+      ),
+      await runCli(
+        ["--project", projectRoot, "run", "finish", "run-1"],
+        finish.context,
+      ),
+    ];
+
+    expect(results).toEqual([1, 1, 1]);
+    for (const captured of [add, resume, finish]) {
+      expect(captured.stdout).toEqual([]);
+      expect(captured.stderr).toHaveLength(1);
+      expect(JSON.parse(captured.stderr[0]!)).toEqual({
+        error: {
+          code: "evidence.orphaned_entries",
+          message:
+            'Evidence index contains entries with no journal event; run "ai-qa run repair <run-id>"',
+          details: {
+            runId: "run-1",
+            orphanedEvidenceIds: [orphaned.id],
+          },
+        },
+      });
+    }
+  });
+
   it("returns one path-safe run.not_found error for a missing run", async () => {
     const { projectRoot, captureActionId } = await createRun();
     const source = join(projectRoot, "missing-run-cli.png");

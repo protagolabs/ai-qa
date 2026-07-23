@@ -1131,7 +1131,7 @@ describe("run lifecycle", () => {
     ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
   });
 
-  it("verifies immutable evidence before resuming", async () => {
+  it("does not hash immutable evidence before resuming", async () => {
     const fixture = await createRun();
     const support = await recordSupportedCriterion(fixture);
     await writeFile(
@@ -1145,7 +1145,11 @@ describe("run lifecycle", () => {
         runId: "run-1",
         now,
       }),
-    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    ).resolves.toMatchObject({
+      runId: "run-1",
+      status: "running",
+      requiresFreshObservation: true,
+    });
   });
 
   it("rejects duplicate evidence index records before resuming", async () => {

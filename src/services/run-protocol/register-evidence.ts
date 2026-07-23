@@ -59,6 +59,15 @@ export async function registerEvidence(input: {
       projectRoot: project.projectRoot,
       runId: input.runId,
       now: input.now,
+      beforeValidate: async ({ events, workOrder }) => {
+        const records = await new EvidenceRepository(
+          project.projectRoot,
+          workOrder.runId,
+          input.now,
+          workOrder.platform,
+        ).readAll();
+        validateEvidenceParity(events, records, workOrder.runId);
+      },
     },
     async (session) => {
       const { events, lifecycle, workOrder } = session.snapshot;
@@ -162,8 +171,6 @@ export async function registerEvidence(input: {
       await session.append([
         evidenceAppendInput(workOrder.platform, eventPayload),
       ]);
-      const records = await repository.verifyAll();
-      validateEvidenceParity(session.snapshot.events, records, workOrder.runId);
       return record;
     },
   );

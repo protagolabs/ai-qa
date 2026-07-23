@@ -10,12 +10,14 @@ export function validateEvidenceParity(
   records: readonly EvidenceRecord[],
   runId: string,
 ): void {
+  let indexed: Map<string, EvidenceRecord>;
+  let eventRecords: Map<string, EvidenceRecord>;
   try {
-    const indexed = new Map(records.map((record) => [record.id, record]));
+    indexed = new Map(records.map((record) => [record.id, record]));
     if (indexed.size !== records.length)
       throw new Error("duplicate index record");
 
-    const eventRecords = new Map<string, EvidenceRecord>();
+    eventRecords = new Map<string, EvidenceRecord>();
     for (const event of events) {
       if (event.type !== "evidence") continue;
       const payload = evidenceEventPayloadSchema.parse(event.payload);
@@ -33,8 +35,29 @@ export function validateEvidenceParity(
         throw new Error("duplicate event record");
       eventRecords.set(record.id, record);
     }
+  } catch {
+    throw evidenceIntegrityError(runId);
+  }
 
-    if (indexed.size !== eventRecords.size) throw new Error("count mismatch");
+  const orphanedEvidenceIds = [...indexed.keys()].filter(
+    (id) => !eventRecords.has(id),
+  );
+  if (orphanedEvidenceIds.length > 0) {
+    throw new AiQaError(
+      "evidence.orphaned_entries",
+      'Evidence index contains entries with no journal event; run "ai-qa run repair <run-id>"',
+      { runId, orphanedEvidenceIds },
+    );
+  }
+
+  const missingIndexIds = [...eventRecords.keys()].filter(
+    (id) => !indexed.has(id),
+  );
+  if (missingIndexIds.length > 0) {
+    throw evidenceIntegrityError(runId);
+  }
+
+  try {
     for (const [id, record] of indexed) {
       const fromEvent = eventRecords.get(id);
       if (
@@ -46,10 +69,14 @@ export function validateEvidenceParity(
       }
     }
   } catch {
-    throw new AiQaError(
-      "evidence.integrity_error",
-      "Evidence index does not exactly match typed run evidence events",
-      { runId },
-    );
+    throw evidenceIntegrityError(runId);
   }
+}
+
+function evidenceIntegrityError(runId: string): AiQaError {
+  return new AiQaError(
+    "evidence.integrity_error",
+    "Evidence index does not exactly match typed run evidence events",
+    { runId },
+  );
 }

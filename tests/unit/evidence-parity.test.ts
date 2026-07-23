@@ -39,25 +39,70 @@ const event = runEventSchema.parse({
   relatedIds: ["event-capture", "event-observation"],
 });
 
+const extraRecord = evidenceRecordSchema.parse({
+  ...record,
+  id: "evidence-extra",
+  projectRelativePath: ".ai-qa/evidence/run-1/files/evidence-extra-screen.png",
+  captureActionId: "event-capture-extra",
+  idempotencyKey: "capture-extra",
+});
+
+const extraEvent = runEventSchema.parse({
+  ...event,
+  id: "event-evidence-extra",
+  sequence: 2,
+  idempotencyKey: "capture-extra",
+  payload: {
+    ...extraRecord,
+    criterionIds: ["criterion-proof"],
+    observationIds: ["event-observation"],
+  },
+  relatedIds: ["event-capture-extra", "event-observation"],
+});
+
 describe("validateEvidenceParity", () => {
-  it("rejects an index record without its typed event", () => {
+  it("classifies an extra trailing index record as an orphan", () => {
     let thrown: unknown;
     try {
-      validateEvidenceParity([], [record], "run-1");
+      validateEvidenceParity([event], [record, extraRecord], "run-1");
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      code: "evidence.orphaned_entries",
+      message:
+        'Evidence index contains entries with no journal event; run "ai-qa run repair <run-id>"',
+      details: {
+        runId: "run-1",
+        orphanedEvidenceIds: ["evidence-extra"],
+      },
+    });
+  });
+
+  it("rejects a typed event without its index record", () => {
+    let thrown: unknown;
+    try {
+      validateEvidenceParity([event, extraEvent], [record], "run-1");
     } catch (error: unknown) {
       thrown = error;
     }
     expect(thrown).toMatchObject({ code: "evidence.integrity_error" });
   });
 
-  it("rejects a typed event without its index record", () => {
+  it("rejects different content for a shared ID as an integrity error", () => {
+    const mismatched = evidenceRecordSchema.parse({
+      ...record,
+      contentHash: `sha256:${"1".repeat(64)}`,
+    });
+
     let thrown: unknown;
     try {
-      validateEvidenceParity([event], [], "run-1");
+      validateEvidenceParity([event], [mismatched], "run-1");
     } catch (error: unknown) {
       thrown = error;
     }
     expect(thrown).toMatchObject({ code: "evidence.integrity_error" });
+    expect(thrown).not.toMatchObject({ code: "evidence.orphaned_entries" });
   });
 
   it("rejects duplicate typed evidence records", () => {
