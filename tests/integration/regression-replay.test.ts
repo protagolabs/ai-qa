@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
@@ -290,6 +290,47 @@ async function completeStep(input: {
           stepId: input.stepId,
         });
   return { interaction, observation, evidence, assertion };
+}
+
+async function prepareFinalizableReplay(
+  fixture: RegressionFixture,
+): Promise<Awaited<ReturnType<typeof startRegressionRun>>> {
+  const { workOrder, protocol } = await startFixtureRun(fixture);
+  const first = await completeStep({
+    fixture,
+    runId: workOrder.runId,
+    protocol,
+    stepId: "step-1-submit-login",
+    criterionId: "home-visible",
+    key: "tamper-home",
+  });
+  const second = await completeStep({
+    fixture,
+    runId: workOrder.runId,
+    protocol,
+    stepId: "step-2-account-visible",
+    criterionId: "account-visible",
+    key: "tamper-account",
+  });
+  await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
+    classification: "pass",
+    summary: "Replay appears complete",
+    criterionResults: [
+      {
+        criterionId: "home-visible",
+        status: "satisfied",
+        assertionIds: [first.assertion!.id],
+        evidenceIds: [first.evidence.id],
+      },
+      {
+        criterionId: "account-visible",
+        status: "satisfied",
+        assertionIds: [second.assertion!.id],
+        evidenceIds: [second.evidence.id],
+      },
+    ],
+  });
+  return workOrder;
 }
 
 describe("pinned regression replay", () => {
@@ -1367,41 +1408,7 @@ describe("pinned regression replay", () => {
 
   it("rejects finalization when the pinned revision changes on disk", async () => {
     const fixture = await createActiveCase();
-    const { workOrder, protocol } = await startFixtureRun(fixture);
-    const first = await completeStep({
-      fixture,
-      runId: workOrder.runId,
-      protocol,
-      stepId: "step-1-submit-login",
-      criterionId: "home-visible",
-      key: "tamper-home",
-    });
-    const second = await completeStep({
-      fixture,
-      runId: workOrder.runId,
-      protocol,
-      stepId: "step-2-account-visible",
-      criterionId: "account-visible",
-      key: "tamper-account",
-    });
-    await new VerdictService(fixture.projectRoot, workOrder.runId, now).set({
-      classification: "pass",
-      summary: "Replay appears complete",
-      criterionResults: [
-        {
-          criterionId: "home-visible",
-          status: "satisfied",
-          assertionIds: [first.assertion!.id],
-          evidenceIds: [first.evidence.id],
-        },
-        {
-          criterionId: "account-visible",
-          status: "satisfied",
-          assertionIds: [second.assertion!.id],
-          evidenceIds: [second.evidence.id],
-        },
-      ],
-    });
+    const workOrder = await prepareFinalizableReplay(fixture);
     const revisionPath = join(
       fixture.projectRoot,
       ".ai-qa",
@@ -1429,6 +1436,32 @@ describe("pinned regression replay", () => {
         expectedPlatformVariantHash: workOrder.pinnedCase!.platformVariantHash,
         actualPlatformVariantHash: calculatePlatformVariantHash(stored, "web"),
       },
+    });
+  });
+
+  it("preserves validateRevision normalization when finalization finds no case index", async () => {
+    const fixture = await createActiveCase();
+    const workOrder = await prepareFinalizableReplay(fixture);
+    await rm(
+      join(
+        fixture.projectRoot,
+        ".ai-qa",
+        "cases",
+        "login-success",
+        "case.yaml",
+      ),
+    );
+
+    const error = await finalizeRun({
+      projectRoot: fixture.projectRoot,
+      runId: workOrder.runId,
+      now,
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toMatchObject({ code: "case.content_hash_mismatch" });
+    expect((error as { details: unknown }).details).toEqual({
+      caseId: "login-success",
+      revision: fixture.revision.revision,
     });
   });
 

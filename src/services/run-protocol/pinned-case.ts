@@ -37,30 +37,50 @@ export async function validatePinnedRegressionCase(
     } catch {
       throw error;
     }
-    let mismatch: AiQaError;
+    let actual: PinnedHashes;
     try {
-      mismatch = pinnedHashMismatch(workOrder, revision);
+      actual = calculatePinnedHashes(workOrder, revision);
     } catch {
       throw error;
     }
-    throw mismatch;
+    if (
+      pinned.caseContentHash === actual.caseContentHash &&
+      pinned.platformVariantHash === actual.platformVariantHash
+    ) {
+      throw error;
+    }
+    throw pinnedHashMismatch(workOrder, actual);
   }
-  const caseContentHash = calculateCaseContentHash(revision);
-  const platformVariantHash = calculatePlatformVariantHash(
-    revision,
-    workOrder.platform,
-  );
+  const actual = calculatePinnedHashes(workOrder, revision);
   if (
-    pinned.caseContentHash !== caseContentHash ||
-    pinned.platformVariantHash !== platformVariantHash
+    pinned.caseContentHash !== actual.caseContentHash ||
+    pinned.platformVariantHash !== actual.platformVariantHash
   ) {
-    throw pinnedHashMismatch(workOrder, revision);
+    throw pinnedHashMismatch(workOrder, actual);
   }
+}
+
+interface PinnedHashes {
+  caseContentHash: string;
+  platformVariantHash: string;
+}
+
+function calculatePinnedHashes(
+  workOrder: WorkOrder,
+  revision: Awaited<ReturnType<CaseRepository["readRevision"]>>,
+): PinnedHashes {
+  return {
+    caseContentHash: calculateCaseContentHash(revision),
+    platformVariantHash: calculatePlatformVariantHash(
+      revision,
+      workOrder.platform,
+    ),
+  };
 }
 
 function pinnedHashMismatch(
   workOrder: WorkOrder,
-  revision: Awaited<ReturnType<CaseRepository["readRevision"]>>,
+  actual: PinnedHashes,
 ): AiQaError {
   const pinned = workOrder.pinnedCase!;
   return new AiQaError(
@@ -70,12 +90,9 @@ function pinnedHashMismatch(
       caseId: pinned.caseId,
       revision: pinned.revision,
       expectedCaseContentHash: pinned.caseContentHash,
-      actualCaseContentHash: calculateCaseContentHash(revision),
+      actualCaseContentHash: actual.caseContentHash,
       expectedPlatformVariantHash: pinned.platformVariantHash,
-      actualPlatformVariantHash: calculatePlatformVariantHash(
-        revision,
-        workOrder.platform,
-      ),
+      actualPlatformVariantHash: actual.platformVariantHash,
     },
   );
 }

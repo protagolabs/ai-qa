@@ -8,6 +8,7 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -274,6 +275,7 @@ async function completedRun(
 async function completedRegressionRun(
   platform: Platform,
   controller: Controller,
+  options: { removeCaseIndexBeforeReport?: boolean } = {},
 ) {
   const project = await initializedProject(config({ platform }));
   const cases = new CaseRepository(project.projectRoot);
@@ -423,6 +425,17 @@ async function completedRegressionRun(
     runId: workOrder.runId,
     now: regressionEventNow,
   });
+  if (options.removeCaseIndexBeforeReport === true) {
+    await rm(
+      join(
+        project.projectRoot,
+        ".ai-qa",
+        "cases",
+        "platform-report",
+        "case.yaml",
+      ),
+    );
+  }
   const generated = await generateRunReport({
     ...project,
     runId: workOrder.runId,
@@ -1220,6 +1233,18 @@ describe("generateRunReport", () => {
         "utf8",
       ),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves validateRevision normalization when report generation finds no case index", async () => {
+    const error = await completedRegressionRun("web", "chrome-devtools-mcp", {
+      removeCaseIndexBeforeReport: true,
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toMatchObject({ code: "case.content_hash_mismatch" });
+    expect((error as { details: unknown }).details).toEqual({
+      caseId: "platform-report",
+      revision: 1,
+    });
   });
 });
 
