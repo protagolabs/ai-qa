@@ -37,14 +37,16 @@ The stderr error contract becomes:
 ```
 
 - `AiQaError` gains optional `retryable: boolean` (default false; serialized only when true) and a structured `cause` in `details` (`{ code, message }`) so wrapped errors keep their origin.
-- `readJsonInput` separates failure modes: `JSON.parse` failure reports `input.invalid_json` with the parser message; Zod failure reports the new code `input.schema_invalid` with an `issues` array (path, Zod issue code, message per issue). The top-level ZodError handler emits the same `issues` shape and drops the old `issuePaths`-only form.
-- New `core/fs/locking.ts` wraps every `proper-lockfile` acquisition. Two profiles: `hot` (journal; 10 retries from 50 ms with exponential backoff capped at 1 s) and `cold` (repositories; today's 20-retry envelope). `ELOCKED` maps to `storage.lock_contended` with `retryable: true` and the contended path; a compromised lock maps to `storage.lock_compromised`. All twelve call sites move to this module.
+- `readJsonInput` separates failure modes: `JSON.parse` failure reports `input.invalid_json` with the parser message; Zod failure reports the new code `input.schema_invalid` with an `issues` array (path, Zod issue code, message per issue). The top-level ZodError handler (CLI options and other non-stdin validation) keeps the code `schema.validation_failed` but emits the same `issues` shape, replacing the `issuePaths`-only form. `details` and `issues` are omitted when empty; `code` and `message` are always present.
+- New `core/fs/locking.ts` exposes an operation-scoped `withLock(path, profile, callback)` — not a bare acquisition wrapper — because `proper-lockfile` signals a compromised lock asynchronously through `onCompromised` while the lock is held. `withLock` races the callback against the compromise signal: a compromise rejects the operation with `storage.lock_compromised` (`retryable: true`); writes that may have landed before the signal are safe to retry because journal appends are idempotency-keyed. Two profiles: `hot` (journal; 10 retries from 50 ms with exponential backoff capped at 1 s) and `cold` (repositories; today's 20-retry envelope). `ELOCKED` maps to `storage.lock_contended` with `retryable: true` and the contended path. All twelve call sites move to this module.
 - `RunJournal.readAll` stops blanket-catching: Node fs errors surface as `filesystem.operation_failed` with the original `code` in `details.cause`; only invariant and parse failures report `journal.integrity_error`, now carrying the underlying reason. `validateProtocolEvents` no longer rewrites nested `AiQaError`s (for example `recovery.retry_not_permitted`) into `run_protocol.integrity_error`; domain errors propagate unchanged.
 - The unknown-command remap in `runCli` is deleted; `commander.unknownCommand` passes through with commander's own message. `--version` reads the version from the package's own `package.json` via `createRequire` instead of the hardcoded `0.0.0`.
 
 ## Section 2: Typed run events
 
-`runEventSchema` becomes a discriminated union on `type`. Each event type binds the payload schema that already exists in `core/runs/event-payloads.ts`; `payload: jsonValueSchema` disappears from the event envelope. The JSONL disk format is unchanged. Data written by 0.1.0 parses under the union because every payload was validated by the same payload schema before being written.
+`runEventSchema` becomes a discriminated union on `type`; `payload: jsonValueSchema` disappears from the event envelope. The JSONL disk format is unchanged. Data written by 0.1.0 parses under the union because every payload was validated by the same payload schema before being written.
+
+The payload schemas are today spread across `core/runs/event-payloads.ts`, `core/runs/lifecycle.ts` (private `lifecyclePayloadSchema`), and `core/verdicts/schema.ts`, and all of them import ID schemas from `core/runs/schema.ts` — composing the union inside `schema.ts` as-is would create an ESM initialization cycle. Milestone 2 therefore starts by extracting the ID schemas and the event envelope into a dependency-free module (`core/runs/ids.ts`); payload modules import from there, `lifecyclePayloadSchema` becomes exported, and `schema.ts` becomes the composition point that imports payloads without being imported by them. `AppendRunEvent` is derived with a distributive omit over the union so the `type`↔`payload` correlation survives in the append API.
 
 `readAll` therefore yields fully typed events in one parse. Downstream validators consume the typed union directly and perform no further Zod parsing. `tool` and `relatedIds` keep their current permissive schemas (tightening them would be a disk-compat risk for no protocol benefit).
 
@@ -54,14 +56,16 @@ New `services/run-protocol/run-session.ts`. A session acquires the journal lock 
 
 - All validators (`validateProtocolEvents`, `validateVerdictHistory`, lifecycle checks, regression fidelity) become pure functions over `RunSnapshot`. `readVerifiedWorkOrder` accepts the snapshot instead of re-reading the journal.
 - Incremental checks that currently rescan `events.slice(0, index)` per event (recovery retry permission, regression fidelity interaction counting) are rewritten as single-pass accumulators, making full validation O(n).
-- `session.append(events)` appends one or more events inside the same critical section. `cancelRun` collapses its three lock acquisitions into one: validation, the cancellation verdict event, and the `cancelled` lifecycle event commit together.
+- `session.append(events)` appends one or more events inside the same critical section. `cancelRun` collapses its three lock acquisitions into one: validation, the cancellation verdict event, and the `cancelled` lifecycle event commit together. `resumeRun`'s two lifecycle appends go through the same batch path.
 - Appends return the event plus the post-append state and `permittedNextActions`, computed from the in-lock snapshot. `writeProtocolEvent` prints that result and no longer re-resolves the project or re-reads state outside the lock, eliminating the read-back race and two of the three per-command project-root resolutions.
 
 ## Section 4: Append-only journal writes
 
-`RunJournal` appends a single serialized line with fsync instead of rewriting `events.jsonl` on every event. Sequence, platform, and idempotency invariants are enforced in memory under the lock before the write, exactly as today.
+Single-event appends — the hot path (`action plan`/`complete`, observations, evidence, assertions) — append one serialized line with fsync instead of rewriting `events.jsonl`. Sequence, platform, and idempotency invariants are enforced in memory under the lock before the write, exactly as today.
 
-The new failure mode is a torn trailing line after a crash mid-append. `readAll` distinguishes it: when every line parses except an incomplete final line, the error is the new repairable code `journal.torn_write`, whose message names `ai-qa run repair`. Any other malformation remains `journal.integrity_error`. A torn tail is an event that was never acknowledged to the caller, so truncating it is semantically safe — but only the explicit repair command performs the truncation, consistent with the project's no-automatic-deletion policy.
+Multi-event batch appends (cancel, resume) do not use line appends: a crash between lines would commit a partial batch, and tail truncation could then expose exactly the intermediate state the single-critical-section design exists to prevent (for example a cancellation verdict without its `cancelled` lifecycle event). Batches instead use the existing atomic full-file rewrite (temp file + rename + directory fsync), which is all-or-nothing under crash. Batch appends are rare, so the hot path stays O(1) while batches keep crash atomicity with no new on-disk constructs.
+
+The remaining failure mode is a torn trailing line after a crash mid-single-append. The torn-write condition is precisely: the file is non-empty and does not end with a newline. An incomplete final line is torn whether or not its bytes happen to parse as JSON — a complete JSON tail without a terminating newline is still unsafe to append after. A newline-terminated line that fails to parse is not torn; it remains `journal.integrity_error`. `readAll` reports a torn tail as the new repairable code `journal.torn_write`, whose message names `ai-qa run repair`. A torn tail is an event that was never acknowledged to the caller, so truncating it is semantically safe — but only the explicit repair command performs the truncation, consistent with the project's no-automatic-deletion policy.
 
 ## Section 5: Evidence atomicity and `ai-qa run repair`
 
@@ -76,11 +80,22 @@ New command:
 ai-qa run repair <run-id> [--project <path>]
 ```
 
-Under the journal and evidence locks, repair moves orphaned index entries and their files, and any torn journal tail, into `.ai-qa/recovery/<run-id>/`, then reports JSON listing every relocated item. Repair is idempotent; a run with nothing to repair returns an empty report. Wedged runs regain `resume`, `finish`, and report generation once repaired.
+Repair relocates orphaned index entries and their files, and any torn journal tail, into `.ai-qa/recovery/<run-id>/`, then reports JSON listing every relocated item. A run with nothing to repair returns an empty report. Wedged runs regain `resume`, `finish`, and report generation once repaired.
+
+Repair is itself multi-step I/O and must be crash-safe, or an interrupted repair would convert a repairable orphan into real corruption (an index entry pointing at a relocated file). Repair therefore follows a persistent-manifest protocol under the journal and evidence locks:
+
+1. Compute the plan and atomically write `.ai-qa/recovery/<run-id>/repair-manifest.json` (planned relocations plus the journal truncation offset).
+2. Copy — not move — orphaned evidence files and the torn tail bytes into the recovery directory (copies are idempotent).
+3. Atomically rewrite the evidence index without the orphaned entries (temp + rename; the index commit point).
+4. Truncate the journal at the recorded offset (a single `ftruncate`; the journal commit point).
+5. Delete the orphaned source files, which nothing references anymore.
+6. Mark the manifest complete.
+
+A crash at any boundary leaves a manifest that a re-run of `run repair` resumes deterministically from the first unfinished step; every step is idempotent, which is what makes the command as a whole idempotent. Readers that encounter an incomplete manifest report the repairable `run.repair_incomplete` and name the command.
 
 Hot-path cost changes: `evidence add` no longer re-hashes all evidence after a successful append; `run resume` performs structural parity only; full content-hash verification runs at `run finish` and `report generate`.
 
-Creation atomicity: `run start` sweeps stale `.run-staging-*` directories (older than one hour by `context.now`) before creating a run; RunGroup creation writes `events.jsonl` first so `group.json` becomes the commit point, and a group directory without `group.json` reads as `run_group.not_found`.
+Creation atomicity: RunGroup creation adopts the same staging-plus-rename pattern run creation already uses — the group is assembled in a `.group-staging-*` directory and a single rename into place is the commit point. This avoids the trap of a write-ordering scheme, where a crash between the two writes leaves a directory that `create` rejects as `run_group.already_exists` while every read reports `run_group.not_found`. `run start` and `run-group start` sweep stale staging directories (older than one hour by `context.now`) before creating.
 
 ## Section 6: Cleanup, CI exit codes, version
 
@@ -88,7 +103,7 @@ Creation atomicity: `run start` sweeps stale `.run-staging-*` directories (older
 - Deleted: `core/tools.ts` re-export shell (tests import the real modules), `RunJournal.create` (production uses staging + `open`), `RunGroupRepository.readManifest`/`readEvents`, `checkGlobalSkillForProject` (its `recordingMode` input never had effect).
 - `CaseRepository` either uses its `now` parameter or the parameter is removed along with caller threading; the duplicated `validatePinnedRegressionCase` implementations merge into one; `CaseRepository.validateRevision` and `validateRevisionAgainstIndex` share one implementation; the git-root predicate in `resolve-project-root.ts` reduces to an existence check.
 - Version literals for run-group events, case index, and recording move from inline numbers to `schemas/versions.ts` constants.
-- CI exit-code parity (M10): `report generate` and `report export` for a single run whose work order has `execution: ci` honor `ciPolicy.nonPassExit` exactly as the group commands do.
+- CI exit-code parity (M10): `report generate` and `report export` for a single run whose work order has `execution: ci` honor `ciPolicy.nonPassExit` by mirroring the group rule in `requestCiGroupFailure`: exit non-zero when the run is not `completed` or its effective verdict classification is anything other than `pass`. A cancelled run is non-pass.
 - Package version bumps to 0.2.0.
 
 ## Testing
@@ -97,11 +112,13 @@ Creation atomicity: `run start` sweeps stale `.run-staging-*` directories (older
 
 - Unknown-command output and `--version` correctness.
 - `input.invalid_json` vs `input.schema_invalid` discrimination and the `issues` shape, including the top-level ZodError path.
-- `storage.lock_contended` mapping under a deliberately held lock.
-- Torn-journal detection and repair; orphaned-evidence detection and repair; repair idempotency.
+- `storage.lock_contended` mapping under a deliberately held lock, and `storage.lock_compromised` when the lock is compromised mid-operation.
+- Torn-tail classification across all four cases: complete JSON without trailing newline (torn), invalid JSON without trailing newline (torn, including a truncated multi-byte UTF-8 sequence), invalid JSON with trailing newline (integrity error), valid file (no error).
+- Batch-append crash atomicity: a simulated crash during a cancel or resume batch leaves either zero or all of the batch's events.
+- Orphaned-evidence detection and repair; crash-injection at every repair step boundary (after manifest write, after copies, after index rewrite, after truncation) followed by a resumed repair reaching the same final state; repair idempotency on a clean run.
 - `cancelRun` single-critical-section behavior (no intermediate state observable between verdict and lifecycle events).
-- Journal append does not rewrite the file (assert via inode/size growth on append).
-- Single-run CI exit codes under `ciPolicy.nonPassExit: failure`.
+- Single-event journal append does not rewrite the file (assert via inode/size growth on append).
+- Single-run CI exit codes under `ciPolicy.nonPassExit: failure`, including a cancelled run.
 
 ## Delivery
 
