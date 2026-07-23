@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rename } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
@@ -14,6 +14,7 @@ import {
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
+  prepareProjectLocalRemoval,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
@@ -51,6 +52,7 @@ export class RunGroupRepository {
     const stagingDirectory = await mkdtemp(
       resolve(root, `${runGroupStagingPrefix}${manifest.id}-`),
     );
+    const stagingIdentity = await captureStagingIdentity(stagingDirectory);
     try {
       await ensureProjectLocalDirectory(this.projectRoot, [
         ".ai-qa",
@@ -95,11 +97,11 @@ export class RunGroupRepository {
       });
       return freezeManifest(manifest);
     } catch (error: unknown) {
-      try {
-        await rm(stagingDirectory, { recursive: true, force: true });
-      } catch {
-        // Preserve the group creation failure.
-      }
+      await cleanupCapturedStagingDirectory(
+        root,
+        stagingDirectory,
+        stagingIdentity,
+      ).catch(() => undefined);
       throw error;
     }
   }
@@ -330,6 +332,61 @@ function runGroupAlreadyExists(runGroupId: string): AiQaError {
   return new AiQaError("run_group.already_exists", "Run group already exists", {
     runGroupId,
   });
+}
+
+interface StagingIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+async function captureStagingIdentity(path: string): Promise<StagingIdentity> {
+  const stats = await lstat(path, { bigint: true });
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new AiQaError(
+      "storage.integrity_error",
+      "Run-group staging directory is not a real directory",
+      { path },
+    );
+  }
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+async function cleanupCapturedStagingDirectory(
+  root: string,
+  stagingDirectory: string,
+  expected: StagingIdentity,
+): Promise<void> {
+  const stagingName = basename(stagingDirectory);
+  const current = await lstat(stagingDirectory, { bigint: true }).catch(
+    () => undefined,
+  );
+  if (
+    current === undefined ||
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    current.dev !== expected.dev ||
+    current.ino !== expected.ino
+  ) {
+    return;
+  }
+  const prepared = await prepareProjectLocalRemoval({
+    projectRoot: root,
+    segments: [stagingName],
+    expected: "directory",
+  });
+  const verified = await lstat(stagingDirectory, { bigint: true }).catch(
+    () => undefined,
+  );
+  if (
+    verified === undefined ||
+    verified.isSymbolicLink() ||
+    !verified.isDirectory() ||
+    verified.dev !== expected.dev ||
+    verified.ino !== expected.ino
+  ) {
+    return;
+  }
+  await prepared.remove();
 }
 
 function validateSnapshot(

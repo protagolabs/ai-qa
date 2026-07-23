@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   rmdir,
   symlink,
@@ -14,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AiQaError } from "../../src/core/errors.js";
 import {
   ensureProjectLocalDirectory,
@@ -25,12 +26,18 @@ import {
   sweepStaleStaging,
 } from "../../src/core/fs/project-storage.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, readdir: vi.fn(actual.readdir) };
+});
+
 describe("project-local storage", () => {
   it("sweeps only stale real staging directories directly inside the root", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
-    const root = join(projectRoot, ".ai-qa", "runs");
+    const rootPath = join(projectRoot, ".ai-qa", "runs");
     const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));
-    await mkdir(root, { recursive: true });
+    await mkdir(rootPath, { recursive: true });
+    const root = await realpath(rootPath);
     const stale = join(root, ".run-staging-stale");
     const threshold = join(root, ".run-staging-threshold");
     const fresh = join(root, ".run-staging-fresh");
@@ -59,6 +66,134 @@ describe("project-local storage", () => {
     await expect(access(link)).resolves.toBeUndefined();
     await expect(access(differentPrefix)).resolves.toBeUndefined();
     await expect(access(outside)).resolves.toBeUndefined();
+  });
+
+  it("rejects a sweep root with a symlinked ancestor without touching its target", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));
+    const linkedAncestor = join(projectRoot, "linked-storage");
+    const outsideRoot = join(outside, "runs");
+    const stale = join(outsideRoot, ".run-staging-stale");
+    await mkdir(stale, { recursive: true });
+    await symlink(outside, linkedAncestor);
+
+    await expect(
+      sweepStaleStaging(
+        join(linkedAncestor, "runs"),
+        ".run-staging-",
+        () => new Date("2026-07-17T00:00:00.000Z"),
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    await expect(access(stale)).resolves.toBeUndefined();
+  });
+
+  it("treats a missing sweep root as a no-op", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+
+    await expect(
+      sweepStaleStaging(
+        join(projectRoot, ".ai-qa", "runs"),
+        ".run-staging-",
+        () => new Date("2026-07-17T00:00:00.000Z"),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("treats a sweep root removed before enumeration as a no-op", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const rootPath = join(projectRoot, ".ai-qa", "runs");
+    await mkdir(rootPath, { recursive: true });
+    const root = await realpath(rootPath);
+    const actual =
+      await vi.importActual<typeof import("node:fs/promises")>(
+        "node:fs/promises",
+      );
+    const canonicalRoot = await actual.realpath(root);
+    const readdirMock = vi.mocked(readdir);
+    let removeRoot = true;
+    readdirMock.mockImplementation(async (path, options) => {
+      if (removeRoot && path === canonicalRoot) {
+        removeRoot = false;
+        await actual.rm(canonicalRoot, { recursive: true, force: true });
+      }
+      return actual.readdir(path, options);
+    });
+
+    try {
+      await expect(
+        sweepStaleStaging(root, ".run-staging-", () => new Date()),
+      ).resolves.toEqual([]);
+    } finally {
+      readdirMock.mockReset();
+      readdirMock.mockImplementation(actual.readdir);
+    }
+  });
+
+  it("normalizes unreadable sweep-root enumeration failures", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const rootPath = join(projectRoot, ".ai-qa", "runs");
+    await mkdir(rootPath, { recursive: true });
+    const root = await realpath(rootPath);
+    const actual =
+      await vi.importActual<typeof import("node:fs/promises")>(
+        "node:fs/promises",
+      );
+    const readdirMock = vi.mocked(readdir);
+    readdirMock.mockImplementation(async (path, options) => {
+      if (path === root) {
+        throw Object.assign(new Error("injected unreadable root"), {
+          code: "EACCES",
+        });
+      }
+      return actual.readdir(path, options);
+    });
+
+    try {
+      await expect(
+        sweepStaleStaging(
+          root,
+          ".run-staging-",
+          () => new Date("2026-07-17T00:00:00.000Z"),
+        ),
+      ).rejects.toMatchObject({
+        code: "storage.integrity_error",
+        details: { causeCode: "EACCES" },
+      });
+    } finally {
+      readdirMock.mockReset();
+      readdirMock.mockImplementation(actual.readdir);
+    }
+  });
+
+  it("retains a replacement staging entry in a recovery claim", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const rootPath = join(projectRoot, ".ai-qa", "runs");
+    await mkdir(rootPath, { recursive: true });
+    const root = await realpath(rootPath);
+    const staging = join(root, ".run-staging-stale");
+    const displaced = join(root, ".run-staging-displaced");
+    await mkdir(staging);
+    const now = new Date("2026-07-17T00:00:00.000Z");
+    const staleAt = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    await utimes(staging, staleAt, staleAt);
+
+    await expect(
+      sweepStaleStaging(root, ".run-staging-", () => now, {
+        afterFinalVerification: async ({ path }) => {
+          await rename(path, displaced);
+          await mkdir(path);
+          await writeFile(join(path, "replacement.txt"), "replacement");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "storage.recovery_required" });
+    const [claim] = (await readdir(root)).filter((entry) =>
+      entry.startsWith(".ai-qa-removal-claim-"),
+    );
+    expect(claim).toBeDefined();
+    await expect(
+      readFile(join(root, claim!, "entry", "replacement.txt"), "utf8"),
+    ).resolves.toBe("replacement");
+    await expect(access(displaced)).resolves.toBeUndefined();
   });
 
   it("rejects a symlinked .ai-qa ancestor before creating descendants", async () => {

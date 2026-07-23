@@ -5,13 +5,14 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
@@ -36,6 +37,11 @@ import {
   initializeTestProject,
   projectConfig,
 } from "../helpers/project-fixture.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 const startedAt = new Date("2026-07-17T00:00:00.000Z");
 const now = () => startedAt;
@@ -213,6 +219,53 @@ describe("immutable run groups", () => {
     await expect(
       new RunGroupRepository(projectRoot, now).readManifest(crashedGroupId),
     ).rejects.toMatchObject({ code: "run_group.not_found" });
+  });
+
+  it("does not remove a replacement for failed group staging creation", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({
+      cases,
+      caseId: "staging-replacement",
+      platforms: ["web"],
+    });
+    const actual =
+      await vi.importActual<typeof import("node:fs/promises")>(
+        "node:fs/promises",
+      );
+    const renameMock = vi.mocked(rename);
+    let replacementPath: string | undefined;
+    renameMock.mockImplementation(async (source, destination) => {
+      if (String(destination).endsWith("/events.jsonl")) {
+        const stagingDirectory = dirname(String(destination));
+        await actual.rename(stagingDirectory, `${stagingDirectory}-displaced`);
+        await actual.mkdir(stagingDirectory);
+        replacementPath = join(stagingDirectory, "replacement.txt");
+        await actual.writeFile(replacementPath, "replacement");
+        throw new Error("injected staging write failure");
+      }
+      return actual.rename(source, destination);
+    });
+
+    try {
+      await expect(
+        startRunGroup({
+          projectRoot,
+          selection: { mode: "explicit", caseIds: ["staging-replacement"] },
+          platforms: ["web"],
+          execution: "local",
+          readiness: readinessByPlatform(["web"]),
+          now,
+        }),
+      ).rejects.toThrow("injected staging write failure");
+
+      expect(replacementPath).toBeDefined();
+      await expect(readFile(replacementPath!, "utf8")).resolves.toBe(
+        "replacement",
+      );
+    } finally {
+      renameMock.mockReset();
+      renameMock.mockImplementation(actual.rename);
+    }
   });
 
   it("sweeps stale group staging before starting a run group", async () => {
@@ -607,6 +660,39 @@ describe("immutable run groups", () => {
     );
     expect(first.workOrders[0]?.runGroupId).toBe(first.manifest.id);
     expect(second.workOrders[0]?.runGroupId).toBe(second.manifest.id);
+  });
+
+  it("maps a cooperative same-ID publication collision to already_exists", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "same-id", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["same-id"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const manifest = structuredClone(started.manifest);
+    const runGroupId = "run-group-cooperative-collision";
+    manifest.id = runGroupId;
+    for (const member of manifest.members) {
+      member.workOrder.runGroupId = runGroupId;
+    }
+
+    const results = await Promise.allSettled([
+      new RunGroupRepository(projectRoot, now).create(manifest),
+      new RunGroupRepository(projectRoot, now).create(manifest),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      results.find((result) => result.status === "rejected"),
+    ).toMatchObject({
+      reason: { code: "run_group.already_exists" },
+    });
   });
 
   it("rejects finish until every frozen member is terminal", async () => {

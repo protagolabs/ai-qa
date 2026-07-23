@@ -103,10 +103,15 @@ export function requireProjectLocalDirectory(
 
 const staleStagingAgeMs = 60 * 60 * 1000;
 
+export interface SweepStaleStagingHooks {
+  afterFinalVerification?: ProjectLocalRemovalHooks["afterFinalVerification"];
+}
+
 export async function sweepStaleStaging(
   root: string,
   prefix: string,
   now: () => Date,
+  hooks: SweepStaleStagingHooks = {},
 ): Promise<string[]> {
   if (
     prefix.length === 0 ||
@@ -119,13 +124,19 @@ export async function sweepStaleStaging(
   }
   const resolvedRoot = resolve(root);
   let canonicalRoot: string;
+  let rootIdentity: ProjectLocalRemovalIdentity;
   try {
-    const rootStats = await lstat(resolvedRoot);
+    const rootStats = await lstat(resolvedRoot, { bigint: true });
     if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
       throw storageError("Staging root is not a real directory", resolvedRoot);
     }
     canonicalRoot = await realpath(resolvedRoot);
+    if (canonicalRoot !== resolvedRoot) {
+      throw storageError("Staging root has a symlinked ancestor", resolvedRoot);
+    }
+    rootIdentity = { dev: rootStats.dev, ino: rootStats.ino };
   } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return [];
     if (error instanceof AiQaError) throw error;
     throw storageError(
       "Staging root verification failed",
@@ -136,7 +147,17 @@ export async function sweepStaleStaging(
 
   const cutoff = now().getTime() - staleStagingAgeMs;
   const removed: string[] = [];
-  const entries = await readdir(canonicalRoot, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(canonicalRoot, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return [];
+    throw storageError(
+      "Staging root enumeration failed",
+      canonicalRoot,
+      nodeErrorCode(error),
+    );
+  }
   for (const entry of entries.sort((left, right) =>
     left.name.localeCompare(right.name),
   )) {
@@ -149,9 +170,19 @@ export async function sweepStaleStaging(
     }
     const path = resolve(canonicalRoot, entry.name);
     if (dirname(path) !== canonicalRoot) continue;
-    let stats;
     try {
-      stats = await lstat(path);
+      await requireUnchangedSweepRoot(canonicalRoot, rootIdentity);
+      const prepared = await prepareProjectLocalRemoval({
+        projectRoot: canonicalRoot,
+        segments: [entry.name],
+        expected: "directory",
+        ...(hooks.afterFinalVerification === undefined
+          ? {}
+          : {
+              hooks: { afterFinalVerification: hooks.afterFinalVerification },
+            }),
+      });
+      const stats = await lstat(path);
       if (
         stats.isSymbolicLink() ||
         !stats.isDirectory() ||
@@ -160,8 +191,8 @@ export async function sweepStaleStaging(
       ) {
         continue;
       }
-      await rm(path, { recursive: true, force: false });
-      removed.push(entry.name);
+      await requireUnchangedSweepRoot(canonicalRoot, rootIdentity);
+      if (await prepared.remove()) removed.push(entry.name);
     } catch (error: unknown) {
       if (isNodeError(error, "ENOENT")) continue;
       if (error instanceof AiQaError) throw error;
@@ -173,6 +204,31 @@ export async function sweepStaleStaging(
     }
   }
   return removed;
+}
+
+async function requireUnchangedSweepRoot(
+  root: string,
+  expected: ProjectLocalRemovalIdentity,
+): Promise<void> {
+  try {
+    const current = await lstat(root, { bigint: true });
+    if (
+      current.isSymbolicLink() ||
+      !current.isDirectory() ||
+      current.dev !== expected.dev ||
+      current.ino !== expected.ino ||
+      (await realpath(root)) !== root
+    ) {
+      throw storageError("Staging root changed during cleanup", root);
+    }
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Staging root verification failed",
+      root,
+      nodeErrorCode(error),
+    );
+  }
 }
 
 export interface OptionalProjectLocalFile {
