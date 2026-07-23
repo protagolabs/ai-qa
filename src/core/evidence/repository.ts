@@ -238,7 +238,32 @@ export class EvidenceRepository {
   async readAll(): Promise<EvidenceRecord[]> {
     try {
       await this.validateIndexIfPresent();
-      return await readJsonLines(this.paths.index, evidenceRecordSchema);
+      const records = await readJsonLines(
+        this.paths.index,
+        evidenceRecordSchema,
+      );
+      const expectedController = controllerForPlatform(this.platform);
+      for (const record of records) {
+        if (
+          record.runId !== this.runId ||
+          record.platform !== this.platform ||
+          record.sourceTool !== expectedController
+        ) {
+          throw new AiQaError(
+            "evidence.integrity_error",
+            "Evidence index provenance does not match the immutable run",
+            {
+              runId: this.runId,
+              platform: this.platform,
+              expectedController,
+              evidenceRunId: record.runId,
+              evidencePlatform: record.platform,
+              sourceTool: record.sourceTool,
+            },
+          );
+        }
+      }
+      return records;
     } catch (error: unknown) {
       if (isNodeError(error, "ENOENT")) return [];
       if (

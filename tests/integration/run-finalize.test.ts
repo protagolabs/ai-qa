@@ -1188,6 +1188,41 @@ describe("run lifecycle", () => {
     },
   );
 
+  it("rejects an index-only row for another platform before orphan classification", async () => {
+    const fixture = await createRun();
+    await recordSupportedCriterion(fixture);
+    const indexPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    const index = await readFile(indexPath, "utf8");
+    const record = JSON.parse(index.trim()) as Record<string, unknown>;
+    const wrongPlatform = {
+      ...record,
+      id: "evidence-wrong-platform",
+      projectRelativePath:
+        ".ai-qa/evidence/run-1/files/evidence-wrong-platform-screen.png",
+      platform: "ios-simulator",
+      sourceTool: "pepper",
+      idempotencyKey: "capture-wrong-platform",
+    };
+    await writeFile(
+      indexPath,
+      `${index.trimEnd()}\n${JSON.stringify(wrongPlatform)}\n`,
+    );
+
+    await expect(
+      resumeRun({
+        projectRoot: fixture.projectRoot,
+        runId: "run-1",
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+  });
+
   it("rejects duplicate evidence index records before resuming", async () => {
     const fixture = await createRun();
     await recordSupportedCriterion(fixture);
