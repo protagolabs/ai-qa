@@ -6,6 +6,7 @@ import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import {
   EvidenceRepository,
   registerRawEvidenceInputSchema,
+  type EvidenceRegistrationDurabilityHooks,
   type RegisterRawEvidenceInput,
 } from "../../core/evidence/repository.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
@@ -32,14 +33,23 @@ const citationInputSchema = z
   })
   .strict();
 
-export async function registerEvidence(input: {
-  projectRoot: string;
-  runId: string;
-  payload: RegisterRawEvidenceInput;
-  criterionIds: string[];
-  observationIds: string[];
-  now: () => Date;
-}): Promise<EvidenceRecord> {
+export interface RegisterEvidenceOptions {
+  hooks?: EvidenceRegistrationDurabilityHooks & {
+    beforeJournalAppend?: () => void | Promise<void>;
+  };
+}
+
+export async function registerEvidence(
+  input: {
+    projectRoot: string;
+    runId: string;
+    payload: RegisterRawEvidenceInput;
+    criterionIds: string[];
+    observationIds: string[];
+    now: () => Date;
+  },
+  options: RegisterEvidenceOptions = {},
+): Promise<EvidenceRecord> {
   const project = await resolveProject({
     cwd: input.projectRoot,
     explicitProject: input.projectRoot,
@@ -157,12 +167,27 @@ export async function registerEvidence(input: {
 
       const record = await repository.registerRaw(payload, {
         preCommit: () => assertRunSessionActive(session),
+        hooks: {
+          ...(options.hooks?.afterEvidenceFileDurable === undefined
+            ? {}
+            : {
+                afterEvidenceFileDurable:
+                  options.hooks.afterEvidenceFileDurable,
+              }),
+          ...(options.hooks?.afterEvidenceIndexDurable === undefined
+            ? {}
+            : {
+                afterEvidenceIndexDurable:
+                  options.hooks.afterEvidenceIndexDurable,
+              }),
+        },
       });
       const eventPayload = evidenceEventPayloadSchema.parse({
         ...record,
         criterionIds: citations.criterionIds,
         observationIds: citations.observationIds,
       });
+      await options.hooks?.beforeJournalAppend?.();
       await session.append([
         evidenceAppendInput(workOrder.platform, eventPayload),
       ]);

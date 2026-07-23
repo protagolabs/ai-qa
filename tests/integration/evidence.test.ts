@@ -1124,6 +1124,114 @@ describe("registerEvidence", () => {
     expect(evidenceEvents).toHaveLength(0);
   });
 
+  it.each(["evidence-file", "evidence-index"] as const)(
+    "never appends a journal event when the durable %s boundary fails",
+    async (failureBoundary) => {
+      const { projectRoot, captureActionId, runRepository } = await createRun();
+      const source = join(projectRoot, `${failureBoundary}.png`);
+      await writeFile(source, Buffer.from(`${failureBoundary}-bytes`));
+      const journalPath = join(
+        projectRoot,
+        ".ai-qa",
+        "runs",
+        "run-1",
+        "events.jsonl",
+      );
+      const journalBefore = await readFile(journalPath);
+      const order: string[] = [];
+      const failure = new Error(`injected ${failureBoundary} failure`);
+
+      await expect(
+        registerEvidence(
+          {
+            projectRoot,
+            runId: "run-1",
+            payload: {
+              sourcePath: source,
+              mediaType: "image/png",
+              sourceTool: controllerForPlatform("web"),
+              sensitivity: "internal",
+              evidenceKinds: ["post-action-screenshot"],
+              captureActionId,
+              idempotencyKey: `durability-${failureBoundary}`,
+            },
+            criterionIds: ["authenticated-home-visible"],
+            observationIds: [],
+            now: fixedNow,
+          },
+          {
+            hooks: {
+              afterEvidenceFileDurable: () => {
+                order.push("evidence-file");
+                if (failureBoundary === "evidence-file") throw failure;
+              },
+              afterEvidenceIndexDurable: () => {
+                order.push("evidence-index");
+                if (failureBoundary === "evidence-index") throw failure;
+              },
+              beforeJournalAppend: () => {
+                order.push("journal");
+              },
+            },
+          },
+        ),
+      ).rejects.toBe(failure);
+
+      expect(await readFile(journalPath)).toEqual(journalBefore);
+      expect(
+        (await runRepository.journal("run-1").readAll()).filter(
+          (event) => event.type === "evidence",
+        ),
+      ).toEqual([]);
+      expect(order).toEqual(
+        failureBoundary === "evidence-file"
+          ? ["evidence-file"]
+          : ["evidence-file", "evidence-index"],
+      );
+    },
+  );
+
+  it("durably publishes evidence file and index before journal append", async () => {
+    const { projectRoot, captureActionId } = await createRun();
+    const source = join(projectRoot, "durability-order.png");
+    await writeFile(source, Buffer.from("durability-order-bytes"));
+    const order: string[] = [];
+
+    await registerEvidence(
+      {
+        projectRoot,
+        runId: "run-1",
+        payload: {
+          sourcePath: source,
+          mediaType: "image/png",
+          sourceTool: controllerForPlatform("web"),
+          sensitivity: "internal",
+          evidenceKinds: ["post-action-screenshot"],
+          captureActionId,
+          idempotencyKey: "durability-order",
+        },
+        criterionIds: ["authenticated-home-visible"],
+        observationIds: [],
+        now: fixedNow,
+      },
+      {
+        hooks: {
+          afterEvidenceFileDurable: () => {
+            order.push("evidence-file");
+          },
+          afterEvidenceIndexDurable: () => {
+            order.push("evidence-index");
+          },
+          beforeJournalAppend: () => {
+            order.push("journal");
+          },
+        },
+      },
+    );
+
+    expect(order).toEqual(["evidence-file", "evidence-index", "journal"]);
+  });
+
   it("rejects duplicate index records after an idempotent retry", async () => {
     const { projectRoot, captureActionId, runRepository } = await createRun();
     const source = join(projectRoot, "screen.png");

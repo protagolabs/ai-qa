@@ -1,21 +1,18 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  copyFile,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  realpath,
-  rm,
-} from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
-import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
+import { syncDirectoryWhereSupported } from "../fs/atomic-write.js";
+import { readJsonLines, serializeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
+import {
+  atomicReplaceProjectLocalRegularFile,
+  publishProjectLocalRegularFile,
+  synchronizeProjectLocalRegularFile,
+} from "../fs/project-storage.js";
 import { createId } from "../ids.js";
 import { isNodeError } from "../node-errors.js";
 import { controllerForPlatform } from "../platforms/registry.js";
@@ -35,6 +32,16 @@ export interface RegisterRawEvidenceInput {
   evidenceKinds: string[];
   captureActionId: string;
   idempotencyKey: string;
+}
+
+export interface EvidenceRegistrationDurabilityHooks {
+  afterEvidenceFileDurable?: () => void | Promise<void>;
+  afterEvidenceIndexDurable?: () => void | Promise<void>;
+}
+
+export interface RegisterRawEvidenceOptions {
+  preCommit?: () => void;
+  hooks?: EvidenceRegistrationDurabilityHooks;
 }
 
 export const registerRawEvidenceInputSchema: z.ZodType<RegisterRawEvidenceInput> =
@@ -133,7 +140,7 @@ export class EvidenceRepository {
 
   async registerRaw(
     input: RegisterRawEvidenceInput,
-    options: { preCommit?: () => void } = {},
+    options: RegisterRawEvidenceOptions = {},
   ): Promise<EvidenceRecord> {
     input = registerRawEvidenceInputSchema.parse(input);
     const expectedController = controllerForPlatform(this.platform);
@@ -180,6 +187,18 @@ export class EvidenceRepository {
             canonicalJson(persistedInput(existing)) === canonicalJson(requested)
           ) {
             await this.verifyRecord(existing);
+            await synchronizeProjectLocalRegularFile(
+              this.projectRoot,
+              existing.projectRelativePath.split("/"),
+            );
+            await options.hooks?.afterEvidenceFileDurable?.();
+            await synchronizeProjectLocalRegularFile(this.projectRoot, [
+              ".ai-qa",
+              "evidence",
+              this.runId,
+              "index.jsonl",
+            ]);
+            await options.hooks?.afterEvidenceIndexDurable?.();
             return existing;
           }
           throw new AiQaError(
@@ -196,8 +215,16 @@ export class EvidenceRepository {
           resolve(this.paths.files, fileName),
         );
         preCommit();
-        await copyFile(input.sourcePath, copiedPath, constants.COPYFILE_EXCL);
+        const sourceBytes = await readFile(input.sourcePath);
+        await publishProjectLocalRegularFile({
+          projectRoot: this.projectRoot,
+          segments: [".ai-qa", "evidence", this.runId, "files", fileName],
+          content: sourceBytes,
+          preCommit,
+          durable: true,
+        });
         ownsCopiedPath = true;
+        await options.hooks?.afterEvidenceFileDurable?.();
         const contentHash = sha256(await readFile(copiedPath));
         const record = evidenceRecordSchema.parse({
           schemaVersion: EVIDENCE_SCHEMA_VERSION,
@@ -218,10 +245,14 @@ export class EvidenceRepository {
           idempotencyKey: input.idempotencyKey,
         });
 
-        await writeJsonLines(this.paths.index, [...records, record], {
+        ownsCopiedPath = false;
+        await atomicReplaceProjectLocalRegularFile({
+          projectRoot: this.projectRoot,
+          segments: [".ai-qa", "evidence", this.runId, "index.jsonl"],
+          content: serializeJsonLines([...records, record]),
           preCommit,
         });
-        ownsCopiedPath = false;
+        await options.hooks?.afterEvidenceIndexDurable?.();
         return record;
       } catch (error: unknown) {
         if (copiedPath !== undefined && ownsCopiedPath) {
@@ -383,6 +414,7 @@ export class EvidenceRepository {
       preCommit();
       handle = await open(this.paths.index, "wx", 0o600);
       await handle.sync();
+      await syncDirectoryWhereSupported(this.paths.root);
     } catch (error: unknown) {
       if (isNodeError(error, "EEXIST")) {
         await this.validateIndexIfPresent();
