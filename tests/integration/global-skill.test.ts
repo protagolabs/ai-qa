@@ -13,7 +13,6 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import {
   checkGlobalSkill,
-  checkGlobalSkillForProject,
   previewGlobalSkillSync,
   syncGlobalSkill,
 } from "../../src/services/skill-management/global-skill.js";
@@ -393,11 +392,9 @@ describe("syncGlobalSkill", () => {
         await writeFile(installedReference, "# Locally modified protocol\n");
       }
 
-      for (const recordingMode of ["local-only", "project-skill"] as const) {
-        await expect(
-          checkGlobalSkillForProject({ ...fixture, recordingMode }),
-        ).resolves.toMatchObject({ status: expected });
-      }
+      await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
+        status: expected,
+      });
     },
   );
 
@@ -416,11 +413,9 @@ describe("syncGlobalSkill", () => {
       }).content,
     );
 
-    for (const recordingMode of ["local-only", "project-skill"] as const) {
-      await expect(
-        checkGlobalSkillForProject({ ...fixture, recordingMode }),
-      ).resolves.toMatchObject({ status: "stale" });
-    }
+    await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
+      status: "stale",
+    });
   });
 
   it("keeps the current 2.0 user region outside managed checksum pinning", async () => {
@@ -437,11 +432,9 @@ describe("syncGlobalSkill", () => {
       ),
     );
 
-    for (const recordingMode of ["local-only", "project-skill"] as const) {
-      await expect(
-        checkGlobalSkillForProject({ ...fixture, recordingMode }),
-      ).resolves.toMatchObject({ status: "compatible" });
-    }
+    await expect(checkGlobalSkill(fixture)).resolves.toMatchObject({
+      status: "compatible",
+    });
   });
 
   it("removes stale managed references only after confirmed synchronization", async () => {

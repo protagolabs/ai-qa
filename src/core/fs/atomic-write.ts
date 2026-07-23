@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isNodeError } from "../node-errors.js";
 
 export async function atomicWriteFile(
   path: string,
@@ -60,12 +61,4 @@ function isUnsupportedDirectorySync(error: unknown): boolean {
     "EOPNOTSUPP",
     "EPERM",
   ].some((code) => isNodeError(error, code));
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

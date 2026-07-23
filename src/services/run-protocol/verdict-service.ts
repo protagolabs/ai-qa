@@ -1,6 +1,7 @@
 import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { assertJsonValue } from "../../core/json-value.js";
+import { isRecord } from "../../core/node-errors.js";
 import {
   runIdSchema,
   type AppendRunEvent,
@@ -440,8 +441,4 @@ function requireMutableRun(events: readonly RunEvent[]): void {
       { runEventId: terminal.id },
     );
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

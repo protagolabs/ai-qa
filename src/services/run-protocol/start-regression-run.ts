@@ -98,9 +98,7 @@ export async function prepareRegressionWorkOrder(
   }
   const revision =
     input.selectedRevision === undefined
-      ? await new CaseRepository(project.projectRoot, input.now).readActive(
-          input.caseId,
-        )
+      ? await new CaseRepository(project.projectRoot).readActive(input.caseId)
       : caseRevisionSchema.parse(input.selectedRevision);
   if (
     revision.caseId !== input.caseId ||

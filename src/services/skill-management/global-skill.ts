@@ -378,17 +378,3 @@ export async function checkGlobalSkill(input: {
   }
   return { status: "compatible", destination };
 }
-
-export async function checkGlobalSkillForProject(input: {
-  agentsHome: string;
-  sourcePath: string;
-  recordingMode: "local-only" | "project-skill";
-}): Promise<{
-  status: "compatible" | "missing" | "stale" | "conflict";
-  destination: string;
-}> {
-  return checkGlobalSkill({
-    agentsHome: input.agentsHome,
-    sourcePath: input.sourcePath,
-  });
-}

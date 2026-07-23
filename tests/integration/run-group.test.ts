@@ -19,7 +19,11 @@ import { CaseRepository } from "../../src/core/cases/repository.js";
 import type { CaseRevision } from "../../src/core/cases/schema.js";
 import { resolveRunGroupPaths } from "../../src/core/run-groups/paths.js";
 import { RunGroupRepository } from "../../src/core/run-groups/repository.js";
-import { runGroupManifestSchema } from "../../src/core/run-groups/schema.js";
+import {
+  runGroupManifestSchema,
+  type RunGroupEvent,
+  type RunGroupManifest,
+} from "../../src/core/run-groups/schema.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
@@ -78,7 +82,25 @@ async function fixture(platforms: readonly Platform[] = allPlatforms) {
     projectRoot,
     config: projectConfig(platforms),
   });
-  return { projectRoot, cases: new CaseRepository(projectRoot, now) };
+  return { projectRoot, cases: new CaseRepository(projectRoot) };
+}
+
+async function readGroupManifest(
+  repository: RunGroupRepository,
+  runGroupId: string,
+): Promise<RunGroupManifest> {
+  return repository.readLocked(runGroupId, ({ manifest }) =>
+    Promise.resolve(manifest),
+  );
+}
+
+async function readGroupEvents(
+  repository: RunGroupRepository,
+  runGroupId: string,
+): Promise<RunGroupEvent[]> {
+  return repository.readLocked(runGroupId, ({ events }) =>
+    Promise.resolve(events),
+  );
 }
 
 function step(platform: Platform) {
@@ -217,7 +239,10 @@ describe("immutable run groups", () => {
 
     expect(started.manifest.id).not.toBe(crashedGroupId);
     await expect(
-      new RunGroupRepository(projectRoot, now).readManifest(crashedGroupId),
+      readGroupManifest(
+        new RunGroupRepository(projectRoot, now),
+        crashedGroupId,
+      ),
     ).rejects.toMatchObject({ code: "run_group.not_found" });
   });
 
@@ -433,7 +458,7 @@ describe("immutable run groups", () => {
       join(projectRoot, ".ai-qa", "run-groups"),
     );
     const repository = new RunGroupRepository(projectRoot, now);
-    const manifest = await repository.readManifest(runGroupId!);
+    const manifest = await readGroupManifest(repository, runGroupId!);
     const member = manifest.members[0]!;
     await writeIncompleteRepairManifest(projectRoot, member.runId);
     const groupEventsPath = resolveRunGroupPaths(
@@ -628,7 +653,8 @@ describe("immutable run groups", () => {
       confirmedAt: startedAt.toISOString(),
     });
 
-    const stored = await new RunGroupRepository(projectRoot, now).readManifest(
+    const stored = await readGroupManifest(
+      new RunGroupRepository(projectRoot, now),
       started.manifest.id,
     );
     expect(stored.members[0]).toMatchObject({
@@ -789,7 +815,8 @@ describe("immutable run groups", () => {
         readRunState({ projectRoot, runId: member.runId, now }),
       ).resolves.toMatchObject({ status: "cancelled" });
     }
-    const events = await new RunGroupRepository(projectRoot, now).readEvents(
+    const events = await readGroupEvents(
+      new RunGroupRepository(projectRoot, now),
       started.manifest.id,
     );
     expect(
@@ -837,7 +864,7 @@ describe("immutable run groups", () => {
     );
     expect(runGroupId).toMatch(/^run-group-/u);
     const repository = new RunGroupRepository(projectRoot, now);
-    const manifest = await repository.readManifest(runGroupId!);
+    const manifest = await readGroupManifest(repository, runGroupId!);
     expect(await readdir(join(projectRoot, ".ai-qa", "runs"))).toHaveLength(1);
     await expect(
       finishRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
@@ -865,7 +892,7 @@ describe("immutable run groups", () => {
         ),
       ).resolves.toEqual(member.workOrder);
     }
-    const events = await repository.readEvents(runGroupId!);
+    const events = await readGroupEvents(repository, runGroupId!);
     expect(
       events.filter((event) => event.payload.phase === "materialized"),
     ).toHaveLength(1);
@@ -894,7 +921,7 @@ describe("immutable run groups", () => {
     );
     expect(runGroupId).toMatch(/^run-group-/u);
     const repository = new RunGroupRepository(projectRoot, now);
-    const manifest = await repository.readManifest(runGroupId!);
+    const manifest = await readGroupManifest(repository, runGroupId!);
     const member = manifest.members[0]!;
     const groupEventsPath = resolveRunGroupPaths(
       projectRoot,
@@ -920,7 +947,7 @@ describe("immutable run groups", () => {
       access(join(projectRoot, ".ai-qa", "runs", member.runId)),
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect(
-      (await repository.readEvents(runGroupId!)).map(
+      (await readGroupEvents(repository, runGroupId!)).map(
         (event) => event.payload.phase,
       ),
     ).toEqual(["started"]);
@@ -969,19 +996,17 @@ describe("immutable run groups", () => {
         now,
       }),
     ).resolves.toMatchObject({ status: "cancelled" });
-    const manifest = await new RunGroupRepository(
-      projectRoot,
-      now,
-    ).readManifest(runGroupId!);
+    const groupRepository = new RunGroupRepository(projectRoot, now);
+    const manifest = await readGroupManifest(groupRepository, runGroupId!);
     for (const member of manifest.members) {
       await expect(
         readRunState({ projectRoot, runId: member.runId, now }),
       ).resolves.toMatchObject({ status: "cancelled" });
     }
     expect(
-      (
-        await new RunGroupRepository(projectRoot, now).readEvents(runGroupId!)
-      ).map((event) => event.payload.phase),
+      (await readGroupEvents(groupRepository, runGroupId!)).map(
+        (event) => event.payload.phase,
+      ),
     ).toEqual(["started", "materialized", "cancelled"]);
   });
 
@@ -1013,7 +1038,7 @@ describe("immutable run groups", () => {
         join(projectRoot, ".ai-qa", "run-groups"),
       );
       const repository = new RunGroupRepository(projectRoot, now);
-      const manifest = await repository.readManifest(runGroupId!);
+      const manifest = await readGroupManifest(repository, runGroupId!);
       const member = manifest.members[0]!;
       const residue = join(
         projectRoot,
@@ -1051,7 +1076,7 @@ describe("immutable run groups", () => {
             : ["events.jsonl", "work-order.json"],
       );
       expect(
-        (await repository.readEvents(runGroupId!)).map(
+        (await readGroupEvents(repository, runGroupId!)).map(
           (event) => event.payload.phase,
         ),
       ).toEqual(["started", "materialized"]);
@@ -1078,10 +1103,10 @@ describe("immutable run groups", () => {
     const [runGroupId] = await readdir(
       join(projectRoot, ".ai-qa", "run-groups"),
     );
-    const manifest = await new RunGroupRepository(
-      projectRoot,
-      now,
-    ).readManifest(runGroupId!);
+    const manifest = await readGroupManifest(
+      new RunGroupRepository(projectRoot, now),
+      runGroupId!,
+    );
     const finalDirectory = join(
       projectRoot,
       ".ai-qa",
@@ -1172,7 +1197,8 @@ describe("immutable run groups", () => {
       now,
     });
     const paths = resolveRunGroupPaths(projectRoot, started.manifest.id);
-    const events = (await new RunGroupRepository(projectRoot, now).readEvents(
+    const events = (await readGroupEvents(
+      new RunGroupRepository(projectRoot, now),
       started.manifest.id,
     )) as unknown as Array<Record<string, unknown>>;
     const payload = events[0]!.payload as Record<string, unknown>;
@@ -1183,7 +1209,8 @@ describe("immutable run groups", () => {
     );
 
     await expect(
-      new RunGroupRepository(projectRoot, now).readManifest(
+      readGroupManifest(
+        new RunGroupRepository(projectRoot, now),
         started.manifest.id,
       ),
     ).rejects.toMatchObject({ code: "run_group.integrity_error" });
@@ -1268,7 +1295,8 @@ describe("immutable run groups", () => {
     await rm(manifestPath);
     await symlink(outsideManifest, manifestPath);
     await expect(
-      new RunGroupRepository(projectRoot, now).readManifest(
+      readGroupManifest(
+        new RunGroupRepository(projectRoot, now),
         started.manifest.id,
       ),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });

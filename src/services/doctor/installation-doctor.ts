@@ -5,6 +5,7 @@ import { satisfies } from "semver";
 import { readStoredProjectConfig } from "../../core/config/repository.js";
 import type { ProjectConfig } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import { isNodeError } from "../../core/node-errors.js";
 import { checkGlobalSkill } from "../skill-management/global-skill.js";
 
 export type InstallationStatus = "ready" | "not_ready" | "uninitialized";
@@ -289,12 +290,4 @@ async function isReadableWritableDirectory(
   } catch {
     return false;
   }
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

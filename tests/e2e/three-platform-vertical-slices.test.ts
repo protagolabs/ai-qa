@@ -331,7 +331,7 @@ describe("recorded three-platform vertical slices", () => {
       "android-emulator",
     ]);
 
-    const cases = new CaseRepository(projectRoot, now);
+    const cases = new CaseRepository(projectRoot);
     const limited = await cases.createDraft({
       ...active,
       caseId: "login-limited",

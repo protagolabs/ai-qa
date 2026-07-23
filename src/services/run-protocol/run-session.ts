@@ -9,6 +9,7 @@ import {
   validateRunLifecycleHistory,
   type LifecycleEntry,
 } from "../../core/runs/lifecycle.js";
+import { appendInput } from "../../core/runs/journal.js";
 import { resolveRunPaths } from "../../core/runs/paths.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
@@ -346,18 +347,4 @@ function requireImmutablePlatform(
       { runId },
     );
   }
-}
-
-function appendInput(event: RunEvent): AppendRunEvent {
-  return {
-    type: event.type,
-    actor: event.actor,
-    platform: event.platform,
-    tool: event.tool,
-    ...(event.idempotencyKey === undefined
-      ? {}
-      : { idempotencyKey: event.idempotencyKey }),
-    payload: event.payload,
-    relatedIds: event.relatedIds,
-  } as AppendRunEvent;
 }

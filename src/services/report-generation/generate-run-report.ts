@@ -1,10 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-  calculateCaseContentHash,
-  calculatePlatformVariantHash,
-} from "../../core/cases/schema.js";
-import { CaseRepository } from "../../core/cases/repository.js";
 import { canonicalJson } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
 import type { ProjectConfig } from "../../core/config/schema.js";
@@ -38,7 +33,6 @@ import {
   runIdSchema,
   type ProjectSkillSnapshot,
   type RunEvent,
-  type WorkOrder,
 } from "../../core/runs/schema.js";
 import {
   blockerPayloadSchema,
@@ -48,6 +42,7 @@ import {
 import { REPORT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
+import { validatePinnedRegressionCase } from "../run-protocol/pinned-case.js";
 import { validateProtocolEvents } from "../run-protocol/run-protocol-service.js";
 import {
   effectiveVerdictFrom,
@@ -292,11 +287,7 @@ async function buildVerifiedRunReport(
         lifecycle.current.event,
       );
       if (workOrder.kind === "regression") {
-        await validatePinnedRegressionCase(
-          project.projectRoot,
-          workOrder,
-          input.now,
-        );
+        await validatePinnedRegressionCase(project.projectRoot, workOrder);
       }
       if (phase === "completed") {
         validateFinalization({
@@ -481,47 +472,6 @@ function validateTerminalVerdict(
       "run_protocol.integrity_error",
       "Completed lifecycle cannot use a cancellation verdict",
       { runId: terminal.runId },
-    );
-  }
-}
-
-async function validatePinnedRegressionCase(
-  projectRoot: string,
-  workOrder: WorkOrder,
-  now: () => Date,
-): Promise<void> {
-  const pinned = workOrder.pinnedCase;
-  if (pinned === undefined) {
-    throw new AiQaError(
-      "work_order.integrity_error",
-      "Regression work order is missing its pinned case",
-      { runId: workOrder.runId },
-    );
-  }
-  const revision = await new CaseRepository(projectRoot, now).validateRevision(
-    pinned.caseId,
-    pinned.revision,
-  );
-  const caseContentHash = calculateCaseContentHash(revision);
-  const platformVariantHash = calculatePlatformVariantHash(
-    revision,
-    workOrder.platform,
-  );
-  if (
-    pinned.caseContentHash !== caseContentHash ||
-    pinned.platformVariantHash !== platformVariantHash
-  ) {
-    throw new AiQaError(
-      "case.content_hash_mismatch",
-      "Pinned regression case or platform variant hash verification failed",
-      {
-        caseId: pinned.caseId,
-        revision: pinned.revision,
-        expectedCaseContentHash: pinned.caseContentHash,
-        actualCaseContentHash: caseContentHash,
-        expectedPlatformVariantHash: pinned.platformVariantHash,
-        actualPlatformVariantHash: platformVariantHash,
-      },
     );
   }
 }

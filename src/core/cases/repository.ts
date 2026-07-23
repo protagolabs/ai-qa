@@ -2,6 +2,7 @@ import { open, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
+import { CASE_INDEX_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
@@ -10,6 +11,7 @@ import {
   requireProjectLocalDirectory,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
+import { isNodeError } from "../node-errors.js";
 import {
   calculateCaseContentHash,
   caseIdSchema,
@@ -33,12 +35,7 @@ interface CasePaths {
 }
 
 export class CaseRepository {
-  constructor(
-    private readonly projectRoot: string,
-    now: () => Date,
-  ) {
-    void now;
-  }
+  constructor(private readonly projectRoot: string) {}
 
   async createDraft(
     input: Omit<CaseRevision, "revision" | "contentHash">,
@@ -249,6 +246,14 @@ export class CaseRepository {
     caseId: string,
     revision: number,
   ): Promise<CaseRevision> {
+    return (await this.validateRevisionAndIndex(caseId, revision)).revision;
+  }
+
+  private async validateRevisionAndIndex(
+    caseId: string,
+    revision: number,
+    existingIndex?: CaseIndex,
+  ): Promise<{ revision: CaseRevision; index: CaseIndex }> {
     caseId = caseIdSchema.parse(caseId);
     revision = z.number().int().positive().parse(revision);
     try {
@@ -257,7 +262,7 @@ export class CaseRepository {
       if (actualHash !== value.contentHash) {
         throw new Error("content hash mismatch");
       }
-      const index = await this.readIndex(caseId);
+      const index = existingIndex ?? (await this.readIndex(caseId));
       const indexed = index.revisions.find(
         (entry) => entry.revision === revision,
       );
@@ -268,46 +273,7 @@ export class CaseRepository {
           { caseId, revision },
         );
       }
-      return value;
-    } catch (error: unknown) {
-      if (
-        error instanceof AiQaError &&
-        (error.code === "case.revision_not_found" ||
-          error.code === "case.index_integrity_error" ||
-          error.code === "storage.integrity_error")
-      ) {
-        throw error;
-      }
-      throw new AiQaError(
-        "case.content_hash_mismatch",
-        "Case revision content hash verification failed",
-        { caseId, revision },
-      );
-    }
-  }
-
-  private async validateRevisionAgainstIndex(
-    caseId: string,
-    revision: number,
-    index: CaseIndex,
-  ): Promise<CaseRevision> {
-    try {
-      const value = await this.readRevision(caseId, revision);
-      const actualHash = calculateCaseContentHash(value);
-      if (actualHash !== value.contentHash) {
-        throw new Error("content hash mismatch");
-      }
-      const indexed = index.revisions.find(
-        (entry) => entry.revision === revision,
-      );
-      if (indexed === undefined || indexed.contentHash !== value.contentHash) {
-        throw new AiQaError(
-          "case.index_integrity_error",
-          "Case index does not match its immutable revision",
-          { caseId, revision },
-        );
-      }
-      return value;
+      return { revision: value, index };
     } catch (error: unknown) {
       if (
         error instanceof AiQaError &&
@@ -341,8 +307,9 @@ export class CaseRepository {
       "case.yaml",
     ]);
     return this.withCaseWriteLock(paths, undefined, async (preCommit) => {
-      const value = await this.validateRevision(caseId, revision);
-      const index = await this.readIndex(caseId);
+      const validated = await this.validateRevisionAndIndex(caseId, revision);
+      const value = validated.revision;
+      const index = validated.index;
       const target = index.revisions.find(
         (entry) => entry.revision === revision,
       );
@@ -399,11 +366,9 @@ export class CaseRepository {
         { caseId },
       );
     }
-    const revision = await this.validateRevisionAgainstIndex(
-      caseId,
-      index.activeRevision,
-      index,
-    );
+    const revision = (
+      await this.validateRevisionAndIndex(caseId, index.activeRevision, index)
+    ).revision;
     const active = index.revisions.find(
       (entry) => entry.revision === index.activeRevision,
     );
@@ -434,11 +399,13 @@ export class CaseRepository {
     for (const caseId of caseIds) {
       const index = await this.readIndex(caseId);
       if (index.activeRevision !== undefined) {
-        const revision = await this.validateRevisionAgainstIndex(
-          caseId,
-          index.activeRevision,
-          index,
-        );
+        const revision = (
+          await this.validateRevisionAndIndex(
+            caseId,
+            index.activeRevision,
+            index,
+          )
+        ).revision;
         const entry = index.revisions.find(
           (candidate) => candidate.revision === index.activeRevision,
         );
@@ -479,7 +446,7 @@ export class CaseRepository {
     preCommit: () => void,
   ): Promise<void> {
     const initial = caseIndexSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: CASE_INDEX_SCHEMA_VERSION,
       id: caseId,
       title,
       revisions: [],
@@ -605,12 +572,4 @@ export class CaseRepository {
 
 function isMissingStoragePath(error: AiQaError): boolean {
   return error.details.causeCode === "ENOENT";
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

@@ -9,6 +9,7 @@ import {
   type ProjectConfigV3,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import { isNodeError } from "../../core/node-errors.js";
 import { platformSchema, type Platform } from "../../core/platforms/schema.js";
 import {
   platformDoctorInputSchema,
@@ -202,12 +203,4 @@ async function storedConfigExists(projectRoot: string): Promise<boolean> {
   } catch (error: unknown) {
     return !isNodeError(error, "ENOENT");
   }
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

@@ -817,10 +817,7 @@ describe("case promotion", () => {
       iosDraft.variants["ios-simulator"],
     );
     await expect(
-      new CaseRepository(projectRoot, runNow).readRevision(
-        "login",
-        iosDraft.revision,
-      ),
+      new CaseRepository(projectRoot).readRevision("login", iosDraft.revision),
     ).resolves.toEqual(iosDraft);
   });
 
@@ -935,14 +932,10 @@ describe("case promotion", () => {
 
     try {
       await expect(
-        new CaseRepository(projectRoot, runNow).activate(
-          "symlinked-activation",
-          1,
-          {
-            confirmedBy: "user",
-            confirmedAt: "2026-07-13T00:10:00.000Z",
-          },
-        ),
+        new CaseRepository(projectRoot).activate("symlinked-activation", 1, {
+          confirmedBy: "user",
+          confirmedAt: "2026-07-13T00:10:00.000Z",
+        }),
       ).rejects.toMatchObject({ code: "storage.integrity_error" });
       await expect(
         access(join(outside, "case.yaml.lock")),
@@ -957,7 +950,7 @@ describe("case promotion", () => {
     await mkdir(join(projectRoot, ".ai-qa", "cases"), { recursive: true });
 
     await expect(
-      new CaseRepository(projectRoot, runNow).readActive("missing-case"),
+      new CaseRepository(projectRoot).readActive("missing-case"),
     ).rejects.toMatchObject({ code: "case.not_found" });
   });
 
@@ -971,10 +964,7 @@ describe("case promotion", () => {
     );
 
     await expect(
-      new CaseRepository(projectRoot, runNow).readRevision(
-        "missing-revision",
-        1,
-      ),
+      new CaseRepository(projectRoot).readRevision("missing-revision", 1),
     ).rejects.toMatchObject({ code: "case.revision_not_found" });
   });
 
@@ -993,7 +983,7 @@ describe("case promotion", () => {
     await symlink(outsideIndex, join(caseDirectory, "case.yaml"));
 
     await expect(
-      new CaseRepository(projectRoot, runNow).readActive("symlinked-index"),
+      new CaseRepository(projectRoot).readActive("symlinked-index"),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
   });
 
@@ -1013,10 +1003,7 @@ describe("case promotion", () => {
     await symlink(outsideRevision, join(revisions, "1.yaml"));
 
     await expect(
-      new CaseRepository(projectRoot, runNow).validateRevision(
-        "symlinked-revision",
-        1,
-      ),
+      new CaseRepository(projectRoot).validateRevision("symlinked-revision", 1),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
   });
 
@@ -1027,7 +1014,7 @@ describe("case promotion", () => {
     await symlink(outside, join(projectRoot, ".ai-qa", "cases"));
 
     await expect(
-      new CaseRepository(projectRoot, runNow).createDraft({
+      new CaseRepository(projectRoot).createDraft({
         schemaVersion: 2,
         caseId: "login-success",
         title: "Login succeeds",
@@ -1073,7 +1060,7 @@ describe("case promotion", () => {
 
   it("serializes concurrent creators through first-index bootstrap", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-case-concurrent-"));
-    const repository = new CaseRepository(projectRoot, runNow);
+    const repository = new CaseRepository(projectRoot);
     const input = {
       schemaVersion: 2 as const,
       caseId: "concurrent-case",
@@ -1130,7 +1117,7 @@ describe("case promotion", () => {
     const sync = vi
       .spyOn(prototype, "sync")
       .mockRejectedValueOnce(new Error("simulated index sync failure"));
-    const repository = new CaseRepository(projectRoot, runNow);
+    const repository = new CaseRepository(projectRoot);
     const input = {
       schemaVersion: 2 as const,
       caseId: "bootstrap-cleanup",
@@ -1199,7 +1186,7 @@ describe("case promotion", () => {
     );
     await mkdir(join(revisionPath, ".."), { recursive: true });
     await writeFile(revisionPath, "pre-existing-revision");
-    const repository = new CaseRepository(projectRoot, runNow);
+    const repository = new CaseRepository(projectRoot);
 
     await expect(
       repository.createDraft({
@@ -1778,7 +1765,7 @@ describe("case promotion", () => {
     const { projectRoot, plannedActionId } = await createCompletedPassRun({
       extraInteraction: true,
     });
-    const revision = await new CaseRepository(projectRoot, runNow).createDraft({
+    const revision = await new CaseRepository(projectRoot).createDraft({
       schemaVersion: 2,
       caseId: "forged-accounting",
       title: "Forged accounting",
@@ -1902,7 +1889,7 @@ describe("case promotion", () => {
       reviewConfirmed: true,
       now: runNow,
     });
-    const repository = new CaseRepository(projectRoot, runNow);
+    const repository = new CaseRepository(projectRoot);
     const indexPath = join(
       projectRoot,
       ".ai-qa",

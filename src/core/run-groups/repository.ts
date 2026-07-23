@@ -1,5 +1,6 @@
 import { lstat, mkdtemp, readFile, rename } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { RUN_GROUP_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import {
@@ -18,6 +19,7 @@ import {
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
+import { isNodeError } from "../node-errors.js";
 import { resolveRunGroupPaths } from "./paths.js";
 import {
   runGroupEventSchema,
@@ -62,7 +64,7 @@ export class RunGroupRepository {
       const stagingManifest = resolve(stagingDirectory, "group.json");
       const stagingEvents = resolve(stagingDirectory, "events.jsonl");
       const started = runGroupEventSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RUN_GROUP_SCHEMA_VERSION,
         id: createId("event"),
         runGroupId: manifest.id,
         sequence: 1,
@@ -104,14 +106,6 @@ export class RunGroupRepository {
       ).catch(() => undefined);
       throw error;
     }
-  }
-
-  async readManifest(runGroupIdInput: string): Promise<RunGroupManifest> {
-    return (await this.readVerifiedSnapshot(runGroupIdInput)).manifest;
-  }
-
-  async readEvents(runGroupIdInput: string): Promise<RunGroupEvent[]> {
-    return (await this.readVerifiedSnapshot(runGroupIdInput)).events;
   }
 
   async readLocked<T>(
@@ -198,7 +192,7 @@ export class RunGroupRepository {
       }
       await options.beforeAppend(snapshot.manifest);
       const event = runGroupEventSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RUN_GROUP_SCHEMA_VERSION,
         id: createId("event"),
         runGroupId,
         sequence: snapshot.events.length + 1,
@@ -257,7 +251,7 @@ export class RunGroupRepository {
         );
       }
       const event = runGroupEventSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RUN_GROUP_SCHEMA_VERSION,
         id: createId("event"),
         runGroupId,
         sequence: snapshot.events.length + 1,
@@ -461,13 +455,5 @@ function isMissingStoragePath(error: unknown): boolean {
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
       error.details.causeCode === "ENOENT")
-  );
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
   );
 }

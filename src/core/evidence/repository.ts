@@ -17,6 +17,7 @@ import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import { createId } from "../ids.js";
+import { isNodeError } from "../node-errors.js";
 import { controllerForPlatform } from "../platforms/registry.js";
 import {
   controllerSchema,
@@ -453,13 +454,5 @@ function invalidStorageRoot(path: string): AiQaError {
     "evidence.integrity_error",
     "Evidence storage roots must be real canonical directories",
     { path },
-  );
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
   );
 }

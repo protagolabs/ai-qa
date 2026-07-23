@@ -1,6 +1,7 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { AiQaError } from "../../core/errors.js";
+import { isNodeError } from "../../core/node-errors.js";
 
 export interface ResolveProjectRootInput {
   command: "init" | "clear" | "other";
@@ -23,14 +24,6 @@ async function exists(path: string): Promise<boolean> {
     }
     throw error;
   }
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }
 
 async function canonical(path: string): Promise<string> {
@@ -66,16 +59,9 @@ export async function resolveProjectRoot(
     return { root: configRoot, source: "config-ancestor" };
   }
   if (input.command !== "other") {
-    const gitRoot = await findAncestor(input.cwd, async (candidate) => {
-      const dotGit = join(candidate, ".git");
-      if (!(await exists(dotGit))) return false;
-      try {
-        await readFile(dotGit, "utf8");
-      } catch {
-        return true;
-      }
-      return true;
-    });
+    const gitRoot = await findAncestor(input.cwd, (candidate) =>
+      exists(join(candidate, ".git")),
+    );
     if (gitRoot !== undefined) return { root: gitRoot, source: "git-root" };
     throw new AiQaError(
       "project.explicit_required",

@@ -3,6 +3,7 @@ import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError, toErrorCause } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
+import { isRecord } from "../../core/node-errors.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
 import {
   controllerSchema,
@@ -29,6 +30,7 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
+import { appendInput } from "../../core/runs/journal.js";
 import {
   withRunSession,
   type ProtocolCommandResult,
@@ -491,20 +493,6 @@ function actionAppendInput(
     payload,
     relatedIds: payload.phase === "planned" ? [] : [payload.actionId],
   });
-}
-
-function appendInput(event: RunEvent): AppendRunEvent {
-  return {
-    actor: event.actor,
-    platform: event.platform,
-    tool: event.tool,
-    type: event.type,
-    ...(event.idempotencyKey === undefined
-      ? {}
-      : { idempotencyKey: event.idempotencyKey }),
-    payload: event.payload,
-    relatedIds: event.relatedIds,
-  } as AppendRunEvent;
 }
 
 function commandResult(
@@ -1087,8 +1075,4 @@ function idempotencyConflict(idempotencyKey: string): AiQaError {
     "Idempotency key was already used for a different event",
     { idempotencyKey },
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

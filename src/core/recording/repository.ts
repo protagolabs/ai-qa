@@ -1,11 +1,13 @@
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { RECORDING_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { writeJsonLines } from "../fs/json-lines.js";
 import { createId } from "../ids.js";
 import { isJsonValue } from "../json-value.js";
+import { isNodeError, isRecord } from "../node-errors.js";
 import {
   recordingArtifactSchema,
   recordingEventSchema,
@@ -61,10 +63,6 @@ function receiptPayload(event: RecordingEvent): RecordingReceiptInput {
 
 function idempotencyKeyForSubject(subject: ReportSubject): string {
   return `recording:${sha256Canonical(subject)}:v2`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function rawArtifactContradictsJournal(input: {
@@ -125,7 +123,7 @@ export function materializeRecordingArtifact(input: {
     throw new TypeError("Recording materialization requires a current event");
   }
   return recordingArtifactSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: RECORDING_SCHEMA_VERSION,
     subject,
     current: {
       eventId: current.eventId,
@@ -282,7 +280,7 @@ export class RecordingRepository {
     }
 
     const event = recordingEventSchema.parse({
-      schemaVersion: 2,
+      schemaVersion: RECORDING_SCHEMA_VERSION,
       eventId: createId("recording"),
       subject: this.subject,
       recordedAt: this.now().toISOString(),
@@ -373,12 +371,4 @@ function subjectDetails(
   return subject.kind === "run"
     ? { runId: subject.id }
     : { runGroupId: subject.id };
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

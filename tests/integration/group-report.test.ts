@@ -78,7 +78,7 @@ async function groupFixture(
     projectRoot,
     config: projectConfig([...selectedPlatforms], mode),
   });
-  const cases = new CaseRepository(projectRoot, now);
+  const cases = new CaseRepository(projectRoot);
   const revision = await cases.createDraft({
     schemaVersion: 2,
     caseId: "login",
@@ -321,7 +321,7 @@ async function allExclusionProjectSkillFixture() {
     projectRoot,
     config: projectConfig(["android-emulator"], "project-skill"),
   });
-  const cases = new CaseRepository(projectRoot, now);
+  const cases = new CaseRepository(projectRoot);
   const revision = await cases.createDraft({
     schemaVersion: 2,
     caseId: "web-only",

@@ -133,7 +133,7 @@ export async function draftCaseFromRun(input: {
     assertionStrategy: step.assertionStrategy,
     evidenceCheckpoints: step.evidenceCheckpoints,
   }));
-  const repository = new CaseRepository(input.projectRoot, () => new Date());
+  const repository = new CaseRepository(input.projectRoot);
   return repository.createDraftFromLatest(
     supplied.caseId,
     supplied.title,
@@ -175,7 +175,7 @@ export async function validateCaseRevision(input: {
   caseId: string;
   revision: number;
 }): Promise<CaseValidationResult> {
-  const repository = new CaseRepository(input.projectRoot, () => new Date());
+  const repository = new CaseRepository(input.projectRoot);
   const revision = await repository.validateRevision(
     input.caseId,
     input.revision,
@@ -283,7 +283,7 @@ export async function activateCaseRevision(input: {
     );
   }
   const confirmedAt = input.now().toISOString();
-  return new CaseRepository(input.projectRoot, input.now).activate(
+  return new CaseRepository(input.projectRoot).activate(
     input.caseId,
     input.revision,
     { confirmedBy: "user", confirmedAt },

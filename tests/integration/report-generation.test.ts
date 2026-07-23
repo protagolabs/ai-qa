@@ -276,7 +276,7 @@ async function completedRegressionRun(
   controller: Controller,
 ) {
   const project = await initializedProject(config({ platform }));
-  const cases = new CaseRepository(project.projectRoot, regressionEventNow);
+  const cases = new CaseRepository(project.projectRoot);
   const revision = await cases.createDraft({
     schemaVersion: 2,
     caseId: "platform-report",
@@ -1134,7 +1134,7 @@ describe("generateRunReport", () => {
 
   it("revalidates pinned regression case and platform variant hashes before writing", async () => {
     const project = await initializedProject(config());
-    const cases = new CaseRepository(project.projectRoot, eventNow);
+    const cases = new CaseRepository(project.projectRoot);
     const draft = await cases.createDraft({
       schemaVersion: 2,
       caseId: "login-success",

@@ -1,5 +1,6 @@
 import lockfile from "proper-lockfile";
 import { AiQaError } from "../errors.js";
+import { isNodeError } from "../node-errors.js";
 
 export type LockProfile = "hot" | "cold";
 
@@ -77,12 +78,4 @@ export function assertNotCompromised(signal: LockSignal, path: string): void {
       { path },
     );
   }
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

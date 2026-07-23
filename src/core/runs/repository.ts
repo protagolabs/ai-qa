@@ -10,6 +10,7 @@ import {
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
+import { isNodeError } from "../node-errors.js";
 import { RunJournal } from "./journal.js";
 import { resolveRunPaths } from "./paths.js";
 import {
@@ -252,13 +253,5 @@ function isMissingStoragePath(error: unknown): boolean {
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
       error.details.causeCode === "ENOENT")
-  );
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
   );
 }

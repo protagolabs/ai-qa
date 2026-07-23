@@ -39,6 +39,7 @@ import { startExploratoryRun } from "../../src/services/run-protocol/start-explo
 import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
+import { createEmptyRunJournal } from "../helpers/run-journal.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
 
@@ -402,24 +403,10 @@ describe("single-pass protocol validation parity", () => {
 });
 
 describe("run path confinement", () => {
-  it("rejects a symlinked runs root before creating a journal outside the project", async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-project-"));
-    const outside = await mkdtemp(join(tmpdir(), "ai-qa-journal-outside-"));
-    await mkdir(join(projectRoot, ".ai-qa"));
-    await symlink(outside, join(projectRoot, ".ai-qa", "runs"));
-
-    await expect(
-      RunJournal.create(projectRoot, "run-1", fixedNow),
-    ).rejects.toMatchObject({ code: "storage.integrity_error" });
-    await expect(access(join(outside, "run-1"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  });
-
   it("rejects a symlinked events file before reading outside the project", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-project-"));
     const outside = await mkdtemp(join(tmpdir(), "ai-qa-journal-outside-"));
-    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const journal = await createEmptyRunJournal(projectRoot, "run-1", fixedNow);
     const eventsPath = join(runDirectory(projectRoot), "events.jsonl");
     const outsideEvents = join(outside, "events.jsonl");
     await writeFile(outsideEvents, "");
@@ -449,9 +436,6 @@ describe("run path confinement", () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-path-"));
     const absolute = resolve(projectRoot, "outside-absolute");
     for (const unsafe of ["../outside", absolute, "..\\outside"]) {
-      await expect(
-        RunJournal.create(projectRoot, unsafe, fixedNow),
-      ).rejects.toBeDefined();
       expect(() => RunJournal.open(projectRoot, unsafe, fixedNow)).toThrow();
     }
 
@@ -831,7 +815,7 @@ describe("journal and start-anchor integrity", () => {
     ["malformed JSONL", () => "{\n"],
   ])("returns a stable error for %s", async (_name, tamper) => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-tamper-"));
-    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const journal = await createEmptyRunJournal(projectRoot, "run-1", fixedNow);
     const event = await journal.append({
       type: "observation",
       actor: "agent",
@@ -993,14 +977,6 @@ describe("recoverable exclusive run creation", () => {
   });
 
   it("creates journal and work-order files exclusively with mode 0600", async () => {
-    const journalRoot = await mkdtemp(
-      join(tmpdir(), "ai-qa-journal-exclusive-"),
-    );
-    await RunJournal.create(journalRoot, "run-1", fixedNow);
-    await expect(
-      RunJournal.create(journalRoot, "run-1", fixedNow),
-    ).rejects.toMatchObject({ code: "run_journal.already_exists" });
-
     const repositoryRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-mode-"));
     await createRepositoryRun(repositoryRoot);
     expect(
@@ -1019,7 +995,7 @@ describe("durable journal concurrency", () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-concurrent-journal-"),
     );
-    await RunJournal.create(projectRoot, "run-1", fixedNow);
+    await createEmptyRunJournal(projectRoot, "run-1", fixedNow);
     const left = RunJournal.open(projectRoot, "run-1", fixedNow);
     const right = RunJournal.open(projectRoot, "run-1", fixedNow);
 
@@ -1058,7 +1034,7 @@ describe("durable journal concurrency", () => {
 
   it("returns the original event for canonical-equal reordered retries", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-canonical-retry-"));
-    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const journal = await createEmptyRunJournal(projectRoot, "run-1", fixedNow);
     const first = await journal.append({
       type: "observation",
       actor: "agent",
@@ -1114,7 +1090,11 @@ describe("durable journal concurrency", () => {
     "rejects event payload %s without appending bytes",
     async (_name, invalid) => {
       const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-event-json-"));
-      const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+      const journal = await createEmptyRunJournal(
+        projectRoot,
+        "run-1",
+        fixedNow,
+      );
       const path = join(runDirectory(projectRoot), "events.jsonl");
 
       await expect(
@@ -1133,7 +1113,7 @@ describe("durable journal concurrency", () => {
 
   it("rejects cyclic event payloads without appending bytes", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-event-cycle-"));
-    const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
+    const journal = await createEmptyRunJournal(projectRoot, "run-1", fixedNow);
     const path = join(runDirectory(projectRoot), "events.jsonl");
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;

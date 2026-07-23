@@ -8,6 +8,7 @@ import {
   requireProjectLocalDirectory,
   requireProjectLocalRegularFile,
 } from "../fs/project-storage.js";
+import { isNodeError } from "../node-errors.js";
 import { projectConfigSchema, type ProjectConfig } from "./schema.js";
 
 function serialize(config: ProjectConfig): string {
@@ -94,12 +95,4 @@ export async function writeProjectConfig(
     "config.yaml",
   ]);
   await atomicWriteFile(path, serialize(config));
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

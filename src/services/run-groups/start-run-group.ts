@@ -29,6 +29,7 @@ import {
   type RunGroupMember,
 } from "../../core/run-groups/schema.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
+import { RUN_GROUP_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { prepareRegressionWorkOrder } from "../run-protocol/start-regression-run.js";
@@ -120,7 +121,7 @@ export async function startRunGroup(
     readiness.set(platform, value);
   }
 
-  const cases = new CaseRepository(project.projectRoot, input.now);
+  const cases = new CaseRepository(project.projectRoot);
   const projectSkill =
     config.recordingPolicy.mode === "project-skill"
       ? await readProjectSkillSnapshot(project.projectRoot)
@@ -192,7 +193,7 @@ export async function startRunGroup(
     { maxToolCalls: 0, maxRecoveryActions: 0 },
   );
   const manifest = runGroupManifestSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: RUN_GROUP_SCHEMA_VERSION,
     id: runGroupId,
     projectId: config.project.id,
     execution: input.execution,

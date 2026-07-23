@@ -12,11 +12,8 @@ import {
   type LifecycleEntry,
   type LifecyclePayload,
 } from "../../core/runs/lifecycle.js";
-import {
-  runIdSchema,
-  type AppendRunEvent,
-  type RunEvent,
-} from "../../core/runs/schema.js";
+import { appendInput } from "../../core/runs/journal.js";
+import { runIdSchema, type AppendRunEvent } from "../../core/runs/schema.js";
 import {
   verdictPayloadSchema,
   type VerdictPayload,
@@ -218,22 +215,6 @@ function cancellationVerdictAppend(
     idempotencyKey: `verdict:${sha256Canonical(payload)}`,
     payload,
     relatedIds: payload.supersedes === undefined ? [] : [payload.supersedes],
-  };
-}
-
-function appendInput(
-  event: Extract<RunEvent, { type: "verdict" }>,
-): AppendRunEvent {
-  return {
-    type: event.type,
-    actor: event.actor,
-    platform: event.platform,
-    tool: event.tool,
-    ...(event.idempotencyKey === undefined
-      ? {}
-      : { idempotencyKey: event.idempotencyKey }),
-    payload: event.payload,
-    relatedIds: event.relatedIds,
   };
 }
 

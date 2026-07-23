@@ -1,9 +1,4 @@
 import { AiQaError } from "../../core/errors.js";
-import { CaseRepository } from "../../core/cases/repository.js";
-import {
-  calculateCaseContentHash,
-  calculatePlatformVariantHash,
-} from "../../core/cases/schema.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
@@ -28,6 +23,7 @@ import {
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
 import { validatePassEvidenceFreshness } from "./evidence-semantics.js";
+import { validatePinnedRegressionCase } from "./pinned-case.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
 import {
   sessionCommandState,
@@ -116,7 +112,7 @@ export async function finalizeRun(input: {
       }
 
       if (workOrder.kind === "regression") {
-        await validatePinnedRegressionCase(input.projectRoot, workOrder, now);
+        await validatePinnedRegressionCase(input.projectRoot, workOrder);
       }
 
       const effective = lifecycle.effectiveVerdict;
@@ -297,48 +293,6 @@ export function validateFinalization(input: {
       {
         runId: input.workOrder.runId,
         deadline: input.workOrder.budget.deadline,
-      },
-    );
-  }
-}
-
-async function validatePinnedRegressionCase(
-  projectRoot: string,
-  workOrder: WorkOrder,
-  now: () => Date,
-): Promise<void> {
-  const pinned = workOrder.pinnedCase;
-  if (pinned === undefined) {
-    throw new AiQaError(
-      "work_order.integrity_error",
-      "Regression work order is missing its pinned case",
-      { runId: workOrder.runId },
-    );
-  }
-  const revision = await new CaseRepository(projectRoot, now).readRevision(
-    pinned.caseId,
-    pinned.revision,
-  );
-  const caseContentHash = calculateCaseContentHash(revision);
-  const platformVariantHash = calculatePlatformVariantHash(
-    revision,
-    workOrder.platform,
-  );
-  if (
-    revision.contentHash !== caseContentHash ||
-    pinned.caseContentHash !== caseContentHash ||
-    pinned.platformVariantHash !== platformVariantHash
-  ) {
-    throw new AiQaError(
-      "case.content_hash_mismatch",
-      "Pinned regression case or platform variant hash verification failed",
-      {
-        caseId: pinned.caseId,
-        revision: pinned.revision,
-        expectedCaseContentHash: pinned.caseContentHash,
-        actualCaseContentHash: caseContentHash,
-        expectedPlatformVariantHash: pinned.platformVariantHash,
-        actualPlatformVariantHash: platformVariantHash,
       },
     );
   }

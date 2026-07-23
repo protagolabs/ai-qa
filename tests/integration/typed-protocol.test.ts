@@ -11,7 +11,7 @@ import {
   runEventSchema,
   workOrderSchema,
 } from "../../src/core/runs/schema.js";
-import { controllerForPlatform } from "../../src/core/tools.js";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
 import { effectiveInteractionSuccesses } from "../../src/services/run-protocol/effective-interactions.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { planActionInputSchema } from "../../src/services/run-protocol/run-protocol-service.js";

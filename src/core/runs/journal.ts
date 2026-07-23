@@ -9,11 +9,9 @@ import {
   withLock,
   type LockSignal,
 } from "../fs/locking.js";
-import {
-  ensureProjectLocalDirectory,
-  requireProjectLocalRegularFile,
-} from "../fs/project-storage.js";
+import { requireProjectLocalRegularFile } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
+import { isNodeError } from "../node-errors.js";
 import { resolveRunPaths } from "./paths.js";
 import {
   runEventSchema,
@@ -21,7 +19,7 @@ import {
   type RunEvent,
 } from "./schema.js";
 
-function appendInput(event: RunEvent): AppendRunEvent {
+export function appendInput(event: RunEvent): AppendRunEvent {
   return {
     actor: event.actor,
     platform: event.platform,
@@ -42,32 +40,6 @@ export class RunJournal {
     private readonly runId: string,
     private readonly now: () => Date,
   ) {}
-
-  static async create(
-    projectRoot: string,
-    runId: string,
-    now: () => Date,
-  ): Promise<RunJournal> {
-    const paths = resolveRunPaths(projectRoot, runId);
-    await ensureProjectLocalDirectory(projectRoot, [".ai-qa", "runs", runId]);
-    let handle;
-    try {
-      handle = await open(paths.events, "wx", 0o600);
-      await handle.sync();
-    } catch (error: unknown) {
-      if (isNodeError(error, "EEXIST")) {
-        throw new AiQaError(
-          "run_journal.already_exists",
-          "Run journal already exists",
-          { runId },
-        );
-      }
-      throw error;
-    } finally {
-      await handle?.close();
-    }
-    return new RunJournal(projectRoot, paths.events, runId, now);
-  }
 
   static open(projectRoot: string, runId: string, now: () => Date): RunJournal {
     const paths = resolveRunPaths(projectRoot, runId);
@@ -325,13 +297,5 @@ function isMissingStoragePath(error: unknown): boolean {
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
       error.details.causeCode === "ENOENT")
-  );
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
   );
 }

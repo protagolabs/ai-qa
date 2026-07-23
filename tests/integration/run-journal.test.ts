@@ -33,6 +33,7 @@ import {
   projectConfig,
   projectSkillSource,
 } from "../helpers/project-fixture.js";
+import { createEmptyRunJournal } from "../helpers/run-journal.js";
 
 const config: ProjectConfig = {
   schemaVersion: 3,
@@ -122,7 +123,7 @@ async function createActiveRegressionCase(
   projectRoot: string,
   now: () => Date,
 ): Promise<void> {
-  const cases = new CaseRepository(projectRoot, now);
+  const cases = new CaseRepository(projectRoot);
   const revision = await cases.createDraft({
     schemaVersion: 2,
     caseId: "login-success",
@@ -264,7 +265,7 @@ describe("RunJournal", () => {
 
   it("preserves non-missing storage integrity failures before locked reads", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
@@ -286,7 +287,7 @@ describe("RunJournal", () => {
 
   it("preserves non-missing storage integrity failures before appends", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
@@ -319,7 +320,7 @@ describe("RunJournal", () => {
 
   it("preserves the cause when journal parsing fails", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
@@ -348,7 +349,7 @@ describe("RunJournal", () => {
     "surfaces filesystem failures as filesystem.operation_failed",
     async () => {
       const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-      const journal = await RunJournal.create(
+      const journal = await createEmptyRunJournal(
         projectRoot,
         "run-1",
         () => new Date("2026-07-13T00:00:00.000Z"),
@@ -377,7 +378,7 @@ describe("RunJournal", () => {
   it("persists newline-terminated replacements across journal instances", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
     const now = () => new Date("2026-07-13T00:00:00.000Z");
-    const journal = await RunJournal.create(projectRoot, "run-1", now);
+    const journal = await createEmptyRunJournal(projectRoot, "run-1", now);
     await journal.append({
       type: "run",
       actor: "ai-qa",
@@ -409,7 +410,7 @@ describe("RunJournal", () => {
 
   it("serializes sequence numbers and makes idempotent retries stable", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
@@ -437,7 +438,7 @@ describe("RunJournal", () => {
 
   it("rejects reuse of an idempotency key with different canonical input", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),
@@ -475,7 +476,7 @@ describe("RunJournal", () => {
 
   it("holds the journal lock across coordinated work and its append", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
-    const journal = await RunJournal.create(
+    const journal = await createEmptyRunJournal(
       projectRoot,
       "run-1",
       () => new Date("2026-07-13T00:00:00.000Z"),

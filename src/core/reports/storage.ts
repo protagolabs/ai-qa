@@ -2,6 +2,7 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 import { withLock, type LockSignal } from "../fs/locking.js";
+import { isNodeError } from "../node-errors.js";
 import { runGroupIdSchema } from "../run-groups/schema.js";
 import { runIdSchema } from "../runs/schema.js";
 
@@ -174,12 +175,4 @@ function reportDetails(
   return subject.kind === "run"
     ? { runId: subject.id }
     : { runGroupId: subject.id };
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

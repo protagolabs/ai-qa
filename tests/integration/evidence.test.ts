@@ -25,7 +25,7 @@ import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
-import { controllerForPlatform } from "../../src/core/tools.js";
+import { controllerForPlatform } from "../../src/core/platforms/registry.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";

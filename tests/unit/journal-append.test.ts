@@ -19,6 +19,7 @@ import {
   type RunEvent,
 } from "../../src/core/runs/schema.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
+import { createEmptyRunJournal } from "../helpers/run-journal.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -45,7 +46,7 @@ async function createJournal(runId = "run-journal-append"): Promise<{
   const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-append-"));
   projectRoots.push(projectRoot);
   await initializeTestProject({ projectRoot });
-  const journal = await RunJournal.create(projectRoot, runId, now);
+  const journal = await createEmptyRunJournal(projectRoot, runId, now);
   return {
     journal,
     eventsPath: join(projectRoot, ".ai-qa", "runs", runId, "events.jsonl"),

@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { AiQaError } from "../errors.js";
+import { isNodeError } from "../node-errors.js";
 import { syncDirectoryWhereSupported } from "./atomic-write.js";
 
 function validateSegments(segments: readonly string[]): void {
@@ -1371,12 +1372,4 @@ function nodeErrorCode(error: unknown): string | undefined {
     typeof (error as NodeJS.ErrnoException).code === "string"
     ? (error as NodeJS.ErrnoException).code
     : undefined;
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
 }

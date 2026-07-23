@@ -15,6 +15,7 @@ import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
+import { validatePinnedRegressionCase } from "../../src/services/run-protocol/pinned-case.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
@@ -79,7 +80,7 @@ async function createActiveCase(
         ? createProjectConfig(["web", "ios-simulator"])
         : config,
   });
-  const cases = new CaseRepository(projectRoot, now);
+  const cases = new CaseRepository(projectRoot);
   const revision = await cases.createDraft({
     schemaVersion: 2,
     caseId: "login-success",
@@ -1427,6 +1428,30 @@ describe("pinned regression replay", () => {
         actualCaseContentHash: calculateCaseContentHash(stored),
         expectedPlatformVariantHash: workOrder.pinnedCase!.platformVariantHash,
         actualPlatformVariantHash: calculatePlatformVariantHash(stored, "web"),
+      },
+    });
+  });
+
+  it("preserves content-hash normalization for a malformed pinned revision", async () => {
+    const fixture = await createActiveCase();
+    const { workOrder } = await startFixtureRun(fixture);
+    const revisionPath = join(
+      fixture.projectRoot,
+      ".ai-qa",
+      "cases",
+      "login-success",
+      "revisions",
+      `${String(fixture.revision.revision)}.yaml`,
+    );
+    await writeFile(revisionPath, "variants: [\n", "utf8");
+
+    await expect(
+      validatePinnedRegressionCase(fixture.projectRoot, workOrder),
+    ).rejects.toMatchObject({
+      code: "case.content_hash_mismatch",
+      details: {
+        caseId: "login-success",
+        revision: fixture.revision.revision,
       },
     });
   });
