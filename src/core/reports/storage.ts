@@ -1,7 +1,7 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { AiQaError } from "../errors.js";
+import { withLock, type LockSignal } from "../fs/locking.js";
 import { runGroupIdSchema } from "../run-groups/schema.js";
 import { runIdSchema } from "../runs/schema.js";
 
@@ -161,17 +161,9 @@ async function requireReportRegularFile(input: {
 
 export async function withRunReportLock<T>(
   directory: string,
-  operation: () => Promise<T>,
+  operation: (signal: LockSignal) => Promise<T>,
 ): Promise<T> {
-  const release = await lockfile.lock(directory, {
-    realpath: false,
-    retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-  });
-  try {
-    return await operation();
-  } finally {
-    await release();
-  }
+  return withLock(directory, "cold", operation);
 }
 
 export const withGroupReportLock = withRunReportLock;

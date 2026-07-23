@@ -1,10 +1,10 @@
 import { lstat, mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { serializeJsonLines } from "../fs/json-lines.js";
+import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -112,15 +112,12 @@ export class RunRepository {
         validated.runId,
         this.now,
       );
-      const release = await lockfile.lock(runsRoot, {
-        realpath: false,
-        retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-      });
-      try {
+      await withLock(runsRoot, "cold", async (signal) => {
         if (await pathExists(finalDirectory)) {
           throw runAlreadyExists(validated.runId);
         }
         try {
+          assertNotCompromised(signal, runsRoot);
           await rename(stagingDirectory, finalDirectory);
         } catch (error: unknown) {
           if (await pathExists(finalDirectory)) {
@@ -128,9 +125,7 @@ export class RunRepository {
           }
           throw error;
         }
-      } finally {
-        await release();
-      }
+      });
       return { journal, workOrderHash };
     } catch (error: unknown) {
       try {

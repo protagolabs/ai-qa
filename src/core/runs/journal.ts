@@ -1,9 +1,13 @@
 import { open } from "node:fs/promises";
-import lockfile from "proper-lockfile";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
+import {
+  assertNotCompromised,
+  withLock,
+  type LockSignal,
+} from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -113,35 +117,6 @@ export class RunJournal {
   async readLocked<T>(
     inspect: (events: readonly RunEvent[]) => T | Promise<T>,
   ): Promise<T> {
-    const release = await this.lock();
-    try {
-      return await inspect(await this.readAll());
-    } finally {
-      await release();
-    }
-  }
-
-  async appendPrepared<T>(
-    prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
-  ): Promise<T> {
-    const release = await this.lock();
-    try {
-      const events = await this.readAll();
-      const prepared = await prepare(events);
-      const timestamp = this.now().toISOString();
-      prepared.validateTimestamp?.(timestamp);
-      const event = await this.appendToSnapshot(
-        events,
-        prepared.input,
-        timestamp,
-      );
-      return prepared.resolve(event);
-    } finally {
-      await release();
-    }
-  }
-
-  private async lock(): Promise<() => Promise<void>> {
     try {
       await requireProjectLocalRegularFile(this.projectRoot, [
         ".ai-qa",
@@ -149,9 +124,37 @@ export class RunJournal {
         this.runId,
         "events.jsonl",
       ]);
-      return await lockfile.lock(this.path, {
-        realpath: false,
-        retries: { retries: 3, minTimeout: 50 },
+      return await withLock(this.path, "hot", async () =>
+        inspect(await this.readAll()),
+      );
+    } catch (error: unknown) {
+      if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
+      throw error;
+    }
+  }
+
+  async appendPrepared<T>(
+    prepare: (events: readonly RunEvent[]) => Promise<PreparedRunAppend<T>>,
+  ): Promise<T> {
+    try {
+      await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "runs",
+        this.runId,
+        "events.jsonl",
+      ]);
+      return await withLock(this.path, "hot", async (signal) => {
+        const events = await this.readAll();
+        const prepared = await prepare(events);
+        const timestamp = this.now().toISOString();
+        prepared.validateTimestamp?.(timestamp);
+        const event = await this.appendToSnapshot(
+          events,
+          prepared.input,
+          timestamp,
+          signal,
+        );
+        return prepared.resolve(event);
       });
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
@@ -184,6 +187,7 @@ export class RunJournal {
     events: RunEvent[],
     input: AppendRunEvent,
     timestamp: string,
+    signal: LockSignal,
   ): Promise<RunEvent> {
     const immutablePlatform = events[0]?.platform;
     if (
@@ -221,7 +225,9 @@ export class RunJournal {
       ...input,
     });
     const nextEvents = [...events, event];
-    await writeJsonLines(this.path, nextEvents);
+    await writeJsonLines(this.path, nextEvents, {
+      preCommit: () => assertNotCompromised(signal, this.path),
+    });
     events.push(event);
     return event;
   }

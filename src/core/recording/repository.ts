@@ -30,6 +30,10 @@ interface RecordingHistoryEntry {
   references: string[];
 }
 
+interface RecordingWriteOptions {
+  preCommit?: () => void;
+}
+
 const recordingHistoryFields = [
   "eventId",
   "recordedAt",
@@ -176,7 +180,7 @@ export class RecordingRepository {
     };
   }
 
-  async readOrRecoverUnlocked(): Promise<
+  async readOrRecoverUnlocked(options: RecordingWriteOptions = {}): Promise<
     | { state: "missing" }
     | {
         state: "present";
@@ -201,7 +205,7 @@ export class RecordingRepository {
       events,
     });
     if (artifactContent === undefined) {
-      await this.writeArtifact(expected);
+      await this.writeArtifact(expected, options);
       return { state: "present", events, artifact: expected };
     }
 
@@ -209,7 +213,7 @@ export class RecordingRepository {
     try {
       rawArtifact = JSON.parse(artifactContent);
     } catch {
-      await this.writeArtifact(expected);
+      await this.writeArtifact(expected, options);
       return { state: "present", events, artifact: expected };
     }
     if (
@@ -223,7 +227,7 @@ export class RecordingRepository {
     }
     const parsedArtifact = recordingArtifactSchema.safeParse(rawArtifact);
     if (!parsedArtifact.success) {
-      await this.writeArtifact(expected);
+      await this.writeArtifact(expected, options);
       return { state: "present", events, artifact: expected };
     }
     const artifact = parsedArtifact.data;
@@ -237,19 +241,22 @@ export class RecordingRepository {
     });
     if (classification === "conflict") throw this.integrityError();
     if (classification === "recoverable") {
-      await this.writeArtifact(expected);
+      await this.writeArtifact(expected, options);
       return { state: "present", events, artifact: expected };
     }
     return { state: "present", events, artifact };
   }
 
-  async registerUnlocked(receipt: RecordingReceiptInput): Promise<{
+  async registerUnlocked(
+    receipt: RecordingReceiptInput,
+    options: RecordingWriteOptions = {},
+  ): Promise<{
     event: RecordingEvent;
     artifact: RecordingArtifact;
     replayed: boolean;
   }> {
     receipt = recordingReceiptInputSchema.parse(receipt);
-    const existingState = await this.readOrRecoverUnlocked();
+    const existingState = await this.readOrRecoverUnlocked(options);
     const events =
       existingState.state === "missing" ? [] : existingState.events;
     const existing = events.find(
@@ -287,8 +294,8 @@ export class RecordingRepository {
       subject: this.subject,
       events: nextEvents,
     });
-    await writeJsonLines(this.paths.journal, nextEvents);
-    await this.writeArtifact(artifact);
+    await writeJsonLines(this.paths.journal, nextEvents, options);
+    await this.writeArtifact(artifact, options);
     return { event, artifact, replayed: false };
   }
 
@@ -340,10 +347,14 @@ export class RecordingRepository {
     }
   }
 
-  private writeArtifact(artifact: RecordingArtifact): Promise<void> {
+  private writeArtifact(
+    artifact: RecordingArtifact,
+    options: RecordingWriteOptions,
+  ): Promise<void> {
     return atomicWriteFile(
       this.paths.artifact,
       `${JSON.stringify(artifact, null, 2)}\n`,
+      options,
     );
   }
 

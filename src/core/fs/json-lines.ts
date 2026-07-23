@@ -11,8 +11,9 @@ export function serializeJsonLines(records: readonly unknown[]): string {
 export function writeJsonLines(
   path: string,
   records: readonly unknown[],
+  options: { preCommit?: () => void } = {},
 ): Promise<void> {
-  return atomicWriteFile(path, serializeJsonLines(records));
+  return atomicWriteFile(path, serializeJsonLines(records), options);
 }
 
 export async function readJsonLines<T>(

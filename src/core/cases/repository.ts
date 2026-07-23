@@ -1,10 +1,10 @@
 import { open, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
+import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalDirectory,
@@ -53,8 +53,9 @@ export class CaseRepository {
     ]);
     return this.withCaseWriteLock(
       paths,
-      () => this.ensureIndex(paths.index, caseId, input.title),
-      async () => {
+      (preCommit) =>
+        this.ensureIndex(paths.index, caseId, input.title, preCommit),
+      async (preCommit) => {
         let revisionPath: string | undefined;
         let ownsRevision = false;
         try {
@@ -71,9 +72,14 @@ export class CaseRepository {
             contentHash: calculateCaseContentHash(candidate),
           });
           revisionPath = this.revisionPath(paths, revision);
-          await this.writeRevisionOnce(revisionPath, value, () => {
-            ownsRevision = true;
-          });
+          await this.writeRevisionOnce(
+            revisionPath,
+            value,
+            () => {
+              ownsRevision = true;
+            },
+            preCommit,
+          );
           await atomicWriteFile(
             paths.index,
             stringify(
@@ -91,6 +97,7 @@ export class CaseRepository {
               }),
               { sortMapEntries: true },
             ),
+            { preCommit },
           );
           revisionPath = undefined;
           return value;
@@ -125,8 +132,9 @@ export class CaseRepository {
     ]);
     return this.withCaseWriteLock(
       paths,
-      () => this.ensureIndex(paths.index, caseId, initialTitle),
-      async () => {
+      (preCommit) =>
+        this.ensureIndex(paths.index, caseId, initialTitle, preCommit),
+      async (preCommit) => {
         let revisionPath: string | undefined;
         let ownsRevision = false;
         try {
@@ -163,9 +171,14 @@ export class CaseRepository {
             contentHash: calculateCaseContentHash(candidate),
           });
           revisionPath = this.revisionPath(paths, revision);
-          await this.writeRevisionOnce(revisionPath, value, () => {
-            ownsRevision = true;
-          });
+          await this.writeRevisionOnce(
+            revisionPath,
+            value,
+            () => {
+              ownsRevision = true;
+            },
+            preCommit,
+          );
           await atomicWriteFile(
             paths.index,
             stringify(
@@ -183,6 +196,7 @@ export class CaseRepository {
               }),
               { sortMapEntries: true },
             ),
+            { preCommit },
           );
           revisionPath = undefined;
           return value;
@@ -326,7 +340,7 @@ export class CaseRepository {
       caseId,
       "case.yaml",
     ]);
-    return this.withCaseWriteLock(paths, undefined, async () => {
+    return this.withCaseWriteLock(paths, undefined, async (preCommit) => {
       const value = await this.validateRevision(caseId, revision);
       const index = await this.readIndex(caseId);
       const target = index.revisions.find(
@@ -369,6 +383,7 @@ export class CaseRepository {
       await atomicWriteFile(
         paths.index,
         stringify(next, { sortMapEntries: true }),
+        { preCommit },
       );
       return value;
     });
@@ -461,6 +476,7 @@ export class CaseRepository {
     path: string,
     caseId: string,
     title: string,
+    preCommit: () => void,
   ): Promise<void> {
     const initial = caseIndexSchema.parse({
       schemaVersion: 1,
@@ -473,6 +489,7 @@ export class CaseRepository {
     let failed = false;
     let failure: unknown;
     try {
+      preCommit();
       handle = await open(path, "wx", 0o600);
       ownsIndex = true;
       await handle.writeFile(
@@ -501,27 +518,20 @@ export class CaseRepository {
 
   private async withCaseWriteLock<T>(
     paths: CasePaths,
-    initialize: (() => Promise<void>) | undefined,
-    operation: () => Promise<T>,
+    initialize: ((preCommit: () => void) => Promise<void>) | undefined,
+    operation: (preCommit: () => void) => Promise<T>,
   ): Promise<T> {
-    const releaseDirectory = await lockfile.lock(paths.directory, {
-      realpath: false,
-      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
+    return withLock(paths.directory, "cold", async (directorySignal) => {
+      await initialize?.(() =>
+        assertNotCompromised(directorySignal, paths.directory),
+      );
+      return withLock(paths.index, "cold", async (indexSignal) =>
+        operation(() => {
+          assertNotCompromised(directorySignal, paths.directory);
+          assertNotCompromised(indexSignal, paths.index);
+        }),
+      );
     });
-    try {
-      await initialize?.();
-      const releaseIndex = await lockfile.lock(paths.index, {
-        realpath: false,
-        retries: { retries: 3, minTimeout: 50 },
-      });
-      try {
-        return await operation();
-      } finally {
-        await releaseIndex();
-      }
-    } finally {
-      await releaseDirectory();
-    }
   }
 
   private async readIndex(caseId: string): Promise<CaseIndex> {
@@ -566,9 +576,11 @@ export class CaseRepository {
     path: string,
     revision: CaseRevision,
     onCreate: () => void,
+    preCommit: () => void,
   ): Promise<void> {
     let handle;
     try {
+      preCommit();
       handle = await open(path, "wx", 0o600);
       onCreate();
       await handle.writeFile(

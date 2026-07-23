@@ -10,12 +10,12 @@ import {
   rm,
 } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import lockfile from "proper-lockfile";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
+import { assertNotCompromised, withLock } from "../fs/locking.js";
 import { createId } from "../ids.js";
 import { controllerForPlatform } from "../platforms/registry.js";
 import {
@@ -148,91 +148,84 @@ export class EvidenceRepository {
     }
     await this.ensureStorageRoots();
     await this.ensureIndex();
-    const release = await lockfile.lock(this.paths.index, {
-      realpath: false,
-      retries: {
-        retries: 10,
-        factor: 1.5,
-        minTimeout: 50,
-        maxTimeout: 250,
-      },
-    });
+    return withLock(this.paths.index, "cold", async (signal) => {
+      let copiedPath: string | undefined;
+      let ownsCopiedPath = false;
+      try {
+        const records = await this.readAll();
+        const sourceHash = sha256(await readFile(input.sourcePath));
+        const existing = records.find(
+          (record) => record.idempotencyKey === input.idempotencyKey,
+        );
+        if (existing !== undefined) {
+          const requested = {
+            mediaType: input.mediaType,
+            sourceTool: input.sourceTool,
+            sensitivity: input.sensitivity,
+            evidenceKinds: input.evidenceKinds,
+            captureActionId: input.captureActionId,
+            idempotencyKey: input.idempotencyKey,
+            contentHash: sourceHash,
+            platform: this.platform,
+          };
+          if (
+            canonicalJson(persistedInput(existing)) === canonicalJson(requested)
+          ) {
+            await this.verifyRecord(existing);
+            return existing;
+          }
+          throw new AiQaError(
+            "evidence.idempotency_conflict",
+            "Evidence idempotency key was already used for different input",
+            { idempotencyKey: input.idempotencyKey },
+          );
+        }
 
-    let copiedPath: string | undefined;
-    let ownsCopiedPath = false;
-    try {
-      const records = await this.readAll();
-      const sourceHash = sha256(await readFile(input.sourcePath));
-      const existing = records.find(
-        (record) => record.idempotencyKey === input.idempotencyKey,
-      );
-      if (existing !== undefined) {
-        const requested = {
+        const id = createId("evidence");
+        const fileName = `${id}-${sanitizeBasename(input.sourcePath)}`;
+        copiedPath = requireDescendant(
+          this.paths.root,
+          resolve(this.paths.files, fileName),
+        );
+        assertNotCompromised(signal, this.paths.index);
+        await copyFile(input.sourcePath, copiedPath, constants.COPYFILE_EXCL);
+        ownsCopiedPath = true;
+        const contentHash = sha256(await readFile(copiedPath));
+        const record = evidenceRecordSchema.parse({
+          schemaVersion: EVIDENCE_SCHEMA_VERSION,
+          id,
+          runId: this.runId,
+          projectRelativePath: relative(this.projectRoot, copiedPath)
+            .split(sep)
+            .join("/"),
+          contentHash,
           mediaType: input.mediaType,
+          platform: this.platform,
           sourceTool: input.sourceTool,
+          capturedAt: this.now().toISOString(),
+          classification: "raw",
           sensitivity: input.sensitivity,
           evidenceKinds: input.evidenceKinds,
           captureActionId: input.captureActionId,
           idempotencyKey: input.idempotencyKey,
-          contentHash: sourceHash,
-          platform: this.platform,
-        };
-        if (
-          canonicalJson(persistedInput(existing)) === canonicalJson(requested)
-        ) {
-          await this.verifyRecord(existing);
-          return existing;
-        }
-        throw new AiQaError(
-          "evidence.idempotency_conflict",
-          "Evidence idempotency key was already used for different input",
-          { idempotencyKey: input.idempotencyKey },
-        );
-      }
+        });
 
-      const id = createId("evidence");
-      const fileName = `${id}-${sanitizeBasename(input.sourcePath)}`;
-      copiedPath = requireDescendant(
-        this.paths.root,
-        resolve(this.paths.files, fileName),
-      );
-      await copyFile(input.sourcePath, copiedPath, constants.COPYFILE_EXCL);
-      ownsCopiedPath = true;
-      const contentHash = sha256(await readFile(copiedPath));
-      const record = evidenceRecordSchema.parse({
-        schemaVersion: EVIDENCE_SCHEMA_VERSION,
-        id,
-        runId: this.runId,
-        projectRelativePath: relative(this.projectRoot, copiedPath)
-          .split(sep)
-          .join("/"),
-        contentHash,
-        mediaType: input.mediaType,
-        platform: this.platform,
-        sourceTool: input.sourceTool,
-        capturedAt: this.now().toISOString(),
-        classification: "raw",
-        sensitivity: input.sensitivity,
-        evidenceKinds: input.evidenceKinds,
-        captureActionId: input.captureActionId,
-        idempotencyKey: input.idempotencyKey,
-      });
-
-      await writeJsonLines(this.paths.index, [...records, record]);
-      ownsCopiedPath = false;
-      return record;
-    } catch (error: unknown) {
-      if (copiedPath !== undefined && ownsCopiedPath) {
-        try {
-          await rm(copiedPath);
-        } catch {
-          // Preserve the registration failure.
+        await writeJsonLines(this.paths.index, [...records, record], {
+          preCommit: () => assertNotCompromised(signal, this.paths.index),
+        });
+        ownsCopiedPath = false;
+        return record;
+      } catch (error: unknown) {
+        if (copiedPath !== undefined && ownsCopiedPath) {
+          try {
+            await rm(copiedPath);
+          } catch {
+            // Preserve the registration failure.
+          }
         }
+        throw error;
       }
-      throw error;
-    } finally {
-      await release();
-    }
+    });
   }
 
   async readAll(): Promise<EvidenceRecord[]> {

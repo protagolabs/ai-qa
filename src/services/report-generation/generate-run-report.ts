@@ -12,6 +12,10 @@ import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
+import {
+  assertNotCompromised,
+  type LockSignal,
+} from "../../core/fs/locking.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
 import { runReportSchema, type RunReport } from "../../core/reports/schema.js";
 import {
@@ -101,7 +105,7 @@ export async function generateRunReport(
     runId: input.runId,
     create: true,
   });
-  await withRunReportLock(directory, async () => {
+  await withRunReportLock(directory, async (signal) => {
     const configuredFilenames = [
       ...(paths.jsonPath === undefined ? [] : (["report.json"] as const)),
       ...(paths.markdownPath === undefined ? [] : (["report.md"] as const)),
@@ -117,10 +121,18 @@ export async function generateRunReport(
     );
     const writes: Promise<void>[] = [];
     if (paths.jsonPath !== undefined) {
-      writes.push(atomicWriteFile(resolve(directory, "report.json"), json));
+      writes.push(
+        atomicWriteFile(resolve(directory, "report.json"), json, {
+          preCommit: () => assertNotCompromised(signal, directory),
+        }),
+      );
     }
     if (paths.markdownPath !== undefined) {
-      writes.push(atomicWriteFile(resolve(directory, "report.md"), markdown));
+      writes.push(
+        atomicWriteFile(resolve(directory, "report.md"), markdown, {
+          preCommit: () => assertNotCompromised(signal, directory),
+        }),
+      );
     }
     await Promise.all(writes);
   });
@@ -161,7 +173,10 @@ export async function exportProjectLocalRunReport(
 
 export async function withVerifiedGeneratedRunReport<T>(
   input: ReportOperationInput,
-  operation: (verified: VerifiedGeneratedRunReport) => Promise<T>,
+  operation: (
+    verified: VerifiedGeneratedRunReport,
+    signal: LockSignal,
+  ) => Promise<T>,
 ): Promise<T> {
   const verified = await buildVerifiedRunReport(input);
   const paths = reportPaths(input.runId, verified.config);
@@ -170,7 +185,7 @@ export async function withVerifiedGeneratedRunReport<T>(
     runId: input.runId,
     create: false,
   });
-  return withRunReportLock(directory, async () => {
+  return withRunReportLock(directory, async (signal) => {
     let persistedJson: RunReport | undefined;
     if (paths.jsonPath !== undefined) {
       const path = await requireRunReportRegularFile({
@@ -209,7 +224,7 @@ export async function withVerifiedGeneratedRunReport<T>(
         throw reportIntegrityError(input.runId, paths.markdownPath);
       }
     }
-    return operation({ ...verified, directory, paths });
+    return operation({ ...verified, directory, paths }, signal);
   });
 }
 

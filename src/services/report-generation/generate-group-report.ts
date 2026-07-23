@@ -6,6 +6,10 @@ import type { ProjectConfig } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import {
+  assertNotCompromised,
+  type LockSignal,
+} from "../../core/fs/locking.js";
+import {
   runGroupReportSchema,
   type RunGroupReport,
   type RunGroupReportCell,
@@ -68,7 +72,7 @@ export async function generateRunGroupReport(
     runGroupId: input.runGroupId,
     create: true,
   });
-  await withGroupReportLock(directory, async () => {
+  await withGroupReportLock(directory, async (signal) => {
     const filenames = [
       ...(paths.jsonPath === undefined ? [] : (["report.json"] as const)),
       ...(paths.markdownPath === undefined ? [] : (["report.md"] as const)),
@@ -88,6 +92,9 @@ export async function generateRunGroupReport(
         atomicWriteFile(
           resolve(directory, "report.json"),
           `${JSON.stringify(verified.report, null, 2)}\n`,
+          {
+            preCommit: () => assertNotCompromised(signal, directory),
+          },
         ),
       );
     }
@@ -96,6 +103,9 @@ export async function generateRunGroupReport(
         atomicWriteFile(
           resolve(directory, "report.md"),
           renderRunGroupReportMarkdown(verified.report),
+          {
+            preCommit: () => assertNotCompromised(signal, directory),
+          },
         ),
       );
     }
@@ -120,7 +130,10 @@ export async function exportProjectLocalGroupReport(
 
 export async function withVerifiedGeneratedRunGroupReport<T>(
   input: GroupReportOperationInput,
-  operation: (verified: VerifiedGeneratedRunGroupReport) => Promise<T>,
+  operation: (
+    verified: VerifiedGeneratedRunGroupReport,
+    signal: LockSignal,
+  ) => Promise<T>,
 ): Promise<T> {
   const verified = await buildVerifiedRunGroupReport(input);
   const paths = groupReportPaths(input.runGroupId, verified.config);
@@ -129,7 +142,7 @@ export async function withVerifiedGeneratedRunGroupReport<T>(
     runGroupId: input.runGroupId,
     create: false,
   });
-  return withGroupReportLock(directory, async () => {
+  return withGroupReportLock(directory, async (signal) => {
     let persistedJson: RunGroupReport | undefined;
     if (paths.jsonPath !== undefined) {
       const path = await requireGroupReportRegularFile({
@@ -168,7 +181,7 @@ export async function withVerifiedGeneratedRunGroupReport<T>(
         throw groupReportIntegrityError(input.runGroupId, paths.markdownPath);
       }
     }
-    return operation({ ...verified, directory, paths });
+    return operation({ ...verified, directory, paths }, signal);
   });
 }
 

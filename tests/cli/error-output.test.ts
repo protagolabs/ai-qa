@@ -8,7 +8,10 @@ import { createCliTestContext } from "../helpers/cli-context.js";
 describe("error output contract", () => {
   it("reports unknown subcommands with commander's own message", async () => {
     const context = createCliTestContext();
-    const exitCode = await runCli(["definitely-not-a-command"], context.context);
+    const exitCode = await runCli(
+      ["definitely-not-a-command"],
+      context.context,
+    );
     expect(exitCode).toBe(1);
     const payload = JSON.parse(context.stderr.join("")) as {
       error: { code: string; message: string };
@@ -32,7 +35,17 @@ describe("error output contract", () => {
   it("emits issues for top-level option validation failures", async () => {
     const context = createCliTestContext();
     const exitCode = await runCli(
-      ["run", "start", "--kind", "bogus", "--platform", "web", "--execution", "local", "--stdin-json"],
+      [
+        "run",
+        "start",
+        "--kind",
+        "bogus",
+        "--platform",
+        "web",
+        "--execution",
+        "local",
+        "--stdin-json",
+      ],
       context.context,
     );
     expect(exitCode).toBe(1);
@@ -49,19 +62,24 @@ describe("error output contract", () => {
     const context = createCliTestContext();
     writeErrorJson(
       context.context,
-      new AiQaError("storage.lock_contended", "Lock is contended", {
-        path: "/tmp/x",
-      }, { retryable: true }),
+      new AiQaError(
+        "storage.lock_contended",
+        "Lock is contended",
+        {
+          path: "/tmp/x",
+        },
+        { retryable: true },
+      ),
     );
     writeErrorJson(context.context, new AiQaError("run.not_found", "Missing"));
     const [retryableLine, plainLine] = context.stderr;
-    expect(JSON.parse(retryableLine!).error).toEqual({
+    expect((JSON.parse(retryableLine!) as { error: unknown }).error).toEqual({
       code: "storage.lock_contended",
       message: "Lock is contended",
       retryable: true,
       details: { path: "/tmp/x" },
     });
-    expect(JSON.parse(plainLine!).error).toEqual({
+    expect((JSON.parse(plainLine!) as { error: unknown }).error).toEqual({
       code: "run.not_found",
       message: "Missing",
     });

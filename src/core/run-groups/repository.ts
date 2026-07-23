@@ -1,9 +1,9 @@
 import { mkdir, open, readFile, rm } from "node:fs/promises";
-import lockfile from "proper-lockfile";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { atomicWriteFile } from "../fs/atomic-write.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
+import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -105,15 +105,9 @@ export class RunGroupRepository {
       runGroupId,
       "events.jsonl",
     ]);
-    const release = await lockfile.lock(paths.events, {
-      realpath: false,
-      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-    });
-    try {
-      return await operation(await this.readVerifiedSnapshot(runGroupId));
-    } finally {
-      await release();
-    }
+    return withLock(paths.events, "cold", async () =>
+      operation(await this.readVerifiedSnapshot(runGroupId)),
+    );
   }
 
   async transition(
@@ -132,11 +126,7 @@ export class RunGroupRepository {
       runGroupId,
       "events.jsonl",
     ]);
-    const release = await lockfile.lock(paths.events, {
-      realpath: false,
-      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-    });
-    try {
+    return withLock(paths.events, "cold", async (signal) => {
       const snapshot = await this.readVerifiedSnapshot(runGroupId);
       const terminal = snapshot.events.at(-1);
       if (terminal?.payload.phase === phase) {
@@ -198,11 +188,11 @@ export class RunGroupRepository {
             : { phase, reason: reason as string },
         relatedIds: snapshot.manifest.members.map((member) => member.runId),
       });
-      await writeJsonLines(paths.events, [...snapshot.events, event]);
+      await writeJsonLines(paths.events, [...snapshot.events, event], {
+        preCommit: () => assertNotCompromised(signal, paths.events),
+      });
       return { event, manifest: snapshot.manifest };
-    } finally {
-      await release();
-    }
+    });
   }
 
   async materialize(
@@ -220,11 +210,7 @@ export class RunGroupRepository {
       runGroupId,
       "events.jsonl",
     ]);
-    const release = await lockfile.lock(paths.events, {
-      realpath: false,
-      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 },
-    });
-    try {
+    return withLock(paths.events, "cold", async (signal) => {
       const snapshot = await this.readVerifiedSnapshot(runGroupId);
       const latest = snapshot.events.at(-1);
       const allowCreate =
@@ -256,11 +242,11 @@ export class RunGroupRepository {
         payload: { phase: "materialized" },
         relatedIds: snapshot.manifest.members.map((member) => member.runId),
       });
-      await writeJsonLines(paths.events, [...snapshot.events, event]);
+      await writeJsonLines(paths.events, [...snapshot.events, event], {
+        preCommit: () => assertNotCompromised(signal, paths.events),
+      });
       return { event, manifest: snapshot.manifest };
-    } finally {
-      await release();
-    }
+    });
   }
 
   private async readVerifiedSnapshot(runGroupIdInput: string): Promise<{

@@ -1505,7 +1505,6 @@ describe("verdict and lifecycle CLI", () => {
       expected: {
         code: "internal.unexpected_error",
         message: "An unexpected internal error occurred",
-        details: {},
       },
     },
   ])(

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 export async function atomicWriteFile(
   path: string,
   content: string,
+  options: { preCommit?: () => void } = {},
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
@@ -15,6 +16,7 @@ export async function atomicWriteFile(
     await handle.sync();
     await handle.close();
     closed = true;
+    options.preCommit?.();
     await rename(temporaryPath, path);
   } catch (error: unknown) {
     if (!closed) {

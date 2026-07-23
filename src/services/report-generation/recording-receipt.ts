@@ -1,4 +1,5 @@
 import { AiQaError } from "../../core/errors.js";
+import { assertNotCompromised } from "../../core/fs/locking.js";
 import { RecordingRepository } from "../../core/recording/repository.js";
 import {
   recordingReceiptInputSchema,
@@ -42,6 +43,7 @@ interface VerifiedRecordingSubject {
   directory: string;
   recordingMode: "local-only" | "project-skill";
   projectSkill?: ProjectSkillSnapshot;
+  preCommit: () => void;
 }
 
 export async function registerRecordingReceipt(
@@ -56,12 +58,13 @@ export async function registerRecordingReceipt(
     input.receipt,
     input.now,
     (operation) =>
-      withVerifiedGeneratedRunReport(input, (verified) =>
+      withVerifiedGeneratedRunReport(input, (verified, signal) =>
         operation({
           subject: { kind: "run", id: input.runId },
           projectRoot: verified.projectRoot,
           directory: verified.directory,
           recordingMode: verified.recordingMode,
+          preCommit: () => assertNotCompromised(signal, verified.directory),
           ...(verified.projectSkill === undefined
             ? {}
             : { projectSkill: verified.projectSkill }),
@@ -82,12 +85,13 @@ export async function registerGroupRecordingReceipt(
     input.receipt,
     input.now,
     (operation) =>
-      withVerifiedGeneratedRunGroupReport(input, (verified) =>
+      withVerifiedGeneratedRunGroupReport(input, (verified, signal) =>
         operation({
           subject: { kind: "run-group", id: input.runGroupId },
           projectRoot: verified.projectRoot,
           directory: verified.directory,
           recordingMode: verified.recordingMode,
+          preCommit: () => assertNotCompromised(signal, verified.directory),
           ...(verified.projectSkill === undefined
             ? {}
             : { projectSkill: verified.projectSkill }),
@@ -100,12 +104,13 @@ export async function readRecordingStatus(
   input: ReportOperationInput,
 ): Promise<RecordingStatusView> {
   return readSubjectRecordingStatus(input.now, (operation) =>
-    withVerifiedGeneratedRunReport(input, (verified) =>
+    withVerifiedGeneratedRunReport(input, (verified, signal) =>
       operation({
         subject: { kind: "run", id: input.runId },
         projectRoot: verified.projectRoot,
         directory: verified.directory,
         recordingMode: verified.recordingMode,
+        preCommit: () => assertNotCompromised(signal, verified.directory),
         ...(verified.projectSkill === undefined
           ? {}
           : { projectSkill: verified.projectSkill }),
@@ -118,12 +123,13 @@ export async function readGroupRecordingStatus(
   input: GroupReportOperationInput,
 ): Promise<RecordingStatusView> {
   return readSubjectRecordingStatus(input.now, (operation) =>
-    withVerifiedGeneratedRunGroupReport(input, (verified) =>
+    withVerifiedGeneratedRunGroupReport(input, (verified, signal) =>
       operation({
         subject: { kind: "run-group", id: input.runGroupId },
         projectRoot: verified.projectRoot,
         directory: verified.directory,
         recordingMode: verified.recordingMode,
+        preCommit: () => assertNotCompromised(signal, verified.directory),
         ...(verified.projectSkill === undefined
           ? {}
           : { projectSkill: verified.projectSkill }),
@@ -158,13 +164,20 @@ async function registerSubjectRecordingReceipt(
       now,
     );
     if (verified.projectSkill === undefined) {
-      return replayHistoricalReceipt({ repository, subject, receipt });
+      return replayHistoricalReceipt({
+        repository,
+        subject,
+        receipt,
+        preCommit: verified.preCommit,
+      });
     }
     await assertCurrentProjectSkillSnapshot({
       projectRoot: verified.projectRoot,
       snapshot: verified.projectSkill,
     });
-    const registered = await repository.registerUnlocked(receipt);
+    const registered = await repository.registerUnlocked(receipt, {
+      preCommit: verified.preCommit,
+    });
     const current = registered.artifact.history.at(-1);
     if (current === undefined) throw recordingIntegrityError(subject);
     return {
@@ -200,7 +213,9 @@ async function readSubjectRecordingStatus(
         snapshot: verified.projectSkill,
       });
     }
-    const state = await repository.readOrRecoverUnlocked();
+    const state = await repository.readOrRecoverUnlocked({
+      preCommit: verified.preCommit,
+    });
     if (state.state === "missing") {
       if (verified.projectSkill === undefined) {
         throw projectSkillSnapshotMissing(verified.subject);
@@ -221,17 +236,22 @@ async function replayHistoricalReceipt(input: {
   repository: RecordingRepository;
   subject: ReportSubject;
   receipt: RecordingReceiptInput;
+  preCommit: () => void;
 }): Promise<{
   event: RecordingEvent;
   status: RecordingStatusView;
   replayed: boolean;
 }> {
   const receipt = recordingReceiptInputSchema.parse(input.receipt);
-  const state = await input.repository.readOrRecoverUnlocked();
+  const state = await input.repository.readOrRecoverUnlocked({
+    preCommit: input.preCommit,
+  });
   if (state.state === "missing") {
     throw projectSkillSnapshotMissing(input.subject);
   }
-  const registered = await input.repository.registerUnlocked(receipt);
+  const registered = await input.repository.registerUnlocked(receipt, {
+    preCommit: input.preCommit,
+  });
   const current = registered.artifact.history.at(-1);
   if (current === undefined) throw recordingIntegrityError(input.subject);
   return {

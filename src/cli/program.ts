@@ -107,15 +107,20 @@ export async function runCli(
     if (error instanceof ZodError) {
       writeErrorJson(
         context,
-        new AiQaError("schema.validation_failed", "Schema validation failed", {}, {
-          issues: error.issues.map((issue) => ({
-            path: issue.path.filter(
-              (part): part is string | number => typeof part !== "symbol",
-            ),
-            code: issue.code,
-            message: issue.message,
-          })),
-        }),
+        new AiQaError(
+          "schema.validation_failed",
+          "Schema validation failed",
+          {},
+          {
+            issues: error.issues.map((issue) => ({
+              path: issue.path.filter(
+                (part): part is string | number => typeof part !== "symbol",
+              ),
+              code: issue.code,
+              message: issue.message,
+            })),
+          },
+        ),
       );
       return 1;
     }
