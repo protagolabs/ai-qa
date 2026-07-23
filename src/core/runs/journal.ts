@@ -1,9 +1,14 @@
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError, normalizeUnknownError, toErrorCause } from "../errors.js";
-import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
-import { assertNotCompromised, withLock } from "../fs/locking.js";
+import { writeJsonLines } from "../fs/json-lines.js";
+import {
+  assertNotCompromised,
+  withLock,
+  type LockSignal,
+} from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
@@ -82,8 +87,43 @@ export class RunJournal {
       this.runId,
       "events.jsonl",
     ]);
+    let content: Buffer;
     try {
-      const events = await readJsonLines(this.path, runEventSchema);
+      content = await readFile(this.path);
+    } catch (error: unknown) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        typeof (error as NodeJS.ErrnoException).code === "string" &&
+        (error as NodeJS.ErrnoException).code !== undefined
+      ) {
+        throw normalizeUnknownError(error);
+      }
+      throw new AiQaError(
+        "journal.integrity_error",
+        "Run journal integrity verification failed",
+        { runId: this.runId, cause: toErrorCause(error) },
+      );
+    }
+    try {
+      const classified = classifyJournalTail(content);
+      if (classified.kind === "torn") {
+        throw new AiQaError(
+          "journal.torn_write",
+          'Run journal has an unacknowledged torn tail; run "ai-qa run repair <run-id>"',
+          { runId: this.runId, tailOffset: classified.tailOffset },
+        );
+      }
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
+        classified.complete,
+      );
+      const events =
+        decoded.length === 0
+          ? []
+          : decoded
+              .slice(0, -1)
+              .split("\n")
+              .map((line) => runEventSchema.parse(JSON.parse(line)));
       const platform = events[0]?.platform;
       for (const [index, event] of events.entries()) {
         if (
@@ -97,14 +137,6 @@ export class RunJournal {
       return events;
     } catch (error: unknown) {
       if (error instanceof AiQaError) throw error;
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        typeof (error as NodeJS.ErrnoException).code === "string" &&
-        (error as NodeJS.ErrnoException).code !== undefined
-      ) {
-        throw normalizeUnknownError(error);
-      }
       throw new AiQaError(
         "journal.integrity_error",
         "Run journal integrity verification failed",
@@ -161,10 +193,58 @@ export class RunJournal {
           events,
           prepared.input,
           timestamp,
-          preCommit,
+          signal,
         );
         return prepared.resolve(event);
       });
+    } catch (error: unknown) {
+      if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
+      throw error;
+    }
+  }
+
+  /**
+   * Low-level commit primitive. The caller must hold this journal's lock and
+   * pass its signal; the journal path is revalidated before it is opened.
+   */
+  async appendLine(event: RunEvent, signal: LockSignal): Promise<void> {
+    await this.requireExistingJournal();
+    const serialized = `${JSON.stringify(event)}\n`;
+    const handle = await open(this.path, "a", 0o600);
+    try {
+      assertNotCompromised(signal, this.path);
+      await handle.writeFile(serialized, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * Low-level commit primitive. The caller must hold this journal's lock and
+   * pass its signal; the journal path is revalidated before temp-file work.
+   */
+  async appendBatch(
+    events: readonly RunEvent[],
+    priorEvents: readonly RunEvent[],
+    signal: LockSignal,
+  ): Promise<void> {
+    await this.requireExistingJournal();
+    assertNotCompromised(signal, this.path);
+    await writeJsonLines(this.path, [...priorEvents, ...events], {
+      preCommit: () => assertNotCompromised(signal, this.path),
+    });
+    await syncDirectoryWhereSupported(dirname(this.path));
+  }
+
+  private async requireExistingJournal(): Promise<void> {
+    try {
+      await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "runs",
+        this.runId,
+        "events.jsonl",
+      ]);
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
       throw error;
@@ -196,7 +276,7 @@ export class RunJournal {
     events: RunEvent[],
     input: AppendRunEvent,
     timestamp: string,
-    preCommit: () => void,
+    signal: LockSignal,
   ): Promise<RunEvent> {
     const immutablePlatform = events[0]?.platform;
     if (
@@ -233,11 +313,54 @@ export class RunJournal {
       timestamp,
       ...input,
     });
-    const nextEvents = [...events, event];
-    await writeJsonLines(this.path, nextEvents, { preCommit });
+    await this.appendLine(event, signal);
     events.push(event);
     return event;
   }
+}
+
+function classifyJournalTail(content: Buffer):
+  | { kind: "ok"; complete: Buffer }
+  | {
+      kind: "torn";
+      complete: Buffer;
+      tailOffset: number;
+      tailBytes: Buffer;
+    } {
+  if (content.length === 0 || content.at(-1) === 0x0a) {
+    return { kind: "ok", complete: content };
+  }
+  const tailOffset = content.lastIndexOf(0x0a) + 1;
+  return {
+    kind: "torn",
+    complete: content.subarray(0, tailOffset),
+    tailOffset,
+    tailBytes: content.subarray(tailOffset),
+  };
+}
+
+async function syncDirectoryWhereSupported(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch (error: unknown) {
+    if (!isUnsupportedDirectorySync(error)) throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function isUnsupportedDirectorySync(error: unknown): boolean {
+  return [
+    "EBADF",
+    "EINVAL",
+    "EISDIR",
+    "ENOSYS",
+    "ENOTSUP",
+    "EOPNOTSUPP",
+    "EPERM",
+  ].some((code) => isNodeError(error, code));
 }
 
 function isMissingStoragePath(error: unknown): boolean {

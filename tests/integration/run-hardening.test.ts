@@ -810,7 +810,7 @@ describe("journal and start-anchor integrity", () => {
       "foreign run ID",
       (event: RunEvent) => JSON.stringify({ ...event, runId: "run-2" }) + "\n",
     ],
-    ["malformed JSONL", () => "{"],
+    ["malformed JSONL", () => "{\n"],
   ])("returns a stable error for %s", async (_name, tamper) => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-tamper-"));
     const journal = await RunJournal.create(projectRoot, "run-1", fixedNow);
