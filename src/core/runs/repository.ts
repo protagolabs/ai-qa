@@ -20,6 +20,8 @@ import {
   type WorkOrder,
 } from "./schema.js";
 
+export const runStagingPrefix = ".run-staging-";
+
 function startedWorkOrderHash(
   events: readonly RunEvent[],
   runId: string,
@@ -77,7 +79,7 @@ export class RunRepository {
       throw runAlreadyExists(validated.runId);
     }
     const stagingDirectory = await mkdtemp(
-      resolve(runsRoot, `.run-staging-${validated.runId}-`),
+      resolve(runsRoot, `${runStagingPrefix}${validated.runId}-`),
     );
     try {
       await ensureProjectLocalDirectory(this.projectRoot, [

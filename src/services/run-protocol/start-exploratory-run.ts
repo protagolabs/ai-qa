@@ -5,9 +5,13 @@ import {
   type ProjectConfig,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import {
+  ensureProjectLocalDirectory,
+  sweepStaleStaging,
+} from "../../core/fs/project-storage.js";
 import { createId } from "../../core/ids.js";
 import type { Platform } from "../../core/platforms/schema.js";
-import { RunRepository } from "../../core/runs/repository.js";
+import { RunRepository, runStagingPrefix } from "../../core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
@@ -75,6 +79,11 @@ export async function startExploratoryRun(input: {
     ...(projectSkill === undefined ? {} : { projectSkill }),
     startedAt: input.now(),
   });
+  const runsRoot = await ensureProjectLocalDirectory(project.projectRoot, [
+    ".ai-qa",
+    "runs",
+  ]);
+  await sweepStaleStaging(runsRoot, runStagingPrefix, input.now);
   await new RunRepository(project.projectRoot, input.now).create(workOrder);
   return workOrder;
 }

@@ -8,13 +8,20 @@ import {
   projectConfigSchema,
 } from "../../core/config/schema.js";
 import { AiQaError } from "../../core/errors.js";
+import {
+  ensureProjectLocalDirectory,
+  sweepStaleStaging,
+} from "../../core/fs/project-storage.js";
 import { createId } from "../../core/ids.js";
 import { platformSchema, type Platform } from "../../core/platforms/schema.js";
 import {
   platformReadinessSchema,
   type PlatformReadiness,
 } from "../../core/readiness/schema.js";
-import { RunGroupRepository } from "../../core/run-groups/repository.js";
+import {
+  RunGroupRepository,
+  runGroupStagingPrefix,
+} from "../../core/run-groups/repository.js";
 import {
   runGroupManifestSchema,
   type RunGroupExclusion,
@@ -198,6 +205,12 @@ export async function startRunGroup(
     exclusions,
     maximumBudget,
   });
+
+  const runGroupsRoot = await ensureProjectLocalDirectory(project.projectRoot, [
+    ".ai-qa",
+    "run-groups",
+  ]);
+  await sweepStaleStaging(runGroupsRoot, runGroupStagingPrefix, input.now);
 
   const storedManifest = await new RunGroupRepository(
     project.projectRoot,

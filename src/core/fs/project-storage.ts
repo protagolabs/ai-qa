@@ -101,6 +101,80 @@ export function requireProjectLocalDirectory(
   return walkDirectories(projectRoot, segments, false);
 }
 
+const staleStagingAgeMs = 60 * 60 * 1000;
+
+export async function sweepStaleStaging(
+  root: string,
+  prefix: string,
+  now: () => Date,
+): Promise<string[]> {
+  if (
+    prefix.length === 0 ||
+    prefix === "." ||
+    prefix === ".." ||
+    prefix.includes("/") ||
+    prefix.includes("\\")
+  ) {
+    throw storageError("Staging prefix is invalid", prefix);
+  }
+  const resolvedRoot = resolve(root);
+  let canonicalRoot: string;
+  try {
+    const rootStats = await lstat(resolvedRoot);
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+      throw storageError("Staging root is not a real directory", resolvedRoot);
+    }
+    canonicalRoot = await realpath(resolvedRoot);
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Staging root verification failed",
+      resolvedRoot,
+      nodeErrorCode(error),
+    );
+  }
+
+  const cutoff = now().getTime() - staleStagingAgeMs;
+  const removed: string[] = [];
+  const entries = await readdir(canonicalRoot, { withFileTypes: true });
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    if (
+      !entry.name.startsWith(prefix) ||
+      entry.isSymbolicLink() ||
+      !entry.isDirectory()
+    ) {
+      continue;
+    }
+    const path = resolve(canonicalRoot, entry.name);
+    if (dirname(path) !== canonicalRoot) continue;
+    let stats;
+    try {
+      stats = await lstat(path);
+      if (
+        stats.isSymbolicLink() ||
+        !stats.isDirectory() ||
+        (await realpath(path)) !== path ||
+        stats.mtimeMs >= cutoff
+      ) {
+        continue;
+      }
+      await rm(path, { recursive: true, force: false });
+      removed.push(entry.name);
+    } catch (error: unknown) {
+      if (isNodeError(error, "ENOENT")) continue;
+      if (error instanceof AiQaError) throw error;
+      throw storageError(
+        "Staging directory cleanup failed",
+        path,
+        nodeErrorCode(error),
+      );
+    }
+  }
+  return removed;
+}
+
 export interface OptionalProjectLocalFile {
   path: string;
   state: "missing" | "regular";

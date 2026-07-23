@@ -7,6 +7,7 @@ import {
   readdir,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,6 +30,7 @@ import { materializeRunGroup } from "../../src/services/run-groups/materialize-r
 import { startRunGroup } from "../../src/services/run-groups/start-run-group.js";
 import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
+import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
@@ -181,6 +183,103 @@ async function writeIncompleteRepairManifest(
 }
 
 describe("immutable run groups", () => {
+  it("ignores a half-created group and creates a fresh group", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({
+      cases,
+      caseId: "staged-group",
+      platforms: ["web"],
+    });
+    const crashedGroupId = "run-group-crashed";
+    const crashedDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "run-groups",
+      crashedGroupId,
+    );
+    await mkdir(crashedDirectory, { recursive: true });
+    await writeFile(join(crashedDirectory, "events.jsonl"), "");
+
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["staged-group"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+
+    expect(started.manifest.id).not.toBe(crashedGroupId);
+    await expect(
+      new RunGroupRepository(projectRoot, now).readManifest(crashedGroupId),
+    ).rejects.toMatchObject({ code: "run_group.not_found" });
+  });
+
+  it("sweeps stale group staging before starting a run group", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({
+      cases,
+      caseId: "stale-group",
+      platforms: ["web"],
+    });
+    const stagingDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "run-groups",
+      ".group-staging-x",
+    );
+    await mkdir(stagingDirectory);
+    const staleAt = new Date(startedAt.getTime() - 2 * 60 * 60 * 1000);
+    await utimes(stagingDirectory, staleAt, staleAt);
+
+    await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["stale-group"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+
+    await expect(access(stagingDirectory)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("sweeps stale run staging before starting an exploratory run", async () => {
+    const { projectRoot } = await fixture(["web"]);
+    const stagingDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      ".run-staging-x",
+    );
+    await mkdir(stagingDirectory, { recursive: true });
+    const staleAt = new Date(startedAt.getTime() - 2 * 60 * 60 * 1000);
+    await utimes(stagingDirectory, staleAt, staleAt);
+
+    await startExploratoryRun({
+      projectRoot,
+      platform: "web",
+      payload: {
+        goal: "Verify stale run staging cleanup",
+        acceptanceCriteria: [
+          {
+            id: "cleanup-complete",
+            description: "The stale staging directory is removed",
+            requiredEvidence: ["post-action-screenshot"],
+          },
+        ],
+        readiness: readiness("web"),
+      },
+      now,
+    });
+
+    await expect(access(stagingDirectory)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it.each(["resume", "finish", "cancel", "report"] as const)(
     "gates run-group %s before parsing a torn member journal",
     async (operation) => {

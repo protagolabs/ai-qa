@@ -9,6 +9,7 @@ import {
   rmdir,
   symlink,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,9 +22,45 @@ import {
   prepareProjectLocalRemoval,
   publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
+  sweepStaleStaging,
 } from "../../src/core/fs/project-storage.js";
 
 describe("project-local storage", () => {
+  it("sweeps only stale real staging directories directly inside the root", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    const root = join(projectRoot, ".ai-qa", "runs");
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));
+    await mkdir(root, { recursive: true });
+    const stale = join(root, ".run-staging-stale");
+    const threshold = join(root, ".run-staging-threshold");
+    const fresh = join(root, ".run-staging-fresh");
+    const file = join(root, ".run-staging-file");
+    const link = join(root, ".run-staging-link");
+    const differentPrefix = join(root, ".group-staging-stale");
+    for (const directory of [stale, threshold, fresh, differentPrefix]) {
+      await mkdir(directory);
+    }
+    await writeFile(file, "not a directory");
+    await symlink(outside, link);
+    const now = new Date("2026-07-17T00:00:00.000Z");
+    const staleAt = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    const thresholdAt = new Date(now.getTime() - 60 * 60 * 1000);
+    await utimes(stale, staleAt, staleAt);
+    await utimes(threshold, thresholdAt, thresholdAt);
+
+    await expect(
+      sweepStaleStaging(root, ".run-staging-", () => now),
+    ).resolves.toEqual([".run-staging-stale"]);
+
+    await expect(access(stale)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(threshold)).resolves.toBeUndefined();
+    await expect(access(fresh)).resolves.toBeUndefined();
+    await expect(access(file)).resolves.toBeUndefined();
+    await expect(access(link)).resolves.toBeUndefined();
+    await expect(access(differentPrefix)).resolves.toBeUndefined();
+    await expect(access(outside)).resolves.toBeUndefined();
+  });
+
   it("rejects a symlinked .ai-qa ancestor before creating descendants", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
     const outside = await mkdtemp(join(tmpdir(), "ai-qa-storage-outside-"));

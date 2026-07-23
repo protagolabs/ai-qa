@@ -1,8 +1,16 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { canonicalJson, sha256Canonical } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
-import { atomicWriteFile } from "../fs/atomic-write.js";
-import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
+import {
+  atomicWriteFile,
+  syncDirectoryWhereSupported,
+} from "../fs/atomic-write.js";
+import {
+  readJsonLines,
+  serializeJsonLines,
+  writeJsonLines,
+} from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
@@ -23,6 +31,8 @@ export interface RunGroupTransitionResult {
   manifest: RunGroupManifest;
 }
 
+export const runGroupStagingPrefix = ".group-staging-";
+
 export class RunGroupRepository {
   constructor(
     private readonly projectRoot: string,
@@ -32,32 +42,23 @@ export class RunGroupRepository {
   async create(manifestInput: RunGroupManifest): Promise<RunGroupManifest> {
     const manifest = runGroupManifestSchema.parse(manifestInput);
     const paths = resolveRunGroupPaths(this.projectRoot, manifest.id);
-    await ensureProjectLocalDirectory(this.projectRoot, [
+    const root = await ensureProjectLocalDirectory(this.projectRoot, [
       ".ai-qa",
       "run-groups",
     ]);
+    if (await pathExists(paths.directory))
+      throw runGroupAlreadyExists(manifest.id);
+    const stagingDirectory = await mkdtemp(
+      resolve(root, `${runGroupStagingPrefix}${manifest.id}-`),
+    );
     try {
-      await mkdir(paths.directory, { mode: 0o700 });
-    } catch (error: unknown) {
-      if (isNodeError(error, "EEXIST")) {
-        throw new AiQaError(
-          "run_group.already_exists",
-          "Run group already exists",
-          { runGroupId: manifest.id },
-        );
-      }
-      throw error;
-    }
-
-    try {
-      await atomicWriteFile(paths.manifest, JSON.stringify(manifest));
-      let handle;
-      try {
-        handle = await open(paths.events, "wx", 0o600);
-        await handle.sync();
-      } finally {
-        await handle?.close();
-      }
+      await ensureProjectLocalDirectory(this.projectRoot, [
+        ".ai-qa",
+        "run-groups",
+        basename(stagingDirectory),
+      ]);
+      const stagingManifest = resolve(stagingDirectory, "group.json");
+      const stagingEvents = resolve(stagingDirectory, "events.jsonl");
       const started = runGroupEventSchema.parse({
         schemaVersion: 1,
         id: createId("event"),
@@ -70,11 +71,32 @@ export class RunGroupRepository {
         payload: { phase: "started", manifestHash: sha256Canonical(manifest) },
         relatedIds: manifest.members.map((member) => member.runId),
       });
-      await writeJsonLines(paths.events, [started]);
+      await atomicWriteFile(stagingManifest, JSON.stringify(manifest), {
+        durable: true,
+      });
+      await atomicWriteFile(stagingEvents, serializeJsonLines([started]), {
+        durable: true,
+      });
+      await syncDirectoryWhereSupported(stagingDirectory);
+      await withLock(root, "cold", async (signal) => {
+        if (await pathExists(paths.directory)) {
+          throw runGroupAlreadyExists(manifest.id);
+        }
+        try {
+          assertNotCompromised(signal, root);
+          await rename(stagingDirectory, paths.directory);
+        } catch (error: unknown) {
+          if (await pathExists(paths.directory)) {
+            throw runGroupAlreadyExists(manifest.id);
+          }
+          throw error;
+        }
+        await syncDirectoryWhereSupported(root);
+      });
       return freezeManifest(manifest);
     } catch (error: unknown) {
       try {
-        await rm(paths.directory, { recursive: true, force: true });
+        await rm(stagingDirectory, { recursive: true, force: true });
       } catch {
         // Preserve the group creation failure.
       }
@@ -292,6 +314,22 @@ export class RunGroupRepository {
       );
     }
   }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
+function runGroupAlreadyExists(runGroupId: string): AiQaError {
+  return new AiQaError("run_group.already_exists", "Run group already exists", {
+    runGroupId,
+  });
 }
 
 function validateSnapshot(
