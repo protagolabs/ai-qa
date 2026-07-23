@@ -18,14 +18,6 @@ import {
   resolveRunReportDirectory,
   withRunReportLock,
 } from "../../core/reports/storage.js";
-import {
-  actionPayloadSchema,
-  assertionPayloadSchema,
-  decisionPayloadSchema,
-  evidenceEventPayloadSchema,
-  observationPayloadSchema,
-  recoveryPayloadSchema,
-} from "../../core/runs/event-payloads.js";
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
 import {
@@ -34,11 +26,7 @@ import {
   type ProjectSkillSnapshot,
   type RunEvent,
 } from "../../core/runs/schema.js";
-import {
-  blockerPayloadSchema,
-  type VerdictPayload,
-  verdictPayloadSchema,
-} from "../../core/verdicts/schema.js";
+import { type VerdictPayload } from "../../core/verdicts/schema.js";
 import { REPORT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { resolveProject } from "../project-root/resolve-project.js";
 import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
@@ -487,7 +475,7 @@ function eventSummary(event: RunEvent): string {
       break;
     }
     case "action": {
-      const payload = actionPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       value =
         payload.phase === "planned"
           ? `Action planned (${payload.kind}): ${payload.intent}`
@@ -495,29 +483,29 @@ function eventSummary(event: RunEvent): string {
       break;
     }
     case "observation":
-      value = observationPayloadSchema.parse(event.payload).summary;
+      value = event.payload.summary;
       break;
     case "assertion": {
-      const payload = assertionPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       value = `Assertion ${payload.criterionId}: ${payload.status} — ${payload.actual}`;
       break;
     }
     case "evidence": {
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       value = `Evidence ${payload.id}: ${payload.evidenceKinds.join(", ")}`;
       break;
     }
     case "decision":
-      value = decisionPayloadSchema.parse(event.payload).rationale;
+      value = event.payload.rationale;
       break;
     case "blocker":
-      value = blockerPayloadSchema.parse(event.payload).condition;
+      value = event.payload.condition;
       break;
     case "verdict":
-      value = verdictPayloadSchema.parse(event.payload).summary;
+      value = event.payload.summary;
       break;
     case "recovery":
-      value = recoveryPayloadSchema.parse(event.payload).rationale;
+      value = event.payload.rationale;
       break;
   }
   return value.replace(/\s+/gu, " ").trim();

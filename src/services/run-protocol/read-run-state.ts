@@ -1,7 +1,3 @@
-import {
-  actionPayloadSchema,
-  recoveryPayloadSchema,
-} from "../../core/runs/event-payloads.js";
 import { runIdSchema, type RunEvent } from "../../core/runs/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { withRunSession, type RunSnapshot } from "./run-session.js";
@@ -99,16 +95,15 @@ function permittedNextActions(input: {
 
   const latest = input.events.at(-1);
   if (latest?.type === "action") {
-    const payload = actionPayloadSchema.parse(latest.payload);
+    const payload = latest.payload;
     if (payload.phase === "planned") return ["invoke-tool", "action.complete"];
     if (payload.phase === "unknown") {
       return ["action.plan:observation", "decision.record"];
     }
     const plan = input.events.find((event) => event.id === payload.actionId);
-    const planned = actionPayloadSchema.safeParse(plan?.payload);
-    if (planned.success && planned.data.phase === "planned") {
-      if (planned.data.kind === "observation") return ["observation.add"];
-      if (planned.data.kind === "evidence-capture") return ["evidence.add"];
+    if (plan?.type === "action" && plan.payload.phase === "planned") {
+      if (plan.payload.kind === "observation") return ["observation.add"];
+      if (plan.payload.kind === "evidence-capture") return ["evidence.add"];
       return ["action.plan:observation"];
     }
   }
@@ -118,7 +113,7 @@ function permittedNextActions(input: {
       : ["assertion.record", "action.plan"];
   }
   if (latest?.type === "recovery") {
-    const payload = recoveryPayloadSchema.parse(latest.payload);
+    const payload = latest.payload;
     return payload.resolution === "not_applied"
       ? ["action.plan", "decision.record", "verdict.set"]
       : ["assertion.record", "decision.record", "verdict.set"];
@@ -132,34 +127,34 @@ function permittedNextActions(input: {
 }
 
 function structuralCompletionActions(events: readonly RunEvent[]): string[] {
-  const plans = events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [{ event, payload }] : [];
-  });
-  const terminals = events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [] : [{ event, payload }];
-  });
-  if (
-    plans.some(
-      ({ event }) =>
-        !terminals.some(({ payload }) => payload.actionId === event.id),
-    )
-  ) {
+  const planIds = new Set<string>();
+  const terminalActionIds = new Set<string>();
+  const unknownTerminals: Array<{
+    event: Extract<RunEvent, { type: "action" }>;
+    actionId: string;
+  }> = [];
+  const recovered = new Set<string>();
+  for (const event of events) {
+    if (event.type === "action") {
+      const payload = event.payload;
+      if (payload.phase === "planned") {
+        planIds.add(event.id);
+      } else {
+        terminalActionIds.add(payload.actionId);
+        if (payload.phase === "unknown") {
+          unknownTerminals.push({ event, actionId: payload.actionId });
+        }
+      }
+    } else if (event.type === "recovery") {
+      recovered.add(event.payload.actionId);
+    }
+  }
+  if ([...planIds].some((actionId) => !terminalActionIds.has(actionId))) {
     return ["invoke-tool", "action.complete"];
   }
 
-  const recovered = new Set(
-    events.flatMap((event) => {
-      if (event.type !== "recovery") return [];
-      return [recoveryPayloadSchema.parse(event.payload).actionId];
-    }),
-  );
-  const unresolved = terminals.find(
-    ({ payload }) =>
-      payload.phase === "unknown" && !recovered.has(payload.actionId),
+  const unresolved = unknownTerminals.find(
+    ({ actionId }) => !recovered.has(actionId),
   );
   if (unresolved === undefined) return [];
   return events.some(
@@ -172,15 +167,14 @@ function structuralCompletionActions(events: readonly RunEvent[]): string[] {
 }
 
 function hasUnresolvedUnknown(events: readonly RunEvent[]): boolean {
-  const recovered = new Set(
-    events.flatMap((event) => {
-      if (event.type !== "recovery") return [];
-      return [recoveryPayloadSchema.parse(event.payload).actionId];
-    }),
-  );
-  return events.some((event) => {
-    if (event.type !== "action") return false;
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "unknown" && !recovered.has(payload.actionId);
-  });
+  const recovered = new Set<string>();
+  const unknownActionIds = new Set<string>();
+  for (const event of events) {
+    if (event.type === "recovery") {
+      recovered.add(event.payload.actionId);
+    } else if (event.type === "action" && event.payload.phase === "unknown") {
+      unknownActionIds.add(event.payload.actionId);
+    }
+  }
+  return [...unknownActionIds].some((actionId) => !recovered.has(actionId));
 }

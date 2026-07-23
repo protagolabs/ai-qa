@@ -2,6 +2,7 @@ import { z } from "zod";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { eventIdSchema } from "./ids.js";
+import type { RunEvent } from "./schema.js";
 
 export const interruptedRunPayloadSchema = z
   .object({
@@ -50,16 +51,7 @@ export const lifecyclePayloadSchema = z.union([
 
 export type LifecyclePayload = z.infer<typeof lifecyclePayloadSchema>;
 
-export interface LifecycleHistoryEvent {
-  type: string;
-  id: string;
-  timestamp: string;
-  actor: string;
-  tool: string;
-  idempotencyKey?: string | undefined;
-  relatedIds: string[];
-  payload: unknown;
-}
+export type LifecycleHistoryEvent = Extract<RunEvent, { type: "run" }>;
 
 export interface LifecycleEntry<
   Event extends LifecycleHistoryEvent = LifecycleHistoryEvent,
@@ -68,18 +60,16 @@ export interface LifecycleEntry<
   payload: LifecyclePayload;
 }
 
-export function validateRunLifecycleHistory<
-  Event extends LifecycleHistoryEvent,
->(
-  events: readonly Event[],
+export function validateRunLifecycleHistory(
+  events: readonly RunEvent[],
   runId: string,
-): { current: LifecycleEntry<Extract<Event, { type: "run" }>> } {
+): { current: LifecycleEntry } {
   try {
-    let current: LifecycleEntry<Extract<Event, { type: "run" }>> | undefined;
+    let current: LifecycleEntry | undefined;
     for (const event of events) {
       if (event.type !== "run") continue;
-      const lifecycleEvent = event as Extract<Event, { type: "run" }>;
-      const payload = lifecyclePayloadSchema.parse(lifecycleEvent.payload);
+      const lifecycleEvent = event;
+      const payload = lifecycleEvent.payload;
       switch (payload.phase) {
         case "started":
           requireLifecycle(current === undefined);

@@ -1,13 +1,6 @@
 import { canonicalJson } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
-import {
-  actionPayloadSchema,
-  assertionPayloadSchema,
-  evidenceEventPayloadSchema,
-  observationPayloadSchema,
-  recoveryPayloadSchema,
-} from "../../core/runs/event-payloads.js";
 import type {
   RequiredStep,
   RunEvent,
@@ -28,20 +21,20 @@ export interface RegressionFidelityResult {
   valid: boolean;
 }
 
+type ActionEvent = Extract<RunEvent, { type: "action" }>;
+type ObservationEvent = Extract<RunEvent, { type: "observation" }>;
+type EvidenceEvent = Extract<RunEvent, { type: "evidence" }>;
+type AssertionEvent = Extract<RunEvent, { type: "assertion" }>;
+type RecoveryPayload = Extract<RunEvent, { type: "recovery" }>["payload"];
+
 interface PlannedEntry {
-  event: RunEvent;
-  payload: Extract<
-    ReturnType<typeof actionPayloadSchema.parse>,
-    { phase: "planned" }
-  >;
+  event: ActionEvent;
+  payload: Extract<ActionEvent["payload"], { phase: "planned" }>;
 }
 
 interface TerminalEntry {
-  event: RunEvent;
-  payload: Extract<
-    ReturnType<typeof actionPayloadSchema.parse>,
-    { phase: "completed" | "unknown" }
-  >;
+  event: ActionEvent;
+  payload: Extract<ActionEvent["payload"], { phase: "completed" | "unknown" }>;
 }
 
 interface SuccessfulNormalInteraction {
@@ -49,9 +42,14 @@ interface SuccessfulNormalInteraction {
   boundaryEvent: RunEvent;
 }
 
+interface LinkedCheckpointState {
+  linkedKinds: Set<string>;
+  assertionPresent: boolean;
+}
+
 export function validateRegressionFidelity(
   workOrder: WorkOrder,
-  events: RunEvent[],
+  events: readonly RunEvent[],
 ): RegressionFidelityResult {
   if (workOrder.kind !== "regression") {
     return {
@@ -64,26 +62,47 @@ export function validateRegressionFidelity(
     };
   }
 
-  const required = [...workOrder.requiredSteps].sort(
-    (left, right) => left.order - right.order,
-  );
+  const required = workOrder.requiredSteps;
   const requiredById = new Map(required.map((step) => [step.id, step]));
   const plans = new Map<string, PlannedEntry>();
   const terminals = new Map<string, TerminalEntry>();
   const normalPlans = new Map<string, PlannedEntry[]>();
   const successfulNormal = new Map<string, SuccessfulNormalInteraction>();
-  const recoveryResolutions = new Map<
-    string,
-    ReturnType<typeof recoveryPayloadSchema.parse>
-  >();
+  const recoveryResolutions = new Map<string, RecoveryPayload>();
+  const completedRecoveryPlanSequenceByStep = new Map<string, number>();
+  const observationEvents: ObservationEvent[] = [];
+  const evidenceEvents: EvidenceEvent[] = [];
+  const assertionEvents: AssertionEvent[] = [];
+  let nextIncompleteRequiredIndex = 0;
+  let latestStartedNormalOrder = -1;
   let recoveryActionCount = 0;
   let recoveryHistoryValid = true;
   const effectiveInteractions = createEffectiveInteractionAccumulator();
+  const recordSuccessfulNormal = (
+    stepId: string,
+    terminal: TerminalEntry,
+    boundaryEvent: RunEvent,
+  ): void => {
+    if (successfulNormal.has(stepId)) {
+      throw replayError(
+        "replay.required_step_repeated",
+        "A required step may have only one successful normal interaction",
+        { stepId },
+      );
+    }
+    successfulNormal.set(stepId, { terminal, boundaryEvent });
+    if (required[nextIncompleteRequiredIndex]?.id === stepId) {
+      nextIncompleteRequiredIndex += 1;
+    }
+  };
 
   for (const event of events) {
     accumulateEffectiveInteractionEvent(effectiveInteractions, event);
+    if (event.type === "observation") observationEvents.push(event);
+    if (event.type === "evidence") evidenceEvents.push(event);
+    if (event.type === "assertion") assertionEvents.push(event);
     if (event.type === "action") {
-      const payload = actionPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       if (payload.phase !== "planned") {
         const planned = plans.get(payload.actionId);
         if (planned === undefined || terminals.has(payload.actionId)) {
@@ -96,21 +115,25 @@ export function validateRegressionFidelity(
         const terminal = { event, payload };
         terminals.set(payload.actionId, terminal);
         if (
+          planned.payload.recoveryForStepId !== undefined &&
+          payload.phase === "completed"
+        ) {
+          completedRecoveryPlanSequenceByStep.set(
+            planned.payload.recoveryForStepId,
+            Math.max(
+              completedRecoveryPlanSequenceByStep.get(
+                planned.payload.recoveryForStepId,
+              ) ?? -1,
+              planned.event.sequence,
+            ),
+          );
+        }
+        if (
           planned.payload.kind === "interaction" &&
           planned.payload.recoveryForStepId === undefined &&
           payload.phase === "completed"
         ) {
-          if (successfulNormal.has(planned.payload.stepId)) {
-            throw replayError(
-              "replay.required_step_repeated",
-              "A required step may have only one successful normal interaction",
-              { stepId: planned.payload.stepId },
-            );
-          }
-          successfulNormal.set(planned.payload.stepId, {
-            terminal,
-            boundaryEvent: event,
-          });
+          recordSuccessfulNormal(planned.payload.stepId, terminal, event);
         }
         continue;
       }
@@ -137,6 +160,7 @@ export function validateRegressionFidelity(
           step,
           requiredById,
           normalPlans,
+          latestStartedNormalOrder,
         });
         recoveryActionCount += 1;
       } else if (payload.kind === "interaction") {
@@ -144,24 +168,32 @@ export function validateRegressionFidelity(
           event,
           payload,
           step,
-          required,
+          expectedStep: required[nextIncompleteRequiredIndex],
           normalPlans,
           terminals,
           recoveryResolutions,
-          plans,
-          successfulNormal,
+          completedRecoveryPlanSequenceByStep,
         });
         const existing = normalPlans.get(step.id) ?? [];
-        normalPlans.set(step.id, [...existing, { event, payload }]);
+        existing.push({ event, payload });
+        normalPlans.set(step.id, existing);
+        latestStartedNormalOrder = Math.max(
+          latestStartedNormalOrder,
+          step.order,
+        );
       } else {
-        validateSupportingPlan(payload.stepId, required, successfulNormal);
+        validateSupportingPlan(
+          payload.stepId,
+          required,
+          nextIncompleteRequiredIndex,
+        );
       }
       plans.set(event.id, { event, payload });
       continue;
     }
 
     if (event.type === "recovery") {
-      const payload = recoveryPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       if (recoveryResolutions.has(payload.actionId)) {
         recoveryHistoryValid = false;
       }
@@ -174,22 +206,30 @@ export function validateRegressionFidelity(
           payload.actionId,
         );
         if (
+          planned?.payload.recoveryForStepId !== undefined &&
+          terminal?.payload.phase === "unknown"
+        ) {
+          completedRecoveryPlanSequenceByStep.set(
+            planned.payload.recoveryForStepId,
+            Math.max(
+              completedRecoveryPlanSequenceByStep.get(
+                planned.payload.recoveryForStepId,
+              ) ?? -1,
+              planned.event.sequence,
+            ),
+          );
+        }
+        if (
           planned?.payload.kind === "interaction" &&
           planned.payload.recoveryForStepId === undefined &&
           terminal?.payload.phase === "unknown" &&
           effective !== undefined
         ) {
-          if (successfulNormal.has(planned.payload.stepId)) {
-            throw replayError(
-              "replay.required_step_repeated",
-              "A required step may have only one successful normal interaction",
-              { stepId: planned.payload.stepId },
-            );
-          }
-          successfulNormal.set(planned.payload.stepId, {
+          recordSuccessfulNormal(
+            planned.payload.stepId,
             terminal,
-            boundaryEvent: effective.boundaryEvent,
-          });
+            effective.boundaryEvent,
+          );
         } else if (planned?.payload.recoveryForStepId === undefined) {
           recoveryHistoryValid = false;
         }
@@ -211,9 +251,21 @@ export function validateRegressionFidelity(
   const completedStepIds = required
     .filter((step) => successfulNormal.has(step.id))
     .map((step) => step.id);
-  const checkpointsLinked = required.every((step) =>
-    hasLinkedCheckpoints(step, events, plans, terminals, successfulNormal),
-  );
+  const checkpointState = buildLinkedCheckpointState({
+    observations: observationEvents,
+    evidence: evidenceEvents,
+    assertions: assertionEvents,
+    plans,
+    terminals,
+    successfulNormal,
+  });
+  const checkpointsLinked = required.every((step) => {
+    const state = checkpointState.get(step.id);
+    return (
+      state?.assertionPresent === true &&
+      step.evidenceCheckpoints.every((kind) => state.linkedKinds.has(kind))
+    );
+  });
   const toolCallCount = plans.size;
   const budgetsValid =
     toolCallCount <= workOrder.budget.maxToolCalls &&
@@ -235,22 +287,16 @@ export function validateRegressionFidelity(
 }
 
 function validateNormalPlan(input: {
-  event: RunEvent;
+  event: ActionEvent;
   payload: PlannedEntry["payload"];
   step: RequiredStep;
-  required: RequiredStep[];
+  expectedStep: RequiredStep | undefined;
   normalPlans: ReadonlyMap<string, PlannedEntry[]>;
   terminals: ReadonlyMap<string, TerminalEntry>;
-  recoveryResolutions: ReadonlyMap<
-    string,
-    ReturnType<typeof recoveryPayloadSchema.parse>
-  >;
-  plans: ReadonlyMap<string, PlannedEntry>;
-  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>;
+  recoveryResolutions: ReadonlyMap<string, RecoveryPayload>;
+  completedRecoveryPlanSequenceByStep: ReadonlyMap<string, number>;
 }): void {
-  const expected = input.required.find(
-    (step) => !input.successfulNormal.has(step.id),
-  );
+  const expected = input.expectedStep;
   if (expected === undefined || input.step.id !== expected.id) {
     throw replayError(
       "replay.step_out_of_order",
@@ -266,26 +312,10 @@ function validateNormalPlan(input: {
     const latest = prior.at(-1)!;
     const terminal = input.terminals.get(latest.event.id);
     const resolution = input.recoveryResolutions.get(latest.event.id);
-    const completedRecoveryAfterResolution = [...input.plans.values()].some(
-      (candidate) => {
-        if (
-          candidate.payload.recoveryForStepId !== input.step.id ||
-          resolution === undefined
-        ) {
-          return false;
-        }
-        const recoveryTerminal = input.terminals.get(candidate.event.id);
-        const recoveryResolution = input.recoveryResolutions.get(
-          candidate.event.id,
-        );
-        return (
-          candidate.event.sequence > latest.event.sequence &&
-          (recoveryTerminal?.payload.phase === "completed" ||
-            (recoveryTerminal?.payload.phase === "unknown" &&
-              recoveryResolution?.resolution === "applied"))
-        );
-      },
-    );
+    const completedRecoveryAfterResolution =
+      resolution !== undefined &&
+      (input.completedRecoveryPlanSequenceByStep.get(input.step.id) ?? -1) >
+        latest.event.sequence;
     if (
       terminal?.payload.phase !== "unknown" ||
       resolution?.resolution !== "not_applied" ||
@@ -323,6 +353,7 @@ function validateRecoveryPlan(input: {
   step: RequiredStep;
   requiredById: ReadonlyMap<string, RequiredStep>;
   normalPlans: ReadonlyMap<string, PlannedEntry[]>;
+  latestStartedNormalOrder: number;
 }): void {
   const recoveryStepId = input.payload.recoveryForStepId;
   if (
@@ -338,11 +369,7 @@ function validateRecoveryPlan(input: {
       { stepId: input.step.id },
     );
   }
-  const laterStarted = [...input.normalPlans.keys()].some((stepId) => {
-    const candidate = input.requiredById.get(stepId);
-    return candidate !== undefined && candidate.order > input.step.order;
-  });
-  if (laterStarted) {
+  if (input.latestStartedNormalOrder > input.step.order) {
     throw replayError(
       "replay.recovery_out_of_order",
       "Recovery cannot revisit or advance beyond the current required step",
@@ -353,19 +380,18 @@ function validateRecoveryPlan(input: {
 
 function validateSupportingPlan(
   stepId: string,
-  required: RequiredStep[],
-  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>,
+  required: readonly RequiredStep[],
+  nextIncompleteRequiredIndex: number,
 ): void {
-  const currentIndex = required.findIndex(
-    (step) => !successfulNormal.has(step.id),
-  );
   const allowed = new Set<string>();
-  if (currentIndex === -1) {
+  if (nextIncompleteRequiredIndex >= required.length) {
     const last = required.at(-1);
     if (last !== undefined) allowed.add(last.id);
   } else {
-    allowed.add(required[currentIndex]!.id);
-    if (currentIndex > 0) allowed.add(required[currentIndex - 1]!.id);
+    allowed.add(required[nextIncompleteRequiredIndex]!.id);
+    if (nextIncompleteRequiredIndex > 0) {
+      allowed.add(required[nextIncompleteRequiredIndex - 1]!.id);
+    }
   }
   if (!allowed.has(stepId)) {
     throw replayError(
@@ -376,77 +402,95 @@ function validateSupportingPlan(
   }
 }
 
-function hasLinkedCheckpoints(
-  step: RequiredStep,
-  events: RunEvent[],
-  plans: ReadonlyMap<string, PlannedEntry>,
-  terminals: ReadonlyMap<string, TerminalEntry>,
-  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>,
-): boolean {
-  const success = successfulNormal.get(step.id);
-  if (success === undefined) return false;
-  const observations = new Map(
-    events.flatMap((event) => {
-      if (event.type !== "observation") return [];
-      const payload = observationPayloadSchema.parse(event.payload);
-      const plan = plans.get(payload.actionId);
-      const terminal = terminals.get(payload.actionId);
-      return payload.stepId === step.id &&
-        plan?.payload.kind === "observation" &&
-        plan.event.sequence > success.boundaryEvent.sequence &&
-        terminal?.payload.phase === "completed" &&
-        terminal.event.sequence > success.boundaryEvent.sequence &&
-        event.sequence > success.boundaryEvent.sequence
-        ? [[event.id, event] as const]
-        : [];
-    }),
-  );
-  if (observations.size === 0) return false;
-
-  const linkedKinds = new Set<string>();
-  const linkedEvidenceIds = new Set<string>();
-  for (const event of events) {
-    if (event.type !== "evidence") continue;
-    const payload = evidenceEventPayloadSchema.parse(event.payload);
-    const capture = plans.get(payload.captureActionId);
-    const terminal = terminals.get(payload.captureActionId);
+function buildLinkedCheckpointState(input: {
+  observations: readonly ObservationEvent[];
+  evidence: readonly EvidenceEvent[];
+  assertions: readonly AssertionEvent[];
+  plans: ReadonlyMap<string, PlannedEntry>;
+  terminals: ReadonlyMap<string, TerminalEntry>;
+  successfulNormal: ReadonlyMap<string, SuccessfulNormalInteraction>;
+}): Map<string, LinkedCheckpointState> {
+  const observationsByStep = new Map<string, Set<string>>();
+  for (const event of input.observations) {
+    const payload = event.payload;
+    if (payload.stepId === undefined) continue;
+    const success = input.successfulNormal.get(payload.stepId);
+    const plan = input.plans.get(payload.actionId);
+    const terminal = input.terminals.get(payload.actionId);
     if (
-      capture?.payload.kind !== "evidence-capture" ||
-      capture.payload.stepId !== step.id ||
-      capture.event.sequence <= success.boundaryEvent.sequence ||
+      success === undefined ||
+      plan?.payload.kind !== "observation" ||
+      plan.payload.stepId !== payload.stepId ||
+      plan.event.sequence <= success.boundaryEvent.sequence ||
       terminal?.payload.phase !== "completed" ||
       terminal.event.sequence <= success.boundaryEvent.sequence ||
-      event.sequence <= success.boundaryEvent.sequence ||
-      !payload.observationIds.some((id) => observations.has(id))
-    ) {
-      continue;
-    }
-    linkedEvidenceIds.add(payload.id);
-    for (const kind of payload.evidenceKinds) linkedKinds.add(kind);
-  }
-  let assertionPresent = false;
-  for (const event of events) {
-    if (
-      event.type !== "assertion" ||
       event.sequence <= success.boundaryEvent.sequence
     ) {
       continue;
     }
-    const payload = assertionPayloadSchema.parse(event.payload);
+    const observations =
+      observationsByStep.get(payload.stepId) ?? new Set<string>();
+    observations.add(event.id);
+    observationsByStep.set(payload.stepId, observations);
+  }
+
+  const checkpointState = new Map<string, LinkedCheckpointState>();
+  const linkedEvidenceIdsByStep = new Map<string, Set<string>>();
+  for (const event of input.evidence) {
+    const payload = event.payload;
+    const capture = input.plans.get(payload.captureActionId);
+    if (capture === undefined) continue;
+    const stepId = capture.payload.stepId;
+    const success = input.successfulNormal.get(stepId);
+    const terminal = input.terminals.get(payload.captureActionId);
+    const observations = observationsByStep.get(stepId);
     if (
-      payload.status === "satisfied" &&
-      payload.stepId === step.id &&
-      payload.observationIds.some((id) => observations.has(id)) &&
-      payload.evidenceIds.some((id) => linkedEvidenceIds.has(id))
+      success === undefined ||
+      capture.payload.kind !== "evidence-capture" ||
+      capture.event.sequence <= success.boundaryEvent.sequence ||
+      terminal?.payload.phase !== "completed" ||
+      terminal.event.sequence <= success.boundaryEvent.sequence ||
+      event.sequence <= success.boundaryEvent.sequence ||
+      !payload.observationIds.some((id) => observations?.has(id) === true)
     ) {
-      assertionPresent = true;
-      for (const kind of payload.assertionKinds) linkedKinds.add(kind);
+      continue;
+    }
+    const linkedEvidenceIds =
+      linkedEvidenceIdsByStep.get(stepId) ?? new Set<string>();
+    linkedEvidenceIds.add(payload.id);
+    linkedEvidenceIdsByStep.set(stepId, linkedEvidenceIds);
+    const state = checkpointState.get(stepId) ?? {
+      linkedKinds: new Set<string>(),
+      assertionPresent: false,
+    };
+    for (const kind of payload.evidenceKinds) state.linkedKinds.add(kind);
+    checkpointState.set(stepId, state);
+  }
+
+  for (const event of input.assertions) {
+    const payload = event.payload;
+    const stepId = payload.stepId;
+    if (stepId === undefined) continue;
+    const success = input.successfulNormal.get(stepId);
+    const observations = observationsByStep.get(stepId);
+    const linkedEvidenceIds = linkedEvidenceIdsByStep.get(stepId);
+    if (
+      success !== undefined &&
+      event.sequence > success.boundaryEvent.sequence &&
+      payload.status === "satisfied" &&
+      payload.observationIds.some((id) => observations?.has(id) === true) &&
+      payload.evidenceIds.some((id) => linkedEvidenceIds?.has(id) === true)
+    ) {
+      const state = checkpointState.get(stepId) ?? {
+        linkedKinds: new Set<string>(),
+        assertionPresent: false,
+      };
+      state.assertionPresent = true;
+      for (const kind of payload.assertionKinds) state.linkedKinds.add(kind);
+      checkpointState.set(stepId, state);
     }
   }
-  const checkpointsPresent = step.evidenceCheckpoints.every((kind) =>
-    linkedKinds.has(kind),
-  );
-  return checkpointsPresent && assertionPresent;
+  return checkpointState;
 }
 
 function replayError(

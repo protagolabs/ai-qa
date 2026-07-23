@@ -1,9 +1,8 @@
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
 import { controllerForPlatform } from "../platforms/registry.js";
-import { evidenceEventPayloadSchema } from "../runs/event-payloads.js";
 import type { RunEvent } from "../runs/schema.js";
-import { evidenceRecordSchema, type EvidenceRecord } from "./schema.js";
+import type { EvidenceRecord } from "./schema.js";
 
 export function validateEvidenceParity(
   events: readonly RunEvent[],
@@ -14,8 +13,7 @@ export function validateEvidenceParity(
   let eventRecords: Map<string, EvidenceRecord>;
   try {
     indexed = new Map<string, EvidenceRecord>();
-    for (const recordInput of records) {
-      const record = evidenceRecordSchema.parse(recordInput);
+    for (const record of records) {
       if (
         record.runId !== runId ||
         record.sourceTool !== controllerForPlatform(record.platform)
@@ -29,11 +27,11 @@ export function validateEvidenceParity(
     eventRecords = new Map<string, EvidenceRecord>();
     for (const event of events) {
       if (event.type !== "evidence") continue;
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       const { criterionIds, observationIds, ...recordInput } = payload;
       void criterionIds;
       void observationIds;
-      const record = evidenceRecordSchema.parse(recordInput);
+      const record: EvidenceRecord = recordInput;
       if (
         event.platform !== record.platform ||
         record.sourceTool !== controllerForPlatform(record.platform)

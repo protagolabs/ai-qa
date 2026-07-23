@@ -5,11 +5,10 @@ import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import { completedRunPayloadSchema } from "../../core/runs/lifecycle.js";
 import {
-  actionPayloadSchema,
-  assertionPayloadSchema,
-  evidenceEventPayloadSchema,
-  recoveryPayloadSchema,
+  type ActionPayload,
   type AssertionPayload,
+  type EvidenceEventPayload,
+  type RecoveryPayload,
 } from "../../core/runs/event-payloads.js";
 import {
   runIdSchema,
@@ -18,7 +17,6 @@ import {
   type WorkOrder,
 } from "../../core/runs/schema.js";
 import {
-  blockerPayloadSchema,
   type CriterionResult,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
@@ -32,6 +30,23 @@ import {
   type SessionCommandState,
 } from "./run-session.js";
 import type { VerdictEntry } from "./verdict-service.js";
+
+type ActionEvent = Extract<RunEvent, { type: "action" }>;
+type PlannedActionPayload = Extract<ActionPayload, { phase: "planned" }>;
+type TerminalActionPayload = Extract<
+  ActionPayload,
+  { phase: "completed" | "unknown" }
+>;
+
+interface PlannedActionEntry {
+  event: ActionEvent;
+  payload: PlannedActionPayload;
+}
+
+interface TerminalActionEntry {
+  event: ActionEvent;
+  payload: TerminalActionPayload;
+}
 
 export interface FinalizeRunResult extends SessionCommandState {
   readonly runId: string;
@@ -172,16 +187,22 @@ export function validateFinalization(input: {
       );
     }
   }
-  const plans = input.events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [{ event, payload }] : [];
-  });
-  const terminals = input.events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [] : [{ event, payload }];
-  });
+  const plans: PlannedActionEntry[] = [];
+  const terminals: TerminalActionEntry[] = [];
+  const terminalsByActionId = new Map<string, TerminalActionEntry[]>();
+  for (const event of input.events) {
+    if (event.type !== "action") continue;
+    const payload = event.payload;
+    if (payload.phase === "planned") {
+      plans.push({ event, payload });
+      continue;
+    }
+    const terminal = { event, payload };
+    terminals.push(terminal);
+    const matches = terminalsByActionId.get(payload.actionId) ?? [];
+    matches.push(terminal);
+    terminalsByActionId.set(payload.actionId, matches);
+  }
   if (plans.length === 0 && input.workOrder.preflightResult !== true) {
     throw new AiQaError(
       "run.action_required",
@@ -189,9 +210,7 @@ export function validateFinalization(input: {
     );
   }
   for (const plan of plans) {
-    const matching = terminals.filter(
-      ({ payload }) => payload.actionId === plan.event.id,
-    );
+    const matching = terminalsByActionId.get(plan.event.id) ?? [];
     if (matching.length !== 1) {
       throw new AiQaError(
         "run.action_incomplete",
@@ -201,13 +220,10 @@ export function validateFinalization(input: {
     }
   }
 
-  const recoveryByAction = new Map<
-    string,
-    { payload: ReturnType<typeof recoveryPayloadSchema.parse> }
-  >();
+  const recoveryByAction = new Map<string, { payload: RecoveryPayload }>();
   for (const event of input.events) {
     if (event.type !== "recovery") continue;
-    const payload = recoveryPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     recoveryByAction.set(payload.actionId, { payload });
   }
   for (const terminal of terminals) {
@@ -302,10 +318,7 @@ function validateVerdictCitations(
   verdict: VerdictPayload,
   assertions: ReadonlyMap<string, AssertionPayload>,
   evidence: ReadonlyMap<string, EvidenceRecord>,
-  evidenceEvents: ReadonlyMap<
-    string,
-    ReturnType<typeof evidenceEventPayloadSchema.parse>
-  >,
+  evidenceEvents: ReadonlyMap<string, EvidenceEventPayload>,
 ): void {
   for (const result of verdict.criterionResults) {
     for (const assertionId of result.assertionIds) {
@@ -337,8 +350,11 @@ function validatePass(
   assertions: ReadonlyMap<string, AssertionPayload>,
   evidence: ReadonlyMap<string, EvidenceRecord>,
 ): void {
+  const resultsByCriterion = new Map(
+    results.map((result) => [result.criterionId, result]),
+  );
   for (const criterion of workOrder.acceptanceCriteria) {
-    const result = results.find((entry) => entry.criterionId === criterion.id);
+    const result = resultsByCriterion.get(criterion.id);
     if (result?.status !== "satisfied" || result.assertionIds.length === 0) {
       throw unsupportedPass(`Criterion ${criterion.id} is not supported`);
     }
@@ -383,15 +399,11 @@ function validateBlocked(
   events: readonly RunEvent[],
   verdict: Extract<VerdictPayload, { classification: "blocked" }>,
 ): void {
+  const eventsById = new Map(events.map((event) => [event.id, event]));
   const blockers = verdict.blockerIds.map((id) => {
-    const event = events.find(
-      (candidate) => candidate.id === id && candidate.type === "blocker",
-    );
-    if (event === undefined) throw invalidVerdictCitation("blocker", id);
-    return {
-      event,
-      payload: blockerPayloadSchema.parse(event.payload),
-    };
+    const event = eventsById.get(id);
+    if (event?.type !== "blocker") throw invalidVerdictCitation("blocker", id);
+    return { event, payload: event.payload };
   });
   if (
     blockers.some(({ payload }) => payload.subtype !== verdict.blockerSubtype)
@@ -404,7 +416,7 @@ function validateBlocked(
   if (
     verdict.blockerSubtype === "evidence" &&
     !blockers.some(({ payload }) =>
-      payload.attemptEventIds.some((id) => isEvidenceAttempt(events, id)),
+      payload.attemptEventIds.some((id) => isEvidenceAttempt(eventsById, id)),
     )
   ) {
     throw new AiQaError(
@@ -432,21 +444,17 @@ function validateNotVerified(input: {
       covered.get(criterion.id)?.status === "indeterminate",
   );
   const plans = input.events.filter(
+    (event) => event.type === "action" && event.payload.phase === "planned",
+  );
+  const recoveryPlans = plans.filter(
     (event) =>
       event.type === "action" &&
-      actionPayloadSchema.safeParse(event.payload).data?.phase === "planned",
+      event.payload.phase === "planned" &&
+      event.payload.recoveryForStepId !== undefined,
   );
-  const recoveryPlans = plans.filter((event) => {
-    const payload = actionPayloadSchema.parse(event.payload);
-    return (
-      payload.phase === "planned" && payload.recoveryForStepId !== undefined
-    );
-  });
   const indeterminateUnknown = input.events.some(
     (event) =>
-      event.type === "recovery" &&
-      recoveryPayloadSchema.safeParse(event.payload).data?.resolution ===
-        "indeterminate",
+      event.type === "recovery" && event.payload.resolution === "indeterminate",
   );
   const reasonMatches =
     (input.verdict.reasonCode === "incomplete_coverage" && incomplete) ||
@@ -502,7 +510,7 @@ function assertionMap(
   const assertions = new Map<string, AssertionPayload>();
   for (const event of events) {
     if (event.type === "assertion") {
-      assertions.set(event.id, assertionPayloadSchema.parse(event.payload));
+      assertions.set(event.id, event.payload);
     }
   }
   return assertions;
@@ -510,35 +518,32 @@ function assertionMap(
 
 function evidenceEventMap(
   events: readonly RunEvent[],
-): Map<string, ReturnType<typeof evidenceEventPayloadSchema.parse>> {
-  const evidence = new Map<
-    string,
-    ReturnType<typeof evidenceEventPayloadSchema.parse>
-  >();
+): Map<string, EvidenceEventPayload> {
+  const evidence = new Map<string, EvidenceEventPayload>();
   for (const event of events) {
     if (event.type !== "evidence") continue;
-    const payload = evidenceEventPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     evidence.set(payload.id, payload);
   }
   return evidence;
 }
 
-function isEvidenceAttempt(events: readonly RunEvent[], id: string): boolean {
-  const event = events.find((candidate) => candidate.id === id);
+function isEvidenceAttempt(
+  eventsById: ReadonlyMap<string, RunEvent>,
+  id: string,
+): boolean {
+  const event = eventsById.get(id);
   if (event?.type === "evidence") return true;
   if (event?.type !== "action") return false;
-  const payload = actionPayloadSchema.safeParse(event.payload);
-  if (!payload.success) return false;
-  if (payload.data.phase === "planned") {
-    return payload.data.kind === "evidence-capture";
+  const payload = event.payload;
+  if (payload.phase === "planned") {
+    return payload.kind === "evidence-capture";
   }
-  const actionId = payload.data.actionId;
-  const plan = events.find((candidate) => candidate.id === actionId);
-  const planPayload = actionPayloadSchema.safeParse(plan?.payload);
+  const plan = eventsById.get(payload.actionId);
   return (
-    planPayload.success &&
-    planPayload.data.phase === "planned" &&
-    planPayload.data.kind === "evidence-capture"
+    plan?.type === "action" &&
+    plan.payload.phase === "planned" &&
+    plan.payload.kind === "evidence-capture"
   );
 }
 

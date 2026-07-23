@@ -8,14 +8,9 @@ import {
   registerRawEvidenceInputSchema,
   type RegisterRawEvidenceInput,
 } from "../../core/evidence/repository.js";
+import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import {
-  evidenceRecordSchema,
-  type EvidenceRecord,
-} from "../../core/evidence/schema.js";
-import {
-  actionPayloadSchema,
   evidenceEventPayloadSchema,
-  observationPayloadSchema,
   type ActionPayload,
   type EvidenceEventPayload,
 } from "../../core/runs/event-payloads.js";
@@ -211,49 +206,37 @@ function requireValidObservations(
   events: readonly RunEvent[],
   observationIds: string[],
 ): void {
+  const eventsById = new Map<string, RunEvent[]>();
+  for (const event of events) {
+    const matches = eventsById.get(event.id) ?? [];
+    matches.push(event);
+    eventsById.set(event.id, matches);
+  }
   for (const observationId of observationIds) {
-    const matches = events.filter((event) => event.id === observationId);
-    if (
-      matches.length !== 1 ||
-      matches[0]?.type !== "observation" ||
-      !observationPayloadSchema.safeParse(matches[0].payload).success
-    ) {
+    const matches = eventsById.get(observationId) ?? [];
+    if (matches.length !== 1 || matches[0]?.type !== "observation") {
       throw invalidCitation("observation", observationId);
     }
   }
 }
 
 function parseExistingEvidenceEvent(
-  event: RunEvent,
+  event: Extract<RunEvent, { type: "evidence" }>,
   idempotencyKey: string,
 ): EvidenceEventPayload {
-  const parsed = evidenceEventPayloadSchema.safeParse(event.payload);
-  if (!parsed.success) throw idempotencyConflict(idempotencyKey);
-  return parsed.data;
+  if (event.idempotencyKey !== idempotencyKey) {
+    throw idempotencyConflict(idempotencyKey);
+  }
+  return event.payload;
 }
 
 function evidenceRecordFromEventPayload(
   payload: EvidenceEventPayload,
 ): EvidenceRecord {
-  return evidenceRecordSchema.parse({
-    schemaVersion: payload.schemaVersion,
-    id: payload.id,
-    runId: payload.runId,
-    projectRelativePath: payload.projectRelativePath,
-    contentHash: payload.contentHash,
-    mediaType: payload.mediaType,
-    platform: payload.platform,
-    sourceTool: payload.sourceTool,
-    capturedAt: payload.capturedAt,
-    classification: payload.classification,
-    sensitivity: payload.sensitivity,
-    evidenceKinds: payload.evidenceKinds,
-    captureActionId: payload.captureActionId,
-    ...(payload.parentEvidenceId === undefined
-      ? {}
-      : { parentEvidenceId: payload.parentEvidenceId }),
-    idempotencyKey: payload.idempotencyKey,
-  });
+  const { criterionIds, observationIds, ...record } = payload;
+  void criterionIds;
+  void observationIds;
+  return record;
 }
 
 function invalidCitation(kind: "criterion" | "observation", id: string) {
@@ -276,39 +259,41 @@ function requireCompletedCaptureAction(
   events: readonly RunEvent[],
   captureActionId: string,
 ): {
-  event: RunEvent;
+  event: Extract<RunEvent, { type: "action" }>;
   payload: Extract<ActionPayload, { phase: "planned" }>;
 } {
-  const actions = events
-    .filter((event) => event.type === "action")
-    .map((event) => {
-      const parsed = actionPayloadSchema.safeParse(event.payload);
-      if (!parsed.success) {
-        throw invalidCaptureAction(captureActionId);
+  let planned:
+    | {
+        event: Extract<RunEvent, { type: "action" }>;
+        payload: Extract<ActionPayload, { phase: "planned" }>;
       }
-      return { event, payload: parsed.data };
-    });
-  const planned = actions.find(
-    ({ event, payload }) =>
+    | undefined;
+  const terminals: Array<
+    Extract<ActionPayload, { phase: "completed" | "unknown" }>
+  > = [];
+  for (const event of events) {
+    if (event.type !== "action") continue;
+    const payload = event.payload;
+    if (
       event.id === captureActionId &&
       payload.phase === "planned" &&
-      payload.kind === "evidence-capture",
-  );
+      payload.kind === "evidence-capture"
+    ) {
+      planned = { event, payload };
+    } else if (
+      payload.phase !== "planned" &&
+      payload.actionId === captureActionId
+    ) {
+      terminals.push(payload);
+    }
+  }
   if (planned === undefined) {
     throw invalidCaptureAction(captureActionId);
   }
-  const plannedPayload = planned.payload;
-  if (plannedPayload.phase !== "planned") {
+  if (terminals.length !== 1 || terminals[0]?.phase !== "completed") {
     throw invalidCaptureAction(captureActionId);
   }
-  const terminals = actions.filter(
-    ({ payload }) =>
-      payload.phase !== "planned" && payload.actionId === captureActionId,
-  );
-  if (terminals.length !== 1 || terminals[0]?.payload.phase !== "completed") {
-    throw invalidCaptureAction(captureActionId);
-  }
-  return { event: planned.event, payload: plannedPayload };
+  return planned;
 }
 
 function invalidCaptureAction(captureActionId: string): AiQaError {

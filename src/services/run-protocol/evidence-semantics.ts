@@ -1,10 +1,4 @@
 import { AiQaError } from "../../core/errors.js";
-import {
-  actionPayloadSchema,
-  assertionPayloadSchema,
-  evidenceEventPayloadSchema,
-  observationPayloadSchema,
-} from "../../core/runs/event-payloads.js";
 import type { RunEvent } from "../../core/runs/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
 import { effectiveInteractionSuccesses } from "./effective-interactions.js";
@@ -16,24 +10,42 @@ export function validatePassEvidenceFreshness(
   if (verdict.classification !== "pass") return;
 
   const byId = new Map(events.map((event) => [event.id, event]));
-  const plans = new Map(
-    events.flatMap((event) => {
-      if (event.type !== "action") return [];
-      const payload = actionPayloadSchema.parse(event.payload);
-      return payload.phase === "planned"
-        ? ([[event.id, { event, payload }]] as const)
-        : [];
-    }),
-  );
-  const completedByActionId = new Map(
-    events.flatMap((event) => {
-      if (event.type !== "action") return [];
-      const payload = actionPayloadSchema.parse(event.payload);
-      return payload.phase === "completed"
-        ? ([[payload.actionId, event]] as const)
-        : [];
-    }),
-  );
+  const plans = new Map<
+    string,
+    {
+      event: Extract<RunEvent, { type: "action" }>;
+      payload: Extract<
+        Extract<RunEvent, { type: "action" }>["payload"],
+        { phase: "planned" }
+      >;
+    }
+  >();
+  const completedByActionId = new Map<
+    string,
+    Extract<RunEvent, { type: "action" }>
+  >();
+  const evidenceById = new Map<
+    string,
+    {
+      event: Extract<RunEvent, { type: "evidence" }>;
+      payload: Extract<RunEvent, { type: "evidence" }>["payload"];
+    }
+  >();
+  for (const event of events) {
+    if (event.type === "action") {
+      const payload = event.payload;
+      if (payload.phase === "planned") {
+        plans.set(event.id, { event, payload });
+      } else if (payload.phase === "completed") {
+        completedByActionId.set(payload.actionId, event);
+      }
+    } else if (event.type === "evidence") {
+      evidenceById.set(event.payload.id, {
+        event,
+        payload: event.payload,
+      });
+    }
+  }
   const interactionSteps = new Set(
     [...plans.values()].flatMap(({ payload }) =>
       payload.kind === "interaction" ? [payload.stepId] : [],
@@ -49,26 +61,24 @@ export function validatePassEvidenceFreshness(
       latestInteractionByStep.set(success.stepId, success.boundaryEvent);
     }
   }
-  const evidenceById = new Map(
-    events.flatMap((event) => {
-      if (event.type !== "evidence") return [];
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
-      return [[payload.id, { event, payload }]] as const;
-    }),
-  );
-
   for (const result of verdict.criterionResults) {
     const assertions = result.assertionIds.flatMap((assertionId) => {
       const event = byId.get(assertionId);
       return event?.type === "assertion"
-        ? [
-            {
-              event,
-              payload: assertionPayloadSchema.parse(event.payload),
-            },
-          ]
+        ? [{ event, payload: event.payload }]
         : [];
     });
+    const assertionsByEvidenceId = new Map<
+      string,
+      (typeof assertions)[number][]
+    >();
+    for (const assertion of assertions) {
+      for (const evidenceId of assertion.payload.evidenceIds) {
+        const citing = assertionsByEvidenceId.get(evidenceId) ?? [];
+        citing.push(assertion);
+        assertionsByEvidenceId.set(evidenceId, citing);
+      }
+    }
 
     for (const assertion of assertions) {
       if (assertion.payload.status !== "satisfied") continue;
@@ -102,9 +112,7 @@ export function validatePassEvidenceFreshness(
       ) {
         continue;
       }
-      const citingAssertions = assertions.filter(({ payload }) =>
-        payload.evidenceIds.includes(evidenceId),
-      );
+      const citingAssertions = assertionsByEvidenceId.get(evidenceId) ?? [];
       if (citingAssertions.length === 0) {
         throw staleEvidence(undefined, evidenceId);
       }
@@ -155,7 +163,7 @@ function validateObservations(input: {
     {
       event: RunEvent;
       payload: Extract<
-        ReturnType<typeof actionPayloadSchema.parse>,
+        Extract<RunEvent, { type: "action" }>["payload"],
         { phase: "planned" }
       >;
     }
@@ -176,7 +184,7 @@ function validateObservations(input: {
     if (event?.type !== "observation") {
       throw staleEvidence(input.assertionId, input.evidenceId);
     }
-    const payload = observationPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     const plan = input.plans.get(payload.actionId);
     const completed = input.completedByActionId.get(payload.actionId);
     if (

@@ -3,7 +3,6 @@ import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError, toErrorCause } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
-import { isRecord } from "../../core/node-errors.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
 import {
   controllerSchema,
@@ -13,7 +12,6 @@ import {
   actionPayloadSchema,
   assertionPayloadSchema,
   decisionPayloadSchema,
-  evidenceEventPayloadSchema,
   observationPayloadSchema,
   recoveryPayloadSchema,
   type ActionPayload,
@@ -76,14 +74,16 @@ type TerminalActionPayload = Extract<
   ActionPayload,
   { phase: "completed" | "unknown" }
 >;
+type ActionEvent = Extract<RunEvent, { type: "action" }>;
+type ObservationEvent = Extract<RunEvent, { type: "observation" }>;
 
 interface PlannedAction {
-  event: RunEvent;
+  event: ActionEvent;
   payload: PlannedActionPayload;
 }
 
 interface TerminalAction {
-  event: RunEvent;
+  event: ActionEvent;
   payload: TerminalActionPayload;
 }
 
@@ -436,8 +436,7 @@ function requireFreshObservationAfterResume(
 ): void {
   if (actionKind === "observation") return;
   const resumed = events.findLast((event) => {
-    if (event.type !== "run" || !isRecord(event.payload)) return false;
-    return event.payload.phase === "resumed";
+    return event.type === "run" && event.payload.phase === "resumed";
   });
   if (
     resumed !== undefined &&
@@ -512,9 +511,8 @@ function matchesPlanRetry(event: RunEvent, input: PlanActionInput): boolean {
   ) {
     return false;
   }
-  const parsed = actionPayloadSchema.safeParse(event.payload);
-  if (!parsed.success || parsed.data.phase !== "planned") return false;
-  const payload = parsed.data;
+  const payload = event.payload;
+  if (payload.phase !== "planned") return false;
   return (
     payload.kind === input.kind &&
     payload.intent === input.intent &&
@@ -527,7 +525,7 @@ function matchesPlanRetry(event: RunEvent, input: PlanActionInput): boolean {
 function plannedActions(events: readonly RunEvent[]): PlannedAction[] {
   return events.flatMap((event) => {
     if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     return payload.phase === "planned" ? [{ event, payload }] : [];
   });
 }
@@ -538,7 +536,7 @@ function terminalActions(
 ): TerminalAction[] {
   return events.flatMap((event) => {
     if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     return payload.phase !== "planned" && payload.actionId === actionId
       ? [{ event, payload }]
       : [];
@@ -628,14 +626,14 @@ function buildRecoveryRetryAccumulator(
   };
   for (const event of events) {
     if (event.type === "action") {
-      const payload = actionPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       if (payload.phase === "planned") {
         accumulateRecoveryRetryPlan(state, { event, payload });
       } else {
         state.terminals.set(payload.actionId, { event, payload });
       }
     } else if (event.type === "recovery") {
-      const payload = recoveryPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       state.resolutions.set(payload.actionId, payload);
     }
   }
@@ -685,9 +683,7 @@ function requireFreshRecoveryObservation(
       observationId,
     );
   }
-  const observationPayload = observationPayloadSchema.parse(
-    observation.payload,
-  );
+  const observationPayload = observation.payload;
   const observationPlan = requirePlannedAction(
     events,
     observationPayload.actionId,
@@ -732,14 +728,12 @@ function freshRecoveryObservationRequired(
 function findObservation(
   events: readonly RunEvent[],
   observationId: string,
-): RunEvent | undefined {
+): ObservationEvent | undefined {
   const matches = events.filter(
-    (event) => event.id === observationId && event.type === "observation",
+    (event): event is ObservationEvent =>
+      event.id === observationId && event.type === "observation",
   );
-  return matches.length === 1 &&
-    observationPayloadSchema.safeParse(matches[0]!.payload).success
-    ? matches[0]
-    : undefined;
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function requireEvidence(
@@ -749,12 +743,7 @@ function requireEvidence(
 ): void {
   const matches = events.filter((event) => {
     if (event.type !== "evidence") return false;
-    const payload = evidenceEventPayloadSchema.safeParse(event.payload);
-    return (
-      payload.success &&
-      payload.data.id === evidenceId &&
-      payload.data.runId === runId
-    );
+    return event.payload.id === evidenceId && event.payload.runId === runId;
   });
   if (matches.length !== 1) {
     throw invalidAssertionCitation("evidence", evidenceId);
@@ -804,7 +793,7 @@ export function validateProtocolEvents(
     const idempotencyKeyOwners = new Map<string, RunEvent["type"]>();
     const plans = new Map<string, PlannedAction>();
     const terminals = new Map<string, TerminalAction>();
-    const observations = new Map<string, RunEvent>();
+    const observations = new Map<string, ObservationEvent>();
     const observationActions = new Set<string>();
     const evidenceIds = new Set<string>();
     const recoveryResolutions = new Map<string, RecoveryPayload>();
@@ -848,7 +837,7 @@ export function validateProtocolEvents(
 
       switch (event.type) {
         case "action": {
-          const payload = actionPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           if (payload.phase === "planned") {
             requireProtocolMetadata(event, {
               actor: "agent",
@@ -911,7 +900,7 @@ export function validateProtocolEvents(
           break;
         }
         case "observation": {
-          const payload = observationPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           const plan = plans.get(payload.actionId);
           const terminal = terminals.get(payload.actionId);
           requireSemantic(plan?.payload.kind === "observation");
@@ -929,7 +918,7 @@ export function validateProtocolEvents(
           break;
         }
         case "assertion": {
-          const payload = assertionPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           requireSemantic(knownCriteria.has(payload.criterionId));
           requireSemantic(
             payload.observationIds.every((id) => observations.has(id)),
@@ -949,7 +938,7 @@ export function validateProtocolEvents(
           break;
         }
         case "evidence": {
-          const payload = evidenceEventPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           const plan = plans.get(payload.captureActionId);
           const terminal = terminals.get(payload.captureActionId);
           requireSemantic(payload.runId === runId);
@@ -980,7 +969,7 @@ export function validateProtocolEvents(
           break;
         }
         case "decision": {
-          const payload = decisionPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           requireProtocolMetadata(event, {
             actor: "agent",
             tool: "ai-qa",
@@ -990,28 +979,21 @@ export function validateProtocolEvents(
           break;
         }
         case "recovery": {
-          const payload = recoveryPayloadSchema.parse(event.payload);
+          const payload = event.payload;
           const plan = plans.get(payload.actionId);
           const terminal = terminals.get(payload.actionId);
           const observation = observations.get(payload.observationId);
-          const observationPayload = observationPayloadSchema.safeParse(
-            observation?.payload,
-          );
-          const observationPlan = observationPayload.success
-            ? plans.get(observationPayload.data.actionId)
-            : undefined;
-          const observationTerminal = observationPayload.success
-            ? terminals.get(observationPayload.data.actionId)
-            : undefined;
           requireSemantic(plan !== undefined);
           requireSemantic(terminal?.payload.phase === "unknown");
           requireSemantic(observation !== undefined);
-          requireSemantic(observationPayload.success);
+          const observationPayload = observation.payload;
+          const observationPlan = plans.get(observationPayload.actionId);
+          const observationTerminal = terminals.get(
+            observationPayload.actionId,
+          );
           requireSemantic(observationPlan?.payload.kind === "observation");
           requireSemantic(observationTerminal?.payload.phase === "completed");
-          requireSemantic(
-            observationPayload.data.stepId === plan.payload.stepId,
-          );
+          requireSemantic(observationPayload.stepId === plan.payload.stepId);
           requireSemantic(
             observationPlan.payload.stepId === plan.payload.stepId,
           );

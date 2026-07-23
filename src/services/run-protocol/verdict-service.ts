@@ -1,7 +1,6 @@
 import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { assertJsonValue } from "../../core/json-value.js";
-import { isRecord } from "../../core/node-errors.js";
 import {
   runIdSchema,
   type AppendRunEvent,
@@ -177,9 +176,10 @@ export function validateVerdictHistory(
     const priorEventIds = new Set<string>();
     const blockers = new Map<string, BlockerPayload>();
     const verdicts: VerdictEntry[] = [];
+    const verdictIds = new Set<string>();
     for (const event of events) {
       if (event.type === "blocker") {
-        const payload = blockerPayloadSchema.parse(event.payload);
+        const payload = event.payload;
         requireMetadata(event, "agent", `blocker:${sha256Canonical(payload)}`, [
           ...payload.attemptEventIds,
           ...payload.criterionIds,
@@ -192,7 +192,7 @@ export function validateVerdictHistory(
         }
         blockers.set(event.id, payload);
       } else if (event.type === "verdict") {
-        const payload = verdictPayloadSchema.parse(event.payload);
+        const payload = event.payload;
         requireCanonicalCancellationShape(payload);
         if (
           !payload.criterionResults.every((result) =>
@@ -203,7 +203,7 @@ export function validateVerdictHistory(
         }
         if (
           payload.supersedes !== undefined &&
-          !verdicts.some(({ event: prior }) => prior.id === payload.supersedes)
+          !verdictIds.has(payload.supersedes)
         ) {
           throw new Error("invalid verdict predecessor");
         }
@@ -220,6 +220,7 @@ export function validateVerdictHistory(
           verdictRelatedIds(payload),
         );
         verdicts.push({ event, payload });
+        verdictIds.add(event.id);
       }
       priorEventIds.add(event.id);
     }
@@ -408,15 +409,14 @@ function requireBlockedVerdictReferences(
     const blocker = events.find(
       (event) => event.id === blockerId && event.type === "blocker",
     );
-    const parsed = blockerPayloadSchema.safeParse(blocker?.payload);
-    if (!parsed.success) {
+    if (blocker?.type !== "blocker") {
       throw new AiQaError(
         "verdict.blocker_reference_invalid",
         "Blocked verdicts must cite existing blocker events",
         { blockerId },
       );
     }
-    if (parsed.data.subtype !== payload.blockerSubtype) {
+    if (blocker.payload.subtype !== payload.blockerSubtype) {
       throw new AiQaError(
         "verdict.blocker_subtype_mismatch",
         "Blocked verdict subtype must match every cited blocker",
@@ -430,7 +430,6 @@ function requireMutableRun(events: readonly RunEvent[]): void {
   const terminal = events.find(
     (event) =>
       event.type === "run" &&
-      isRecord(event.payload) &&
       (event.payload.phase === "completed" ||
         event.payload.phase === "cancelled"),
   );

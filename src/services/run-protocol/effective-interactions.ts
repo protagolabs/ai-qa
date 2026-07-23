@@ -1,33 +1,31 @@
-import {
-  actionPayloadSchema,
-  observationPayloadSchema,
-  recoveryPayloadSchema,
-} from "../../core/runs/event-payloads.js";
 import type { RunEvent } from "../../core/runs/schema.js";
 
+type ActionEvent = Extract<RunEvent, { type: "action" }>;
+type ObservationEvent = Extract<RunEvent, { type: "observation" }>;
+type RecoveryEvent = Extract<RunEvent, { type: "recovery" }>;
 type PlannedActionPayload = Extract<
-  ReturnType<typeof actionPayloadSchema.parse>,
+  ActionEvent["payload"],
   { phase: "planned" }
 >;
 
 export interface EffectiveInteractionSuccess {
   actionId: string;
   stepId: string;
-  planEvent: RunEvent;
+  planEvent: ActionEvent;
   planPayload: PlannedActionPayload;
-  terminalEvent: RunEvent;
+  terminalEvent: ActionEvent;
   boundaryEvent: RunEvent;
 }
 
 export interface EffectiveInteractionAccumulator {
-  plans: Map<string, { event: RunEvent; payload: PlannedActionPayload }>;
-  terminals: Map<string, RunEvent[]>;
-  observations: Map<string, RunEvent[]>;
+  plans: Map<string, { event: ActionEvent; payload: PlannedActionPayload }>;
+  terminals: Map<string, ActionEvent[]>;
+  observations: Map<string, ObservationEvent[]>;
   recoveries: Map<
     string,
     Array<{
-      event: RunEvent;
-      payload: ReturnType<typeof recoveryPayloadSchema.parse>;
+      event: RecoveryEvent;
+      payload: RecoveryEvent["payload"];
     }>
   >;
 }
@@ -46,14 +44,13 @@ export function accumulateEffectiveInteractionEvent(
   event: RunEvent,
 ): void {
   if (event.type === "action") {
-    const payload = actionPayloadSchema.safeParse(event.payload);
-    if (!payload.success) return;
-    if (payload.data.phase === "planned") {
-      state.plans.set(event.id, { event, payload: payload.data });
+    const payload = event.payload;
+    if (payload.phase === "planned") {
+      state.plans.set(event.id, { event, payload });
     } else {
-      const matches = state.terminals.get(payload.data.actionId) ?? [];
+      const matches = state.terminals.get(payload.actionId) ?? [];
       matches.push(event);
-      state.terminals.set(payload.data.actionId, matches);
+      state.terminals.set(payload.actionId, matches);
     }
     return;
   }
@@ -64,11 +61,10 @@ export function accumulateEffectiveInteractionEvent(
     return;
   }
   if (event.type === "recovery") {
-    const payload = recoveryPayloadSchema.safeParse(event.payload);
-    if (!payload.success) return;
-    const matches = state.recoveries.get(payload.data.actionId) ?? [];
-    matches.push({ event, payload: payload.data });
-    state.recoveries.set(payload.data.actionId, matches);
+    const payload = event.payload;
+    const matches = state.recoveries.get(payload.actionId) ?? [];
+    matches.push({ event, payload });
+    state.recoveries.set(payload.actionId, matches);
   }
 }
 
@@ -82,11 +78,9 @@ export function effectiveInteractionSuccessFor(
   const recoveryMatches = state.recoveries.get(actionId) ?? [];
   if (terminalMatches.length !== 1) return undefined;
   const terminalEvent = terminalMatches[0]!;
-  const terminalPayload = actionPayloadSchema.safeParse(terminalEvent.payload);
-  if (!terminalPayload.success || terminalPayload.data.phase === "planned") {
-    return undefined;
-  }
-  if (terminalPayload.data.phase === "completed") {
+  const terminalPayload = terminalEvent.payload;
+  if (terminalPayload.phase === "planned") return undefined;
+  if (terminalPayload.phase === "completed") {
     return recoveryMatches.length === 0
       ? {
           actionId,
@@ -116,25 +110,18 @@ export function effectiveInteractionSuccessFor(
     state.observations.get(recovery.payload.observationId) ?? [];
   if (observationMatches.length !== 1) return undefined;
   const observation = observationMatches[0]!;
-  const observationPayload = observationPayloadSchema.safeParse(
-    observation.payload,
-  );
-  if (!observationPayload.success) return undefined;
-  const observationPlan = state.plans.get(observationPayload.data.actionId);
+  const observationPayload = observation.payload;
+  const observationPlan = state.plans.get(observationPayload.actionId);
   const observationTerminalMatches =
-    state.terminals.get(observationPayload.data.actionId) ?? [];
+    state.terminals.get(observationPayload.actionId) ?? [];
   const observationTerminal = observationTerminalMatches[0];
-  const observationTerminalPayload = actionPayloadSchema.safeParse(
-    observationTerminal?.payload,
-  );
   if (
-    observationPayload.data.stepId !== plan.payload.stepId ||
+    observationPayload.stepId !== plan.payload.stepId ||
     observationPlan?.payload.kind !== "observation" ||
     observationPlan.payload.stepId !== plan.payload.stepId ||
     observationTerminalMatches.length !== 1 ||
     observationTerminal === undefined ||
-    !observationTerminalPayload.success ||
-    observationTerminalPayload.data.phase !== "completed" ||
+    observationTerminal.payload.phase !== "completed" ||
     observationPlan.event.sequence <= terminalEvent.sequence ||
     observationTerminal.sequence <= terminalEvent.sequence ||
     observation.sequence <= terminalEvent.sequence ||

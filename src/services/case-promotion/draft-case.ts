@@ -14,11 +14,8 @@ import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import {
-  actionPayloadSchema,
-  assertionPayloadSchema,
-  evidenceEventPayloadSchema,
-  observationPayloadSchema,
-  recoveryPayloadSchema,
+  type ActionPayload,
+  type RecoveryPayload,
 } from "../../core/runs/event-payloads.js";
 import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
 import { RunRepository } from "../../core/runs/repository.js";
@@ -104,6 +101,23 @@ interface ProposedStep {
     stabilityRationale: string;
   };
   evidenceCheckpoints: string[];
+}
+
+type ActionEvent = Extract<RunEvent, { type: "action" }>;
+type PlannedActionPayload = Extract<ActionPayload, { phase: "planned" }>;
+type TerminalActionPayload = Extract<
+  ActionPayload,
+  { phase: "completed" | "unknown" }
+>;
+
+interface PlannedActionEntry {
+  event: ActionEvent;
+  payload: PlannedActionPayload;
+}
+
+interface TerminalActionEntry {
+  event: ActionEvent;
+  payload: TerminalActionPayload;
 }
 
 export async function draftCaseFromRun(input: {
@@ -419,25 +433,35 @@ function analyzePromotion(input: {
   }
   issues.push(...sourceCriterionCoverageIssues(input.source));
 
-  const planned = input.source.events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [{ event, payload }] : [];
-  });
-  const terminals = input.source.events.flatMap((event) => {
-    if (event.type !== "action") return [];
-    const payload = actionPayloadSchema.parse(event.payload);
-    return payload.phase === "planned" ? [] : [{ event, payload }];
-  });
-  const recoveries = input.source.events.flatMap((event) => {
-    if (event.type !== "recovery") return [];
-    return [{ event, payload: recoveryPayloadSchema.parse(event.payload) }];
-  });
+  const planned: PlannedActionEntry[] = [];
+  const terminalsByActionId = new Map<string, TerminalActionEntry[]>();
+  const recoveriesByActionId = new Map<
+    string,
+    Array<{
+      event: Extract<RunEvent, { type: "recovery" }>;
+      payload: RecoveryPayload;
+    }>
+  >();
+  for (const event of input.source.events) {
+    if (event.type === "action") {
+      const payload = event.payload;
+      if (payload.phase === "planned") {
+        planned.push({ event, payload });
+      } else {
+        const terminal = { event, payload };
+        const matches = terminalsByActionId.get(payload.actionId) ?? [];
+        matches.push(terminal);
+        terminalsByActionId.set(payload.actionId, matches);
+      }
+    } else if (event.type === "recovery") {
+      const matches = recoveriesByActionId.get(event.payload.actionId) ?? [];
+      matches.push({ event, payload: event.payload });
+      recoveriesByActionId.set(event.payload.actionId, matches);
+    }
+  }
 
   for (const plan of planned) {
-    const matching = terminals.filter(
-      ({ payload }) => payload.actionId === plan.event.id,
-    );
+    const matching = terminalsByActionId.get(plan.event.id) ?? [];
     if (matching.length !== 1) {
       issues.push(
         issue(
@@ -450,9 +474,7 @@ function analyzePromotion(input: {
     }
     const terminal = matching[0]!;
     if (terminal.payload.phase !== "unknown") continue;
-    const resolutions = recoveries.filter(
-      ({ payload }) => payload.actionId === plan.event.id,
-    );
+    const resolutions = recoveriesByActionId.get(plan.event.id) ?? [];
     if (
       resolutions.length !== 1 ||
       resolutions[0]?.payload.resolution === "indeterminate"
@@ -594,9 +616,7 @@ function sourceCriterionCoverageIssues(
 ): CaseValidationIssue[] {
   const assertions = new Map(
     source.events.flatMap((event) =>
-      event.type === "assertion"
-        ? [[event.id, assertionPayloadSchema.parse(event.payload)] as const]
-        : [],
+      event.type === "assertion" ? [[event.id, event.payload] as const] : [],
     ),
   );
   const evidenceById = new Map(
@@ -605,13 +625,16 @@ function sourceCriterionCoverageIssues(
   const evidenceEvents = new Map(
     source.events.flatMap((event) => {
       if (event.type !== "evidence") return [];
-      const payload = evidenceEventPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       return [[payload.id, payload] as const];
     }),
   );
   const results = source.verdict.criterionResults;
+  const resultsByCriterion = new Map(
+    results.map((result) => [result.criterionId, result]),
+  );
   return source.workOrder.acceptanceCriteria.flatMap((criterion) => {
-    const result = results.find((entry) => entry.criterionId === criterion.id);
+    const result = resultsByCriterion.get(criterion.id);
     if (result?.status !== "satisfied" || result.assertionIds.length === 0) {
       return [
         issue(
@@ -667,11 +690,8 @@ function proofKindsForSteps(
   plannedById: ReadonlyMap<
     string,
     {
-      event: RunEvent;
-      payload: Extract<
-        ReturnType<typeof actionPayloadSchema.parse>,
-        { phase: "planned" }
-      >;
+      event: ActionEvent;
+      payload: PlannedActionPayload;
     }
   >,
 ): Map<string, Set<string>> {
@@ -680,7 +700,7 @@ function proofKindsForSteps(
   const completedByActionId = new Map(
     events.flatMap((event) => {
       if (event.type !== "action") return [];
-      const payload = actionPayloadSchema.parse(event.payload);
+      const payload = event.payload;
       return payload.phase === "completed"
         ? [[payload.actionId, event] as const]
         : [];
@@ -700,7 +720,7 @@ function proofKindsForSteps(
   const observationsByStep = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.type !== "observation") continue;
-    const payload = observationPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     if (payload.stepId === undefined) continue;
     const success = successfulInteractionByStep.get(payload.stepId);
     const plan = plannedById.get(payload.actionId);
@@ -723,7 +743,7 @@ function proofKindsForSteps(
   const evidenceIdsByStep = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.type !== "evidence") continue;
-    const payload = evidenceEventPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     if (!validEvidenceIds.has(payload.id)) continue;
     const capture = plannedById.get(payload.captureActionId);
     const stepId = capture?.payload.stepId;
@@ -749,7 +769,7 @@ function proofKindsForSteps(
   }
   for (const event of events) {
     if (event.type !== "assertion") continue;
-    const payload = assertionPayloadSchema.parse(event.payload);
+    const payload = event.payload;
     if (payload.stepId === undefined || payload.status !== "satisfied")
       continue;
     const success = successfulInteractionByStep.get(payload.stepId);
