@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
+import { requestCiRunFailure } from "../../src/cli/commands/report.js";
 import {
   runReportSchema,
   type RunReport,
@@ -33,10 +34,12 @@ let currentReport: RunReport;
 
 function runReport(input: {
   execution: "local" | "ci";
+  kind?: "exploratory" | "regression";
   status?: "completed" | "cancelled";
   verdict: "pass" | "fail";
 }): RunReport {
   const status = input.status ?? "completed";
+  const kind = input.kind ?? "exploratory";
   return runReportSchema.parse({
     schemaVersion: 2,
     generatedAt: "2026-07-17T00:05:00.000Z",
@@ -44,7 +47,7 @@ function runReport(input: {
     reportPolicy: { audience: "engineering", detail: "full" },
     run: {
       id: "run-ci-report",
-      kind: "exploratory",
+      kind,
       execution: input.execution,
       platform: "web",
       controller: "chrome-devtools-mcp",
@@ -76,6 +79,16 @@ function runReport(input: {
         screenshots: "required",
         defaultSensitivity: "internal",
       },
+      ...(kind === "regression"
+        ? {
+            pinnedCase: {
+              caseId: "sign-in",
+              revision: 1,
+              caseContentHash: `sha256:${"a".repeat(64)}`,
+              platformVariantHash: `sha256:${"b".repeat(64)}`,
+            },
+          }
+        : {}),
     },
     evidence: [],
     timeline: [],
@@ -110,8 +123,23 @@ beforeEach(() => {
 });
 
 describe("single-run CI report CLI exits", () => {
+  it("exports the single-run CI failure helper", () => {
+    const requestExitCode = vi.fn();
+
+    requestCiRunFailure(
+      runReport({ execution: "ci", verdict: "fail" }),
+      requestExitCode,
+    );
+
+    expect(requestExitCode).toHaveBeenCalledWith(1);
+  });
+
   it.each([
-    ["a failed CI run", { execution: "ci", verdict: "fail" }, 1],
+    [
+      "a failed CI regression run",
+      { execution: "ci", kind: "regression", verdict: "fail" },
+      1,
+    ],
     [
       "a cancelled CI run",
       { execution: "ci", status: "cancelled", verdict: "pass" },

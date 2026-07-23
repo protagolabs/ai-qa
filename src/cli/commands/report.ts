@@ -87,9 +87,9 @@ function requestCiGroupFailure(
   }
 }
 
-function requestCiRunFailure(
+export function requestCiRunFailure(
   report: RunReport,
-  requestExitCode: (exitCode: number) => void,
+  requestExitCode: (code: number) => void,
 ): void {
   if (
     report.run.execution === "ci" &&
