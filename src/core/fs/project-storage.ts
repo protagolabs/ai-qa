@@ -146,6 +146,7 @@ export interface ProjectLocalPublishHooks {
     temporaryPath: string;
     parentPath: string;
   }) => Promise<void>;
+  afterLink?: (input: { path: string }) => Promise<void>;
 }
 
 export async function publishProjectLocalRegularFile(input: {
@@ -173,6 +174,8 @@ export async function publishProjectLocalRegularFile(input: {
   );
   let handle;
   let temporaryIdentity: BigIntFileIdentity | undefined;
+  let destinationLinked = false;
+  let publicationComplete = false;
   try {
     handle = await open(temporaryPath, "wx", 0o600);
     await handle.writeFile(input.content);
@@ -216,6 +219,7 @@ export async function publishProjectLocalRegularFile(input: {
     input.preCommit?.();
     try {
       await link(temporaryPath, destination);
+      destinationLinked = true;
     } catch (error: unknown) {
       throw storageError(
         "Project-local publication destination changed before commit",
@@ -223,25 +227,37 @@ export async function publishProjectLocalRegularFile(input: {
         nodeErrorCode(error),
       );
     }
-    const publishedIdentity = await lstat(destination, { bigint: true });
-    if (
-      publishedIdentity.isSymbolicLink() ||
-      !publishedIdentity.isFile() ||
-      publishedIdentity.dev !== temporaryIdentity.dev ||
-      publishedIdentity.ino !== temporaryIdentity.ino
-    ) {
-      throw storageError(
-        "Project-local publication destination identity changed during commit",
-        destination,
-      );
-    }
+    await input.hooks?.afterLink?.({ path: destination });
+    await verifyPublishedRegularFile({
+      projectRoot: input.projectRoot,
+      parentSegments,
+      parent,
+      parentIdentity,
+      destination,
+      temporaryIdentity,
+      expectedContent: input.content,
+    });
     await unlink(temporaryPath);
     if (input.durable === true) {
       await syncDirectoryWhereSupported(parent);
     }
+    publicationComplete = true;
     return destination;
   } finally {
     await handle?.close();
+    if (
+      destinationLinked &&
+      !publicationComplete &&
+      temporaryIdentity !== undefined
+    ) {
+      await removeCapturedPublication({
+        parent,
+        parentIdentity,
+        destination,
+        temporaryIdentity,
+        durable: input.durable === true,
+      });
+    }
     if (temporaryIdentity !== undefined) {
       const currentTemporary = await lstat(temporaryPath, {
         bigint: true,
@@ -257,6 +273,127 @@ export async function publishProjectLocalRegularFile(input: {
   }
 }
 
+async function verifyPublishedRegularFile(input: {
+  projectRoot: string;
+  parentSegments: readonly string[];
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+  destination: string;
+  temporaryIdentity: BigIntFileIdentity;
+  expectedContent: Buffer;
+}): Promise<void> {
+  let publishedHandle;
+  try {
+    await requireUnchangedPublicationParent(input);
+    publishedHandle = await open(
+      input.destination,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const beforeRead = await publishedHandle.stat({ bigint: true });
+    if (
+      !beforeRead.isFile() ||
+      !sameFileIdentity(beforeRead, input.temporaryIdentity)
+    ) {
+      throw storageError(
+        "Project-local publication destination identity changed during commit",
+        input.destination,
+      );
+    }
+    const content = await publishedHandle.readFile();
+    const afterRead = await publishedHandle.stat({ bigint: true });
+    if (
+      !sameFileIdentity(beforeRead, afterRead) ||
+      !content.equals(input.expectedContent)
+    ) {
+      throw storageError(
+        "Project-local publication destination bytes changed during commit",
+        input.destination,
+      );
+    }
+    const afterPath = await lstat(input.destination, { bigint: true });
+    if (
+      afterPath.isSymbolicLink() ||
+      !afterPath.isFile() ||
+      !sameFileIdentity(afterPath, afterRead)
+    ) {
+      throw storageError(
+        "Project-local publication destination changed during verification",
+        input.destination,
+      );
+    }
+    await requireUnchangedPublicationParent(input);
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local publication destination verification failed",
+      input.destination,
+      nodeErrorCode(error),
+    );
+  } finally {
+    await publishedHandle?.close();
+  }
+}
+
+async function requireUnchangedPublicationParent(input: {
+  projectRoot: string;
+  parentSegments: readonly string[];
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+}): Promise<void> {
+  const verifiedParent = await requireProjectLocalDirectory(
+    input.projectRoot,
+    input.parentSegments,
+  );
+  const currentParent = await lstat(input.parent, { bigint: true });
+  if (
+    verifiedParent !== input.parent ||
+    currentParent.dev !== input.parentIdentity.dev ||
+    currentParent.ino !== input.parentIdentity.ino
+  ) {
+    throw storageError(
+      "Project-local publication parent changed during verification",
+      input.parent,
+    );
+  }
+}
+
+async function removeCapturedPublication(input: {
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+  destination: string;
+  temporaryIdentity: BigIntFileIdentity;
+  durable: boolean;
+}): Promise<void> {
+  const currentParent = await lstat(input.parent, {
+    bigint: true,
+  }).catch(() => undefined);
+  if (
+    currentParent === undefined ||
+    currentParent.isSymbolicLink() ||
+    !currentParent.isDirectory() ||
+    currentParent.dev !== input.parentIdentity.dev ||
+    currentParent.ino !== input.parentIdentity.ino
+  ) {
+    return;
+  }
+  const currentDestination = await lstat(input.destination, {
+    bigint: true,
+  }).catch(() => undefined);
+  if (
+    currentDestination === undefined ||
+    currentDestination.isSymbolicLink() ||
+    !currentDestination.isFile() ||
+    currentDestination.dev !== input.temporaryIdentity.dev ||
+    currentDestination.ino !== input.temporaryIdentity.ino
+  ) {
+    return;
+  }
+  await unlink(input.destination).catch(() => undefined);
+  if (input.durable) {
+    await syncDirectoryWhereSupported(input.parent);
+  }
+}
+
 async function verifyPublicationCommitState(input: {
   projectRoot: string;
   parentSegments: readonly string[];
@@ -267,21 +404,7 @@ async function verifyPublicationCommitState(input: {
   destination: string;
 }): Promise<void> {
   try {
-    const verifiedParent = await requireProjectLocalDirectory(
-      input.projectRoot,
-      input.parentSegments,
-    );
-    const currentParent = await lstat(input.parent, { bigint: true });
-    if (
-      verifiedParent !== input.parent ||
-      currentParent.dev !== input.parentIdentity.dev ||
-      currentParent.ino !== input.parentIdentity.ino
-    ) {
-      throw storageError(
-        "Project-local publication parent changed during verification",
-        input.parent,
-      );
-    }
+    await requireUnchangedPublicationParent(input);
     const currentTemporary = await lstat(input.temporaryPath, {
       bigint: true,
     });

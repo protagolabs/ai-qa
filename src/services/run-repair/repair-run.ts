@@ -305,6 +305,10 @@ interface RepairRunHooks {
     temporaryPath: string;
     parentPath: string;
   }) => Promise<void>;
+  afterRecoveryPublishLink?: (input: {
+    recoveryPath: string;
+    destinationPath: string;
+  }) => Promise<void>;
   afterEvidenceDeleteFinalVerification?: (input: {
     sourcePath: string;
   }) => Promise<void>;
@@ -1012,6 +1016,12 @@ async function copyRelocation(
           recoveryPath: relocation.recoveryPath,
           temporaryPath,
           parentPath,
+        });
+      },
+      afterLink: async ({ path }) => {
+        await context.hooks.afterRecoveryPublishLink?.({
+          recoveryPath: relocation.recoveryPath,
+          destinationPath: path,
         });
       },
     },

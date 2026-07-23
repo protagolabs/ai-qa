@@ -972,6 +972,48 @@ describe("run repair", () => {
     );
   });
 
+  it("rejects recovery bytes mutated on the published inode after link", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const source = resolveProjectPath(
+      fixture.projectRoot,
+      orphan.projectRelativePath,
+    );
+    const indexBefore = await readFile(evidenceIndexPath(fixture.projectRoot));
+    const journalBefore = await readFile(journalPath(fixture.projectRoot));
+    let recoveryPath: string | undefined;
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterRecoveryPublishLink: async (input) => {
+              recoveryPath = input.recoveryPath;
+              await writeFile(input.destinationPath, "mutated-image!");
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    expect(recoveryPath).toBeDefined();
+    await expect(
+      lstat(resolveProjectPath(fixture.projectRoot, recoveryPath!)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(source, "utf8")).toBe("orphaned-image");
+    expect(await readFile(evidenceIndexPath(fixture.projectRoot))).toEqual(
+      indexBefore,
+    );
+    expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+      journalBefore,
+    );
+  });
+
   it("preserves a source swapped to an outside symlink before deletion", async () => {
     const fixture = await createRepairFixture({ orphan: true });
     const orphan = requiredOrphan(fixture);
