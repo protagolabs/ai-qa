@@ -1999,7 +1999,7 @@ describe("case promotion", () => {
         rejected.context,
       ),
     ).toBe(1);
-    expect(rejected.stderr.join("")).toContain("input.invalid_json");
+    expect(rejected.stderr.join("")).toContain("input.schema_invalid");
 
     const confirmed = createCapturedCli({
       cwd: projectRoot,

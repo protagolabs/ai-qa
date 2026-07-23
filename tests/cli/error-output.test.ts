@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { readJsonInput } from "../../src/cli/io.js";
 import { runCli } from "../../src/cli/program.js";
+import { AiQaError } from "../../src/core/errors.js";
 import { createCliTestContext } from "../helpers/cli-context.js";
 
 describe("error output contract", () => {
@@ -62,5 +65,31 @@ describe("error output contract", () => {
       code: "run.not_found",
       message: "Missing",
     });
+  });
+});
+
+describe("readJsonInput", () => {
+  const schema = z.object({ goal: z.string().min(1) }).strict();
+
+  it("reports malformed JSON as input.invalid_json", async () => {
+    const context = createCliTestContext({ stdin: "{not json" });
+    const error = await readJsonInput(context.context, schema).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(AiQaError);
+    expect((error as AiQaError).code).toBe("input.invalid_json");
+    expect((error as AiQaError).issues).toBeUndefined();
+  });
+
+  it("reports schema mismatches as input.schema_invalid with issues", async () => {
+    const context = createCliTestContext({ stdin: '{"goal":""}' });
+    const error = await readJsonInput(context.context, schema).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(AiQaError);
+    expect((error as AiQaError).code).toBe("input.schema_invalid");
+    expect((error as AiQaError).issues).toEqual([
+      expect.objectContaining({ path: ["goal"] }),
+    ]);
   });
 });

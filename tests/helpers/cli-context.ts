@@ -7,8 +7,13 @@ export interface CapturedCli {
   stderr: string[];
 }
 
+export interface CapturedCliOptions {
+  stdin?: string;
+}
+
 export function createCapturedCli(
   overrides: Partial<CliContext> = {},
+  options: CapturedCliOptions = {},
 ): CapturedCli {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -18,7 +23,7 @@ export function createCapturedCli(
     homeDir: process.cwd(),
     now: () => new Date("2026-07-13T00:00:00.000Z"),
     fetchImpl: vi.fn<typeof fetch>(),
-    readStdin: () => Promise.resolve(""),
+    readStdin: () => Promise.resolve(options.stdin ?? ""),
     writeStdout: (value) => stdout.push(value),
     writeStderr: (value) => stderr.push(value),
     ...overrides,
@@ -26,4 +31,8 @@ export function createCapturedCli(
   return { context, stdout, stderr };
 }
 
-export const createCliTestContext = createCapturedCli;
+export function createCliTestContext(
+  options: CapturedCliOptions = {},
+): CapturedCli {
+  return createCapturedCli({}, options);
+}

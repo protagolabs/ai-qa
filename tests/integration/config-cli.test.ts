@@ -36,7 +36,7 @@ describe("read-only config CLI", () => {
         await runCli(["config", "validate", "--stdin-json"], captured.context),
       ).toBe(1);
       expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
-        error: { code: "input.invalid_json" },
+        error: { code: "input.schema_invalid" },
       });
     },
   );

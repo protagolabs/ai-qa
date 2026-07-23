@@ -1488,7 +1488,7 @@ describe("pinned regression replay", () => {
       ),
     ).toBe(1);
     expect(JSON.parse(captured.stderr.join(""))).toMatchObject({
-      error: { code: "input.invalid_json" },
+      error: { code: "input.schema_invalid" },
     });
 
     captured.stderr.length = 0;
