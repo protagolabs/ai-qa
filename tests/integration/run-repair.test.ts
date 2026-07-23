@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
   cp,
@@ -12,6 +12,7 @@ import {
   rm,
   symlink,
   truncate,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -370,58 +371,56 @@ describe("run repair", () => {
     ).resolves.toEqual({ runId, relocated: [] });
   });
 
-  it(
-    "does not deadlock against concurrent evidence registration",
+  it.each(Array.from({ length: 20 }, (_, iteration) => iteration))(
+    "does not deadlock against concurrent evidence registration (iteration %i)",
     { timeout: 15_000 },
-    async () => {
-      for (let iteration = 0; iteration < 20; iteration += 1) {
-        const fixture = await createRepairFixture({ orphan: true });
-        const sourcePath = join(
-          fixture.projectRoot,
-          `concurrent-${iteration}.png`,
-        );
-        await writeFile(sourcePath, `concurrent-${iteration}`);
+    async (iteration) => {
+      const fixture = await createRepairFixture({ orphan: true });
+      const sourcePath = join(
+        fixture.projectRoot,
+        `concurrent-${iteration}.png`,
+      );
+      await writeFile(sourcePath, `concurrent-${iteration}`);
 
-        const [repair, evidence] = await Promise.allSettled([
-          repairRun({
-            projectRoot: fixture.projectRoot,
-            runId,
-            now: fixedNow,
-          }),
-          registerEvidence({
-            projectRoot: fixture.projectRoot,
-            runId,
-            payload: {
-              sourcePath,
-              mediaType: "image/png",
-              sourceTool: "chrome-devtools-mcp",
-              sensitivity: "internal",
-              evidenceKinds: ["post-action-screenshot"],
-              captureActionId: fixture.captureActionId,
-              idempotencyKey: `concurrent-${iteration}`,
-            },
-            criterionIds: ["authenticated-home-visible"],
-            observationIds: [],
-            now: fixedNow,
-          }),
-        ]);
-
-        expect(repair).toMatchObject({
-          status: "fulfilled",
-          value: {
-            relocated: [
-              expect.objectContaining({ kind: "evidence-file" }),
-              expect.objectContaining({ kind: "evidence-index-entry" }),
-            ],
+      const [repair, evidence] = await Promise.allSettled([
+        repairRun({
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        }),
+        registerEvidence({
+          projectRoot: fixture.projectRoot,
+          runId,
+          payload: {
+            sourcePath,
+            mediaType: "image/png",
+            sourceTool: "chrome-devtools-mcp",
+            sensitivity: "internal",
+            evidenceKinds: ["post-action-screenshot"],
+            captureActionId: fixture.captureActionId,
+            idempotencyKey: `concurrent-${iteration}`,
           },
+          criterionIds: ["authenticated-home-visible"],
+          observationIds: [],
+          now: fixedNow,
+        }),
+      ]);
+
+      expect(repair).toMatchObject({
+        status: "fulfilled",
+        value: {
+          relocated: [
+            expect.objectContaining({ kind: "evidence-file" }),
+            expect.objectContaining({ kind: "evidence-index-entry" }),
+          ],
+        },
+      });
+      if (evidence.status === "fulfilled") {
+        expect(evidence.value.id).toMatch(/^evidence-/u);
+      } else {
+        expect(evidence.reason).toMatchObject({
+          code: "evidence.orphaned_entries",
         });
-        if (evidence.status === "fulfilled") {
-          expect(evidence.value.id).toMatch(/^evidence-/u);
-        } else {
-          expect(evidence.reason).toMatchObject({
-            code: "evidence.orphaned_entries",
-          });
-        }
       }
     },
   );
@@ -644,6 +643,47 @@ describe("run repair", () => {
     expect(await snapshotTree(outsideRecovery)).toEqual(outsideBefore);
   });
 
+  it("rejects ancestor and descendant recovery paths before any I/O", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const manifest = await orphanManifest(fixture);
+    const ancestor = `.ai-qa/recovery/${runId}/evidence/collision`;
+    manifest.relocations[0]!.recoveryPath = ancestor;
+    manifest.relocations[1]!.recoveryPath = `${ancestor}/index.jsonl`;
+    await writeManifest(fixture.projectRoot, manifest);
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
+  it("rejects relocation paths inside the deletion-claim namespace", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const manifest = await orphanManifest(fixture);
+    manifest.relocations[0]!.recoveryPath = `.ai-qa/recovery/${runId}/deletion-claims/${orphan.id}/entry`;
+    await writeManifest(fixture.projectRoot, manifest);
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
   it("rejects a forged torn-tail plan for a healthy journal", async () => {
     const healthyJournal = await createRepairFixture();
     await registerLiveEvidence(healthyJournal, "healthy-journal-evidence");
@@ -712,6 +752,54 @@ describe("run repair", () => {
     ).toEqual(evidenceBefore);
   });
 
+  it("rejects a journal-only retained evidence record before planning an orphan repair", async () => {
+    const fixture = await createRepairFixture();
+    const live = await registerLiveEvidence(fixture, "journal-only-live");
+    const orphan = await addOrphanIndexRecord(fixture, live, "journal-only");
+    await writeFile(
+      evidenceIndexPath(fixture.projectRoot),
+      `${JSON.stringify(orphan)}\n`,
+    );
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
+  it("rejects retained journal/index content drift before planning an orphan repair", async () => {
+    const fixture = await createRepairFixture();
+    const live = await registerLiveEvidence(fixture, "mismatched-live");
+    const orphan = await addOrphanIndexRecord(fixture, live, "mismatch");
+    const mismatched: EvidenceRecord = {
+      ...live,
+      sensitivity: "sensitive",
+    };
+    await writeFile(
+      evidenceIndexPath(fixture.projectRoot),
+      `${JSON.stringify(mismatched)}\n${JSON.stringify(orphan)}\n`,
+    );
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
   it("preflights changed deletion sources after recovery copies exist", async () => {
     const fixture = await createRepairFixture({ orphan: true });
     const manifest = await orphanManifest(fixture);
@@ -735,6 +823,152 @@ describe("run repair", () => {
     ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
     expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
       before,
+    );
+  });
+
+  it.each(["populated", "empty"] as const)(
+    "resumes after a crash leaves a %s evidence deletion claim",
+    async (claimState) => {
+      const fixture = await createRepairFixture({ orphan: true });
+      const orphan = requiredOrphan(fixture);
+      const manifest = await orphanManifest(fixture);
+      await writeManifest(fixture.projectRoot, manifest);
+      await applyRecoveryCopies(fixture.projectRoot, manifest);
+      await writeFile(evidenceIndexPath(fixture.projectRoot), "");
+      const claimDirectory = evidenceDeletionClaimDirectory(
+        fixture.projectRoot,
+        orphan.id,
+      );
+      await mkdir(claimDirectory, { recursive: true });
+      const source = resolveProjectPath(
+        fixture.projectRoot,
+        orphan.projectRelativePath,
+      );
+      if (claimState === "populated") {
+        await rename(source, join(claimDirectory, "entry"));
+      } else {
+        await unlink(source);
+      }
+
+      await expect(
+        repairRun({
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        }),
+      ).resolves.toMatchObject({
+        runId,
+        relocated: [
+          { kind: "evidence-file", reference: orphan.id },
+          { kind: "evidence-index-entry", reference: orphan.id },
+        ],
+      });
+
+      await expect(lstat(claimDirectory)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await readFile(evidenceIndexPath(fixture.projectRoot), "utf8"),
+      ).toBe("");
+      expect((await readManifest(fixture.projectRoot)).completedAt).toBe(
+        fixedNow().toISOString(),
+      );
+    },
+  );
+
+  it("rejects a recovery temp pathname replaced after final verification", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const source = resolveProjectPath(
+      fixture.projectRoot,
+      orphan.projectRelativePath,
+    );
+    const indexBefore = await readFile(evidenceIndexPath(fixture.projectRoot));
+    const journalBefore = await readFile(journalPath(fixture.projectRoot));
+    let recoveryPath: string | undefined;
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterRecoveryPublishFinalVerification: async (input) => {
+              recoveryPath = input.recoveryPath;
+              await unlink(input.temporaryPath);
+              await writeFile(input.temporaryPath, "replacement bytes");
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    expect(recoveryPath).toBeDefined();
+    await expect(
+      lstat(resolveProjectPath(fixture.projectRoot, recoveryPath!)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(source, "utf8")).toBe("orphaned-image");
+    expect(await readFile(evidenceIndexPath(fixture.projectRoot))).toEqual(
+      indexBefore,
+    );
+    expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+      journalBefore,
+    );
+  });
+
+  it("rejects a recovery parent replaced after final verification", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const source = resolveProjectPath(
+      fixture.projectRoot,
+      orphan.projectRelativePath,
+    );
+    const indexBefore = await readFile(evidenceIndexPath(fixture.projectRoot));
+    const journalBefore = await readFile(journalPath(fixture.projectRoot));
+    const outside = await mkdtemp(join(tmpdir(), "ai-qa-publish-swap-"));
+    let outsideDestination: string | undefined;
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterRecoveryPublishFinalVerification: async ({
+              recoveryPath,
+              temporaryPath,
+              parentPath,
+            }) => {
+              await rename(parentPath, `${parentPath}.displaced`);
+              await symlink(outside, parentPath, "dir");
+              await writeFile(
+                join(outside, basename(temporaryPath)),
+                "replacement bytes",
+              );
+              outsideDestination = join(outside, basename(recoveryPath));
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+
+    expect(outsideDestination).toBeDefined();
+    await expect(lstat(outsideDestination!)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readFile(source, "utf8")).toBe("orphaned-image");
+    expect(await readFile(evidenceIndexPath(fixture.projectRoot))).toEqual(
+      indexBefore,
+    );
+    expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+      journalBefore,
     );
   });
 
@@ -811,13 +1045,17 @@ describe("run repair", () => {
     );
 
     expect(order).toEqual([
+      "published:recovery-ancestors",
       "published:repair-manifest-planned",
       "published:evidence-file",
       "published:evidence-index-entry",
       "published:journal-tail",
       "published:evidence-index",
       "destructive:journal-truncate",
+      "published:evidence-deletion-claim",
       "destructive:evidence-delete",
+      "published:evidence-deletion-claimed",
+      "published:evidence-deletion-unlinked",
       "published:repair-manifest-completed",
     ]);
   });
@@ -933,6 +1171,13 @@ function recoveryDirectory(projectRoot: string): string {
   return join(projectRoot, ".ai-qa", "recovery", runId);
 }
 
+function evidenceDeletionClaimDirectory(
+  projectRoot: string,
+  evidenceId: string,
+): string {
+  return join(recoveryDirectory(projectRoot), "deletion-claims", evidenceId);
+}
+
 function manifestPath(projectRoot: string): string {
   return join(recoveryDirectory(projectRoot), "repair-manifest.json");
 }
@@ -1035,6 +1280,36 @@ async function registerLiveEvidence(
     observationIds: [],
     now: fixedNow,
   });
+}
+
+async function addOrphanIndexRecord(
+  fixture: RepairFixture,
+  template: EvidenceRecord,
+  suffix: string,
+): Promise<EvidenceRecord> {
+  const id = `evidence-${randomUUID()}`;
+  const projectRelativePath = `.ai-qa/evidence/${runId}/files/${id}-${suffix}.png`;
+  const bytes = Buffer.from(`orphan-${suffix}`);
+  await writeFile(
+    resolveProjectPath(fixture.projectRoot, projectRelativePath),
+    bytes,
+  );
+  const orphan: EvidenceRecord = {
+    ...template,
+    id,
+    idempotencyKey: `orphan-${suffix}`,
+    projectRelativePath,
+    contentHash: sha256(bytes),
+  };
+  const existing = await readFile(
+    evidenceIndexPath(fixture.projectRoot),
+    "utf8",
+  );
+  await writeFile(
+    evidenceIndexPath(fixture.projectRoot),
+    `${existing}${JSON.stringify(orphan)}\n`,
+  );
+  return orphan;
 }
 
 async function cloneProject(sourceRoot: string): Promise<string> {

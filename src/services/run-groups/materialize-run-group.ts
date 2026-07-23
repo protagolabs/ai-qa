@@ -51,6 +51,7 @@ export async function materializeRunGroup(input: {
           if (!allowCreate) {
             throw memberIntegrityError(runGroupId, member.runId);
           }
+          await requireNoIncompleteRepair(project.projectRoot, member.runId);
           try {
             await runRepository.create(member.workOrder, { preCommit });
           } catch (createError: unknown) {

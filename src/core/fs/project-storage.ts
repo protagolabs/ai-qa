@@ -13,7 +13,7 @@ import {
   rmdir,
   unlink,
 } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { AiQaError } from "../errors.js";
 import { syncDirectoryWhereSupported } from "./atomic-write.js";
 
@@ -37,14 +37,18 @@ async function walkDirectories(
   projectRoot: string,
   segments: readonly string[],
   create: boolean,
+  durable = false,
 ): Promise<string> {
   validateSegments(segments);
   let current = await realpath(projectRoot);
   for (const segment of segments) {
+    const parent = current;
     current = resolve(current, segment);
+    let created = false;
     if (create) {
       try {
         await mkdir(current, { mode: 0o700 });
+        created = true;
       } catch (error: unknown) {
         if (!isNodeError(error, "EEXIST")) throw error;
       }
@@ -69,6 +73,9 @@ async function walkDirectories(
         nodeErrorCode(error),
       );
     }
+    if (created && durable) {
+      await syncDirectoryWhereSupported(parent);
+    }
   }
   return current;
 }
@@ -78,6 +85,13 @@ export function ensureProjectLocalDirectory(
   segments: readonly string[],
 ): Promise<string> {
   return walkDirectories(projectRoot, segments, true);
+}
+
+export function ensureProjectLocalDirectoryDurable(
+  projectRoot: string,
+  segments: readonly string[],
+): Promise<string> {
+  return walkDirectories(projectRoot, segments, true, true);
 }
 
 export function requireProjectLocalDirectory(
@@ -113,10 +127,25 @@ export interface ProjectLocalRemovalHooks {
   afterFinalVerification?: (input: { path: string }) => Promise<void>;
   beforeClaim?: (input: { path: string }) => void | Promise<void>;
   afterClaim?: (input: { path: string; recoveryPath: string }) => Promise<void>;
+  afterClaimDirectoryDurable?: (input: { path: string }) => Promise<void>;
+  afterClaimRenameDurable?: (input: { path: string }) => Promise<void>;
+  afterClaimUnlinkDurable?: (input: { path: string }) => Promise<void>;
+}
+
+export interface ProjectLocalClaimedFileRemovalInput {
+  projectRoot: string;
+  segments: readonly string[];
+  claimDirectorySegments: readonly string[];
+  verifyClaimedFile: (path: string) => Promise<void>;
+  hooks?: ProjectLocalRemovalHooks;
 }
 
 export interface ProjectLocalPublishHooks {
-  afterFinalVerification?: (input: { path: string }) => Promise<void>;
+  afterFinalVerification?: (input: {
+    path: string;
+    temporaryPath: string;
+    parentPath: string;
+  }) => Promise<void>;
 }
 
 export async function publishProjectLocalRegularFile(input: {
@@ -129,50 +158,61 @@ export async function publishProjectLocalRegularFile(input: {
 }): Promise<string> {
   validateSegments(input.segments);
   const parentSegments = input.segments.slice(0, -1);
-  const parent = await ensureProjectLocalDirectory(
-    input.projectRoot,
-    parentSegments,
-  );
+  const parent =
+    input.durable === true
+      ? await ensureProjectLocalDirectoryDurable(
+          input.projectRoot,
+          parentSegments,
+        )
+      : await ensureProjectLocalDirectory(input.projectRoot, parentSegments);
+  const parentIdentity = await lstat(parent, { bigint: true });
   const destination = resolve(parent, input.segments.at(-1)!);
   const temporaryPath = resolve(
     parent,
     `.${basename(destination)}.${randomUUID()}.tmp`,
   );
   let handle;
+  let temporaryIdentity: BigIntFileIdentity | undefined;
   try {
     handle = await open(temporaryPath, "wx", 0o600);
     await handle.writeFile(input.content);
     await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    const verifiedParent = await requireProjectLocalDirectory(
-      input.projectRoot,
+    const synchronizedTemporary = await handle.stat({ bigint: true });
+    if (!synchronizedTemporary.isFile()) {
+      throw storageError(
+        "Project-local publication temporary artifact is not a regular file",
+        temporaryPath,
+      );
+    }
+    temporaryIdentity = {
+      dev: synchronizedTemporary.dev,
+      ino: synchronizedTemporary.ino,
+      size: synchronizedTemporary.size,
+      mtimeNs: synchronizedTemporary.mtimeNs,
+    };
+    await verifyPublicationCommitState({
+      projectRoot: input.projectRoot,
       parentSegments,
-    );
-    if (verifiedParent !== parent) {
-      throw storageError(
-        "Project-local publication parent changed during verification",
-        parent,
-      );
-    }
-    try {
-      await lstat(destination);
-      throw storageError(
-        "Project-local publication destination already exists",
-        destination,
-      );
-    } catch (error: unknown) {
-      if (error instanceof AiQaError) throw error;
-      if (!isNodeError(error, "ENOENT")) {
-        throw storageError(
-          "Project-local publication destination verification failed",
-          destination,
-          nodeErrorCode(error),
-        );
-      }
-    }
-    await input.hooks?.afterFinalVerification?.({ path: destination });
+      parent,
+      parentIdentity,
+      temporaryPath,
+      temporaryIdentity,
+      destination,
+    });
+    await input.hooks?.afterFinalVerification?.({
+      path: destination,
+      temporaryPath,
+      parentPath: parent,
+    });
+    await verifyPublicationCommitState({
+      projectRoot: input.projectRoot,
+      parentSegments,
+      parent,
+      parentIdentity,
+      temporaryPath,
+      temporaryIdentity,
+      destination,
+    });
     input.preCommit?.();
     try {
       await link(temporaryPath, destination);
@@ -183,6 +223,18 @@ export async function publishProjectLocalRegularFile(input: {
         nodeErrorCode(error),
       );
     }
+    const publishedIdentity = await lstat(destination, { bigint: true });
+    if (
+      publishedIdentity.isSymbolicLink() ||
+      !publishedIdentity.isFile() ||
+      publishedIdentity.dev !== temporaryIdentity.dev ||
+      publishedIdentity.ino !== temporaryIdentity.ino
+    ) {
+      throw storageError(
+        "Project-local publication destination identity changed during commit",
+        destination,
+      );
+    }
     await unlink(temporaryPath);
     if (input.durable === true) {
       await syncDirectoryWhereSupported(parent);
@@ -190,7 +242,76 @@ export async function publishProjectLocalRegularFile(input: {
     return destination;
   } finally {
     await handle?.close();
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (temporaryIdentity !== undefined) {
+      const currentTemporary = await lstat(temporaryPath, {
+        bigint: true,
+      }).catch(() => undefined);
+      if (
+        currentTemporary !== undefined &&
+        currentTemporary.dev === temporaryIdentity.dev &&
+        currentTemporary.ino === temporaryIdentity.ino
+      ) {
+        await unlink(temporaryPath).catch(() => undefined);
+      }
+    }
+  }
+}
+
+async function verifyPublicationCommitState(input: {
+  projectRoot: string;
+  parentSegments: readonly string[];
+  parent: string;
+  parentIdentity: { dev: bigint; ino: bigint };
+  temporaryPath: string;
+  temporaryIdentity: BigIntFileIdentity;
+  destination: string;
+}): Promise<void> {
+  try {
+    const verifiedParent = await requireProjectLocalDirectory(
+      input.projectRoot,
+      input.parentSegments,
+    );
+    const currentParent = await lstat(input.parent, { bigint: true });
+    if (
+      verifiedParent !== input.parent ||
+      currentParent.dev !== input.parentIdentity.dev ||
+      currentParent.ino !== input.parentIdentity.ino
+    ) {
+      throw storageError(
+        "Project-local publication parent changed during verification",
+        input.parent,
+      );
+    }
+    const currentTemporary = await lstat(input.temporaryPath, {
+      bigint: true,
+    });
+    if (
+      currentTemporary.isSymbolicLink() ||
+      !currentTemporary.isFile() ||
+      !sameFileIdentity(currentTemporary, input.temporaryIdentity)
+    ) {
+      throw storageError(
+        "Project-local publication temporary artifact changed during verification",
+        input.temporaryPath,
+      );
+    }
+    try {
+      await lstat(input.destination);
+      throw storageError(
+        "Project-local publication destination already exists",
+        input.destination,
+      );
+    } catch (error: unknown) {
+      if (error instanceof AiQaError) throw error;
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw storageError(
+      "Project-local publication commit state verification failed",
+      input.destination,
+      nodeErrorCode(error),
+    );
   }
 }
 
@@ -255,6 +376,212 @@ export async function prepareProjectLocalRemoval(
         afterClaim,
       ),
   };
+}
+
+export async function prepareProjectLocalClaimedFileRemoval(
+  input: ProjectLocalClaimedFileRemovalInput,
+): Promise<PreparedProjectLocalRemoval> {
+  validateSegments(input.segments);
+  validateSegments(input.claimDirectorySegments);
+  const projectRoot = await realpath(input.projectRoot);
+  const spec: ProjectLocalRemovalSpec = {
+    segments: [...input.segments],
+    expected: "file",
+  };
+  const preparedSource = await inspectProjectLocalRemoval(projectRoot, spec);
+  const preparedClaim = await inspectDeterministicFileClaim(
+    projectRoot,
+    input.claimDirectorySegments,
+  );
+  assertValidDeterministicClaimState(
+    preparedSource,
+    preparedClaim,
+    input.claimDirectorySegments,
+  );
+  if (preparedClaim.state === "populated") {
+    await input.verifyClaimedFile(preparedClaim.path);
+  }
+  return {
+    relativePath: preparedSource.relativePath,
+    remove: () =>
+      removePreparedClaimedFile(
+        projectRoot,
+        spec,
+        preparedSource,
+        input.claimDirectorySegments,
+        input.verifyClaimedFile,
+        input.hooks,
+      ),
+  };
+}
+
+type InspectedDeterministicFileClaim =
+  | { state: "missing"; directory: string }
+  | { state: "empty"; directory: string }
+  | {
+      state: "populated";
+      directory: string;
+      path: string;
+      identity: ProjectLocalRemovalIdentity;
+    };
+
+async function inspectDeterministicFileClaim(
+  projectRoot: string,
+  claimDirectorySegments: readonly string[],
+): Promise<InspectedDeterministicFileClaim> {
+  const claimSpec: ProjectLocalRemovalSpec = {
+    segments: claimDirectorySegments,
+    expected: "directory",
+  };
+  const claim = await inspectProjectLocalRemoval(projectRoot, claimSpec);
+  if (claim.state === "missing") {
+    return { state: "missing", directory: claim.path };
+  }
+  const recoveryPath = `${claimDirectorySegments.join("/")}/${removalClaimEntry}`;
+  if (claim.entryKind !== "directory") {
+    throw recoveryRequiredError(
+      "Evidence deletion claim is not a real directory",
+      recoveryPath,
+    );
+  }
+  const entries = await readdir(claim.path);
+  if (entries.length === 0) {
+    return { state: "empty", directory: claim.path };
+  }
+  if (entries.length !== 1 || entries[0] !== removalClaimEntry) {
+    throw recoveryRequiredError(
+      "Evidence deletion claim contains unexpected entries",
+      recoveryPath,
+    );
+  }
+  const path = resolve(claim.path, removalClaimEntry);
+  const stats = await lstat(path, { bigint: true });
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw recoveryRequiredError(
+      "Evidence deletion claim is not a regular file",
+      recoveryPath,
+    );
+  }
+  return {
+    state: "populated",
+    directory: claim.path,
+    path,
+    identity: { dev: stats.dev, ino: stats.ino },
+  };
+}
+
+function assertValidDeterministicClaimState(
+  source: InspectedProjectLocalRemoval,
+  claim: InspectedDeterministicFileClaim,
+  claimDirectorySegments: readonly string[],
+): void {
+  if (source.state === "present" && claim.state === "populated") {
+    throw recoveryRequiredError(
+      "Evidence source and deletion claim are both present",
+      `${claimDirectorySegments.join("/")}/${removalClaimEntry}`,
+    );
+  }
+}
+
+async function removePreparedClaimedFile(
+  projectRoot: string,
+  spec: ProjectLocalRemovalSpec,
+  preparedSource: InspectedProjectLocalRemoval,
+  claimDirectorySegments: readonly string[],
+  verifyClaimedFile: (path: string) => Promise<void>,
+  hooks?: ProjectLocalRemovalHooks,
+): Promise<boolean> {
+  const source = await inspectProjectLocalRemoval(projectRoot, spec);
+  let claim = await inspectDeterministicFileClaim(
+    projectRoot,
+    claimDirectorySegments,
+  );
+  assertValidDeterministicClaimState(source, claim, claimDirectorySegments);
+  if (claim.state === "populated") {
+    await verifyClaimedFile(claim.path);
+    await hooks?.beforeClaim?.({ path: claim.path });
+    await unlink(claim.path);
+    await syncDirectoryWhereSupported(claim.directory);
+    await hooks?.afterClaimUnlinkDurable?.({ path: claim.path });
+    await removeDeterministicClaimDirectories(claim.directory);
+    return true;
+  }
+  if (claim.state === "empty") {
+    await removeDeterministicClaimDirectories(claim.directory);
+    if (source.state === "missing") return true;
+    claim = { state: "missing", directory: claim.directory };
+  }
+  if (source.state === "missing") return false;
+  if (
+    preparedSource.state !== "present" ||
+    source.identity.dev !== preparedSource.identity.dev ||
+    source.identity.ino !== preparedSource.identity.ino ||
+    source.entryKind !== preparedSource.entryKind
+  ) {
+    throw storageError(
+      "Project-local removal target changed during verification",
+      source.path,
+    );
+  }
+  await hooks?.afterFinalVerification?.({ path: source.path });
+  const claimDirectory = await ensureProjectLocalDirectoryDurable(
+    projectRoot,
+    claimDirectorySegments,
+  );
+  await hooks?.afterClaimDirectoryDurable?.({ path: claimDirectory });
+  const claimedPath = resolve(claimDirectory, removalClaimEntry);
+  const recoveryPath = `${claimDirectorySegments.join("/")}/${removalClaimEntry}`;
+  await hooks?.beforeClaim?.({ path: source.path });
+  try {
+    await rename(source.path, claimedPath);
+    await syncDirectoryWhereSupported(dirname(source.path));
+    await syncDirectoryWhereSupported(claimDirectory);
+    await hooks?.afterClaimRenameDurable?.({ path: claimedPath });
+    await hooks?.afterClaim?.({ path: claimedPath, recoveryPath });
+    const claimed = await inspectDeterministicFileClaim(
+      projectRoot,
+      claimDirectorySegments,
+    );
+    if (
+      claimed.state !== "populated" ||
+      claimed.identity.dev !== source.identity.dev ||
+      claimed.identity.ino !== source.identity.ino
+    ) {
+      throw storageError(
+        "Evidence deletion claim does not match the prepared source",
+        claimedPath,
+      );
+    }
+    await verifyClaimedFile(claimed.path);
+    await unlink(claimed.path);
+    await syncDirectoryWhereSupported(claimDirectory);
+    await hooks?.afterClaimUnlinkDurable?.({ path: claimed.path });
+    await removeDeterministicClaimDirectories(claimDirectory);
+    return true;
+  } catch (error: unknown) {
+    throw recoveryRequiredError(
+      "Evidence deletion requires recovery after the source was claimed",
+      recoveryPath,
+      error,
+    );
+  }
+}
+
+async function removeDeterministicClaimDirectories(
+  claimDirectory: string,
+): Promise<void> {
+  const claimsDirectory = dirname(claimDirectory);
+  await removeEmptyClaimDirectory(claimDirectory);
+  await syncDirectoryWhereSupported(claimsDirectory);
+  try {
+    await rmdir(claimsDirectory);
+  } catch (error: unknown) {
+    if (!isNodeError(error, "ENOENT") && !isNodeError(error, "ENOTEMPTY")) {
+      throw error;
+    }
+    return;
+  }
+  await syncDirectoryWhereSupported(dirname(claimsDirectory));
 }
 
 async function inspectProjectLocalRemoval(

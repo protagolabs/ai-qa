@@ -10,6 +10,7 @@ import {
   normalizedRelativePosixPathSchema,
   type EvidenceRecord,
 } from "../../core/evidence/schema.js";
+import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { atomicWriteFile } from "../../core/fs/atomic-write.js";
 import { serializeJsonLines } from "../../core/fs/json-lines.js";
 import {
@@ -19,8 +20,9 @@ import {
 } from "../../core/fs/locking.js";
 import {
   ensureProjectLocalDirectory,
+  ensureProjectLocalDirectoryDurable,
   inspectOptionalProjectLocalRegularFile,
-  prepareProjectLocalRemoval,
+  prepareProjectLocalClaimedFileRemoval,
   publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
   type PreparedProjectLocalRemoval,
@@ -137,6 +139,16 @@ const repairManifestSchema = z
           message: "Repair relocation cannot overwrite its manifest",
         });
       }
+      if (
+        relocation.recoveryPath === `${recoveryRoot}deletion-claims` ||
+        relocation.recoveryPath.startsWith(`${recoveryRoot}deletion-claims/`)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["relocations", index, "recoveryPath"],
+          message: "Repair relocation cannot use the deletion-claim namespace",
+        });
+      }
       if (recoveryPaths.has(relocation.recoveryPath)) {
         context.addIssue({
           code: "custom",
@@ -196,6 +208,32 @@ const repairManifestSchema = z
       }
       kinds.add(relocation.kind);
       evidenceRelocations.set(evidenceId, kinds);
+    }
+
+    for (
+      let leftIndex = 0;
+      leftIndex < manifest.relocations.length;
+      leftIndex += 1
+    ) {
+      const leftPath = manifest.relocations[leftIndex]!.recoveryPath;
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < manifest.relocations.length;
+        rightIndex += 1
+      ) {
+        const rightPath = manifest.relocations[rightIndex]!.recoveryPath;
+        if (
+          leftPath.startsWith(`${rightPath}/`) ||
+          rightPath.startsWith(`${leftPath}/`)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["relocations", rightIndex, "recoveryPath"],
+            message:
+              "Repair recovery paths cannot contain another recovery path",
+          });
+        }
+      }
     }
 
     for (const evidenceId of orphaned) {
@@ -264,17 +302,23 @@ interface RepairContext {
 interface RepairRunHooks {
   afterRecoveryPublishFinalVerification?: (input: {
     recoveryPath: string;
+    temporaryPath: string;
+    parentPath: string;
   }) => Promise<void>;
   afterEvidenceDeleteFinalVerification?: (input: {
     sourcePath: string;
   }) => Promise<void>;
   afterDurablePublish?: (input: {
     step:
+      | "recovery-ancestors"
       | "repair-manifest-planned"
       | "evidence-file"
       | "evidence-index-entry"
       | "journal-tail"
       | "evidence-index"
+      | "evidence-deletion-claim"
+      | "evidence-deletion-claimed"
+      | "evidence-deletion-unlinked"
       | "repair-manifest-completed";
   }) => void | Promise<void>;
   beforeDestructiveCommit?: (input: {
@@ -433,6 +477,11 @@ async function computeManifest(
   const orphaned = records.filter(
     (record) => !journalEvidenceIds.has(record.id),
   );
+  validateEvidenceParity(
+    journal.events,
+    records.filter((record) => journalEvidenceIds.has(record.id)),
+    context.runId,
+  );
   const relocations: RepairRelocation[] = [];
   for (const record of orphaned) {
     const sourcePath = record.projectRelativePath;
@@ -504,6 +553,9 @@ async function computeManifest(
     orphanedEvidenceIds: orphaned.map((record) => record.id),
   });
   await ensureRecoveryDirectory(context);
+  await context.hooks.afterDurablePublish?.({
+    step: "recovery-ancestors",
+  });
   await writeManifest(context, manifest);
   return manifest;
 }
@@ -648,16 +700,51 @@ async function preflightManifestState(
       evidenceId,
     );
   }
+  validateEvidenceParity(
+    journal.events,
+    records.filter((record) => !plannedOrphans.has(record.id)),
+    runId,
+  );
   await requireJournalTailBinding(projectRoot, runId, manifest, journal);
   const preparedRemovals = new Map<string, PreparedProjectLocalRemoval>();
   for (const relocation of manifest.relocations) {
     if (relocation.kind !== "evidence-file") continue;
+    if (relocation.evidenceId === undefined) {
+      throw repairIntegrityError(
+        runId,
+        "Evidence-file relocation is missing its evidence ID",
+        relocation,
+      );
+    }
     preparedRemovals.set(
       relocation.sourcePath,
-      await prepareProjectLocalRemoval({
+      await prepareProjectLocalClaimedFileRemoval({
         projectRoot,
         segments: pathSegments(relocation.sourcePath),
-        expected: "file",
+        claimDirectorySegments: [
+          ".ai-qa",
+          "recovery",
+          runId,
+          "deletion-claims",
+          relocation.evidenceId,
+        ],
+        verifyClaimedFile: async (path) => {
+          const verified = await requireProjectLocalRegularFile(
+            projectRoot,
+            pathSegments(
+              `.ai-qa/recovery/${runId}/deletion-claims/${relocation.evidenceId}/entry`,
+            ),
+          );
+          const actualHash = sha256(await readFile(verified));
+          if (verified !== path || actualHash !== relocation.contentHash) {
+            throw repairIntegrityError(
+              runId,
+              "Evidence deletion claim content does not match its manifest",
+              relocation,
+              { actualHash },
+            );
+          }
+        },
         ...(context === undefined
           ? {}
           : {
@@ -672,6 +759,21 @@ async function preflightManifestState(
                     step: "evidence-delete",
                   });
                   assertBothLocks(context);
+                },
+                afterClaimDirectoryDurable: async () => {
+                  await context.hooks.afterDurablePublish?.({
+                    step: "evidence-deletion-claim",
+                  });
+                },
+                afterClaimRenameDurable: async () => {
+                  await context.hooks.afterDurablePublish?.({
+                    step: "evidence-deletion-claimed",
+                  });
+                },
+                afterClaimUnlinkDurable: async () => {
+                  await context.hooks.afterDurablePublish?.({
+                    step: "evidence-deletion-unlinked",
+                  });
                 },
               },
             }),
@@ -827,7 +929,7 @@ async function ensureRecoveryDirectory(
   context: RepairContext,
 ): Promise<string> {
   assertBothLocks(context);
-  return ensureProjectLocalDirectory(context.projectRoot, [
+  return ensureProjectLocalDirectoryDurable(context.projectRoot, [
     ".ai-qa",
     "recovery",
     context.runId,
@@ -905,9 +1007,11 @@ async function copyRelocation(
     preCommit: () => assertBothLocks(context),
     durable: true,
     hooks: {
-      afterFinalVerification: async () => {
+      afterFinalVerification: async ({ temporaryPath, parentPath }) => {
         await context.hooks.afterRecoveryPublishFinalVerification?.({
           recoveryPath: relocation.recoveryPath,
+          temporaryPath,
+          parentPath,
         });
       },
     },

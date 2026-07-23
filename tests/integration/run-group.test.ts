@@ -294,6 +294,9 @@ describe("immutable run groups", () => {
       materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
     ).rejects.toMatchObject({ code: "run.repair_incomplete" });
     await expect(readFile(groupEventsPath)).resolves.toEqual(beforeGroupEvents);
+    await expect(
+      access(join(projectRoot, ".ai-qa", "runs", member.runId)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("starts explicit multi-platform members and never rewrites group.json", async () => {
