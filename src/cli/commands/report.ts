@@ -8,10 +8,11 @@ import {
   withVerifiedGeneratedRunGroupReport,
 } from "../../services/report-generation/generate-group-report.js";
 import {
-  exportProjectLocalRunReport,
   generateRunReport,
   type GeneratedRunReport,
+  withVerifiedGeneratedRunReport,
 } from "../../services/report-generation/generate-run-report.js";
+import type { RunReport } from "../../core/reports/schema.js";
 import {
   readGroupRecordingStatus,
   readRecordingStatus,
@@ -86,6 +87,19 @@ function requestCiGroupFailure(
   }
 }
 
+function requestCiRunFailure(
+  report: RunReport,
+  requestExitCode: (exitCode: number) => void,
+): void {
+  if (
+    report.run.execution === "ci" &&
+    (report.run.status !== "completed" ||
+      report.verdict.classification !== "pass")
+  ) {
+    requestExitCode(1);
+  }
+}
+
 export function registerReportCommands(
   program: Command,
   context: CliContext,
@@ -102,6 +116,7 @@ export function registerReportCommands(
       await reportInput(generateCommand, context, runId),
     );
     writeJson(context, pathsOnly(generated));
+    requestCiRunFailure(generated.report, requestExitCode);
   });
 
   const exportCommand = reportCommand
@@ -116,11 +131,13 @@ export function registerReportCommands(
         { adapter: options.adapter },
       );
     }
-    writeJson(
-      context,
-      await exportProjectLocalRunReport(
-        await reportInput(exportCommand, context, runId),
-      ),
+    await withVerifiedGeneratedRunReport(
+      await reportInput(exportCommand, context, runId),
+      (verified) => {
+        writeJson(context, verified.paths);
+        requestCiRunFailure(verified.report, requestExitCode);
+        return Promise.resolve();
+      },
     );
   });
 

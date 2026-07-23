@@ -161,6 +161,10 @@ ai-qa run start --kind exploratory --platform ios-simulator --execution local --
 
 設定有 evidence 連結的 verdict、完成 run，再產生並驗證報告。多平台探索式 QA 使用彼此獨立的 run，不使用 RunGroup。
 
+### 修復中斷的 run
+
+若 crash 留下孤立的 evidence 或損毀的 journal tail，請執行 `ai-qa run repair <run-id>`。此指令具冪等性；它搬移的資料會保留在 `.ai-qa/recovery/<run-id>/`，並列在其 JSON 輸出中。
+
 ### 將探索式 run 提升為迴歸測試 case
 
 審查完整的探索式 run 後，建立並啟用其不可變的平台 variant：
@@ -230,6 +234,10 @@ printf '%s\n' '{"status":"recorded","references":["docs/qa.md#group"]}' \
 ```
 
 Receipt status 可以是 `recorded`、`not_recorded` 或 `unknown`。外部記錄操作結果為 `unknown` 時，絕不能重試。Recording 不會變更 run verdict 或彙總 matrix cell。
+
+### 錯誤
+
+CLI 失敗會以 JSON `error` envelope 寫入 stderr。它一律包含 `code` 與 `message`；`retryable` 僅在值為 true 時出現，`details` 與 `issues` 則在有內容時出現。
 
 ## 專案資料與權限邊界
 

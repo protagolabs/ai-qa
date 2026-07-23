@@ -161,6 +161,10 @@ Before every controller interaction, observation, and screenshot, record `ai-qa 
 
 Set an evidence-linked verdict, finish the run, then generate and verify its report. Multi-platform exploratory QA uses independent runs, not a RunGroup.
 
+### Repair an interrupted run
+
+If a crash leaves orphaned evidence or a torn journal tail, run `ai-qa run repair <run-id>`. The command is idempotent; data it relocates is retained under `.ai-qa/recovery/<run-id>/` and reported in its JSON output.
+
 ### Promote an exploratory run to a regression case
 
 After reviewing a complete exploratory run, draft and activate its immutable platform variant:
@@ -230,6 +234,10 @@ printf '%s\n' '{"status":"recorded","references":["docs/qa.md#group"]}' \
 ```
 
 Receipt status is `recorded`, `not_recorded`, or `unknown`. Never retry an external recording operation whose outcome is `unknown`. Recording never changes run verdicts or aggregate matrix cells.
+
+### Errors
+
+CLI failures are written to stderr as a JSON `error` envelope. It always includes `code` and `message`; `retryable` appears only when true, while `details` and `issues` appear when available.
 
 ## Project data and authority
 
