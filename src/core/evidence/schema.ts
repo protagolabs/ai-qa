@@ -2,7 +2,7 @@ import { posix } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { controllerSchema, platformSchema } from "../platforms/schema.js";
-import { actionIdSchema, runIdSchema } from "../runs/schema.js";
+import { actionIdSchema, runIdSchema } from "../runs/ids.js";
 
 export const evidenceIdSchema = z
   .string()

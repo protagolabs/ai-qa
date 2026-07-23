@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { evidenceIdSchema } from "../evidence/schema.js";
-import { criterionIdSchema, eventIdSchema } from "../runs/schema.js";
+import { criterionIdSchema, eventIdSchema } from "../runs/ids.js";
 
 export const blockerSubtypeSchema = z.enum([
   "environment",

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { canonicalJson } from "../canonical-json.js";
 import { AiQaError } from "../errors.js";
-import { eventIdSchema, type RunEvent } from "./schema.js";
+import { eventIdSchema } from "./ids.js";
+import { type RunEvent } from "./schema.js";
 
 export const interruptedRunPayloadSchema = z
   .object({

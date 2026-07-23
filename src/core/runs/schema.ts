@@ -12,14 +12,14 @@ import {
   type Platform,
 } from "../platforms/schema.js";
 import { platformReadinessSchema } from "../readiness/schema.js";
+import {
+  criterionIdSchema,
+  eventIdSchema,
+  runIdSchema,
+  stepIdSchema,
+} from "./ids.js";
 
-export const criterionIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
-
-export const eventIdSchema = z
-  .string()
-  .regex(/^event-[a-z0-9][a-z0-9-]{0,126}$/);
-
-export const actionIdSchema = eventIdSchema;
+export * from "./ids.js";
 
 export const storedWorkProtocolVersionSchema = z.literal("2.0.0");
 
@@ -32,8 +32,6 @@ export const projectSkillSnapshotSchema = z
 
 export type ProjectSkillSnapshot = z.infer<typeof projectSkillSnapshotSchema>;
 
-export const stepIdSchema = z.string().regex(/^step-[a-z0-9][a-z0-9-]{0,126}$/);
-
 export const acceptanceCriterionSchema = z
   .object({
     id: criterionIdSchema,
@@ -43,8 +41,6 @@ export const acceptanceCriterionSchema = z
   .strict();
 
 export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>;
-
-export const runIdSchema = z.string().regex(/^run-[a-z0-9][a-z0-9-]{0,62}$/);
 
 const goalSchema = z.string().trim().min(1);
 

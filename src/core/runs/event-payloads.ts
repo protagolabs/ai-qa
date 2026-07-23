@@ -6,7 +6,7 @@ import {
   criterionIdSchema,
   eventIdSchema,
   stepIdSchema,
-} from "./schema.js";
+} from "./ids.js";
 
 const targetSchema = z
   .object({
