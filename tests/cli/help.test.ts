@@ -142,7 +142,7 @@ describe("ai-qa CLI shell", () => {
 
     expect(exitCode).toBe(1);
     expect(captured.stderr).toEqual([
-      '{"error":{"code":"commander.unknownCommand","message":"error: too many arguments. Expected 0 arguments but got 1."}}\n',
+      '{"error":{"code":"commander.unknownCommand","message":"error: unknown command \'unknown-command\'"}}\n',
     ]);
   });
 

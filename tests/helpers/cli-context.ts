@@ -25,3 +25,5 @@ export function createCapturedCli(
   };
   return { context, stdout, stderr };
 }
+
+export const createCliTestContext = createCapturedCli;

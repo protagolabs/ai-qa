@@ -1,4 +1,5 @@
 import { Command, CommanderError } from "commander";
+import { createRequire } from "node:module";
 import { ZodError } from "zod";
 import { AiQaError, normalizeUnknownError } from "../core/errors.js";
 import { registerActionCommands } from "./commands/action.js";
@@ -20,12 +21,15 @@ import { registerVerdictCommands } from "./commands/verdict.js";
 import type { CliContext } from "./context.js";
 
 const requestedExitCodes = new WeakMap<Command, number>();
+const packageVersion = (
+  createRequire(import.meta.url)("../../package.json") as { version: string }
+).version;
 
 export function createProgram(context: CliContext): Command {
   const program = new Command()
     .name("ai-qa")
     .description("Agent-orchestrated QA state and evidence CLI")
-    .version("0.0.0")
+    .version(packageVersion)
     .option("--project <path>", "explicit target-project root")
     .exitOverride()
     .configureOutput({
@@ -55,6 +59,24 @@ export function createProgram(context: CliContext): Command {
   return program;
 }
 
+export function writeErrorJson(context: CliContext, error: AiQaError): void {
+  context.writeStderr(
+    `${JSON.stringify({
+      error: {
+        code: error.code,
+        message: error.message,
+        ...(error.retryable ? { retryable: true } : {}),
+        ...(Object.keys(error.details).length > 0
+          ? { details: error.details }
+          : {}),
+        ...(error.issues !== undefined && error.issues.length > 0
+          ? { issues: error.issues }
+          : {}),
+      },
+    })}\n`,
+  );
+}
+
 export async function runCli(
   args: readonly string[],
   context: CliContext,
@@ -71,52 +93,33 @@ export async function runCli(
       ) {
         return 0;
       }
-      const code =
-        error.code === "commander.excessArguments" &&
-        program.commands.length === 0
-          ? "commander.unknownCommand"
-          : error.code;
-      const message =
-        error.code === "commander.unknownCommand"
-          ? `error: too many arguments. Expected 0 arguments but got ${String(args.length)}.`
-          : error.message;
-      context.writeStderr(`${JSON.stringify({ error: { code, message } })}\n`);
+      context.writeStderr(
+        `${JSON.stringify({
+          error: { code: error.code, message: error.message },
+        })}\n`,
+      );
       return error.exitCode === 0 ? 1 : error.exitCode;
     }
     if (error instanceof AiQaError) {
-      context.writeStderr(
-        `${JSON.stringify({
-          error: {
-            code: error.code,
-            message: error.message,
-            details: error.details,
-          },
-        })}\n`,
-      );
+      writeErrorJson(context, error);
       return 1;
     }
     if (error instanceof ZodError) {
-      context.writeStderr(
-        `${JSON.stringify({
-          error: {
-            code: "schema.validation_failed",
-            message: "Schema validation failed",
-            details: { issuePaths: error.issues.map((issue) => issue.path) },
-          },
-        })}\n`,
+      writeErrorJson(
+        context,
+        new AiQaError("schema.validation_failed", "Schema validation failed", {}, {
+          issues: error.issues.map((issue) => ({
+            path: issue.path.filter(
+              (part): part is string | number => typeof part !== "symbol",
+            ),
+            code: issue.code,
+            message: issue.message,
+          })),
+        }),
       );
       return 1;
     }
-    const normalized = normalizeUnknownError(error);
-    context.writeStderr(
-      `${JSON.stringify({
-        error: {
-          code: normalized.code,
-          message: normalized.message,
-          details: normalized.details,
-        },
-      })}\n`,
-    );
+    writeErrorJson(context, normalizeUnknownError(error));
     return 1;
   }
 }
