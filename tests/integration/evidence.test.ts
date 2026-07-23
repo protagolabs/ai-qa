@@ -5,12 +5,13 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import lockfile from "proper-lockfile";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
@@ -1252,6 +1253,101 @@ describe("registerEvidence", () => {
     ).toEqual([]);
     expect(order).toEqual(["evidence-ancestors"]);
   });
+
+  it.each([0, 1, 2, 3])(
+    "never reaches evidence or journal publication when existing ancestor sync boundary %i fails",
+    async (failureBoundary) => {
+      const { projectRoot, captureActionId, runRepository } = await createRun();
+      const evidenceFiles = join(
+        projectRoot,
+        ".ai-qa",
+        "evidence",
+        "run-1",
+        "files",
+      );
+      await mkdir(evidenceFiles, { recursive: true });
+      const source = join(
+        projectRoot,
+        `existing-ancestor-${String(failureBoundary)}.png`,
+      );
+      await writeFile(source, Buffer.from("existing-ancestor-bytes"));
+      const journalPath = join(
+        projectRoot,
+        ".ai-qa",
+        "runs",
+        "run-1",
+        "events.jsonl",
+      );
+      const journalBefore = await readFile(journalPath);
+      const canonicalProjectRoot = await realpath(projectRoot);
+      const synchronizedParents: string[] = [];
+      const failure = new Error(
+        `injected existing ancestor sync failure ${String(failureBoundary)}`,
+      );
+
+      await expect(
+        registerEvidence(
+          {
+            projectRoot,
+            runId: "run-1",
+            payload: {
+              sourcePath: source,
+              mediaType: "image/png",
+              sourceTool: controllerForPlatform("web"),
+              sensitivity: "internal",
+              evidenceKinds: ["post-action-screenshot"],
+              captureActionId,
+              idempotencyKey: `existing-ancestor-${String(failureBoundary)}`,
+            },
+            criterionIds: ["authenticated-home-visible"],
+            observationIds: [],
+            now: fixedNow,
+          },
+          {
+            hooks: {
+              afterEvidenceAncestorParentSync: ({ parentPath }) => {
+                synchronizedParents.push(
+                  relative(canonicalProjectRoot, parentPath) || ".",
+                );
+                if (synchronizedParents.length - 1 === failureBoundary) {
+                  throw failure;
+                }
+              },
+              afterEvidenceAncestorsDurable: () => {
+                throw new Error("ancestor traversal should not complete");
+              },
+              afterEvidenceFileDurable: () => {
+                throw new Error("evidence file should not publish");
+              },
+              afterEvidenceIndexDurable: () => {
+                throw new Error("evidence index should not publish");
+              },
+              beforeJournalAppend: () => {
+                throw new Error("journal should not append");
+              },
+            },
+          },
+        ),
+      ).rejects.toBe(failure);
+
+      expect(synchronizedParents).toEqual(
+        [".", ".ai-qa", ".ai-qa/evidence", ".ai-qa/evidence/run-1"].slice(
+          0,
+          failureBoundary + 1,
+        ),
+      );
+      expect(await readFile(journalPath)).toEqual(journalBefore);
+      expect(await readdir(evidenceFiles)).toEqual([]);
+      await expect(
+        access(join(projectRoot, ".ai-qa", "evidence", "run-1", "index.jsonl")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        (await runRepository.journal("run-1").readAll()).filter(
+          (event) => event.type === "evidence",
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("durably publishes evidence file and index before journal append", async () => {
     const { projectRoot, captureActionId } = await createRun();

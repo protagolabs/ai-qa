@@ -36,6 +36,10 @@ export interface RegisterRawEvidenceInput {
 }
 
 export interface EvidenceRegistrationDurabilityHooks {
+  afterEvidenceAncestorParentSync?: (input: {
+    parentPath: string;
+    childPath: string;
+  }) => void | Promise<void>;
   afterEvidenceAncestorsDurable?: () => void | Promise<void>;
   afterEvidenceFileDurable?: () => void | Promise<void>;
   afterEvidenceIndexDurable?: () => void | Promise<void>;
@@ -159,7 +163,7 @@ export class EvidenceRepository {
         },
       );
     }
-    await this.ensureStorageRoots();
+    await this.ensureStorageRoots(options.hooks);
     await options.hooks?.afterEvidenceAncestorsDurable?.();
     return withLock(this.paths.index, "cold", async (signal) => {
       const preCommit = () => {
@@ -442,14 +446,21 @@ export class EvidenceRepository {
     return { root: paths.root, files: paths.files };
   }
 
-  private async ensureStorageRoots(): Promise<void> {
+  private async ensureStorageRoots(
+    hooks: EvidenceRegistrationDurabilityHooks | undefined,
+  ): Promise<void> {
     try {
-      await ensureProjectLocalDirectoryDurable(this.projectRoot, [
-        ".ai-qa",
-        "evidence",
-        this.runId,
-        "files",
-      ]);
+      await ensureProjectLocalDirectoryDurable(
+        this.projectRoot,
+        [".ai-qa", "evidence", this.runId, "files"],
+        {
+          ...(hooks?.afterEvidenceAncestorParentSync === undefined
+            ? {}
+            : {
+                afterParentDirectorySync: hooks.afterEvidenceAncestorParentSync,
+              }),
+        },
+      );
     } catch (error: unknown) {
       if (
         error instanceof AiQaError &&

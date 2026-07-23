@@ -35,22 +35,28 @@ function validateSegments(segments: readonly string[]): void {
   }
 }
 
+export interface ProjectLocalDirectoryDurabilityHooks {
+  afterParentDirectorySync?: (input: {
+    parentPath: string;
+    childPath: string;
+  }) => void | Promise<void>;
+}
+
 async function walkDirectories(
   projectRoot: string,
   segments: readonly string[],
   create: boolean,
   durable = false,
+  durabilityHooks: ProjectLocalDirectoryDurabilityHooks = {},
 ): Promise<string> {
   validateSegments(segments);
   let current = await realpath(projectRoot);
   for (const segment of segments) {
     const parent = current;
     current = resolve(current, segment);
-    let created = false;
     if (create) {
       try {
         await mkdir(current, { mode: 0o700 });
-        created = true;
       } catch (error: unknown) {
         if (!isNodeError(error, "EEXIST")) throw error;
       }
@@ -75,8 +81,12 @@ async function walkDirectories(
         error,
       );
     }
-    if (created && durable) {
+    if (durable) {
       await syncDirectoryWhereSupported(parent);
+      await durabilityHooks.afterParentDirectorySync?.({
+        parentPath: parent,
+        childPath: current,
+      });
     }
   }
   return current;
@@ -92,8 +102,9 @@ export function ensureProjectLocalDirectory(
 export function ensureProjectLocalDirectoryDurable(
   projectRoot: string,
   segments: readonly string[],
+  hooks: ProjectLocalDirectoryDurabilityHooks = {},
 ): Promise<string> {
-  return walkDirectories(projectRoot, segments, true, true);
+  return walkDirectories(projectRoot, segments, true, true, hooks);
 }
 
 export function requireProjectLocalDirectory(

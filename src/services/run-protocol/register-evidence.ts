@@ -168,6 +168,12 @@ export async function registerEvidence(
       const record = await repository.registerRaw(payload, {
         preCommit: () => assertRunSessionActive(session),
         hooks: {
+          ...(options.hooks?.afterEvidenceAncestorParentSync === undefined
+            ? {}
+            : {
+                afterEvidenceAncestorParentSync:
+                  options.hooks.afterEvidenceAncestorParentSync,
+              }),
           ...(options.hooks?.afterEvidenceAncestorsDurable === undefined
             ? {}
             : {

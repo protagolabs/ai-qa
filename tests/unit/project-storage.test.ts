@@ -14,12 +14,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AiQaError } from "../../src/core/errors.js";
 import {
   atomicReplaceProjectLocalRegularFile,
   ensureProjectLocalDirectory,
+  ensureProjectLocalDirectoryDurable,
   inspectOptionalProjectLocalRegularFile,
   prepareProjectLocalClaimedFileRemoval,
   prepareProjectLocalRemoval,
@@ -212,6 +213,42 @@ describe("project-local storage", () => {
     await expect(
       ensureProjectLocalDirectory(projectRoot, [".ai-qa", "runs"]),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
+  });
+
+  it("resynchronizes every parent in an already-existing durable chain", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-storage-project-"));
+    await mkdir(
+      join(projectRoot, ".ai-qa", "evidence", "run-existing", "files"),
+      { recursive: true },
+    );
+    const canonicalProjectRoot = await realpath(projectRoot);
+    const synchronized: Array<{ parent: string; child: string }> = [];
+
+    await ensureProjectLocalDirectoryDurable(
+      projectRoot,
+      [".ai-qa", "evidence", "run-existing", "files"],
+      {
+        afterParentDirectorySync: ({ parentPath, childPath }) => {
+          synchronized.push({
+            parent: relative(canonicalProjectRoot, parentPath) || ".",
+            child: relative(canonicalProjectRoot, childPath),
+          });
+        },
+      },
+    );
+
+    expect(synchronized).toEqual([
+      { parent: ".", child: ".ai-qa" },
+      { parent: ".ai-qa", child: ".ai-qa/evidence" },
+      {
+        parent: ".ai-qa/evidence",
+        child: ".ai-qa/evidence/run-existing",
+      },
+      {
+        parent: ".ai-qa/evidence/run-existing",
+        child: ".ai-qa/evidence/run-existing/files",
+      },
+    ]);
   });
 
   it("rejects a symlinked file even when it resolves inside the project", async () => {
