@@ -13,7 +13,11 @@ import type {
   RunEvent,
   WorkOrder,
 } from "../../core/runs/schema.js";
-import { effectiveInteractionSuccesses } from "./effective-interactions.js";
+import {
+  accumulateEffectiveInteractionEvent,
+  createEffectiveInteractionAccumulator,
+  effectiveInteractionSuccessFor,
+} from "./effective-interactions.js";
 
 export interface RegressionFidelityResult {
   requiredStepIds: string[];
@@ -74,8 +78,10 @@ export function validateRegressionFidelity(
   >();
   let recoveryActionCount = 0;
   let recoveryHistoryValid = true;
+  const effectiveInteractions = createEffectiveInteractionAccumulator();
 
-  for (const [index, event] of events.entries()) {
+  for (const event of events) {
+    accumulateEffectiveInteractionEvent(effectiveInteractions, event);
     if (event.type === "action") {
       const payload = actionPayloadSchema.parse(event.payload);
       if (payload.phase !== "planned") {
@@ -163,9 +169,10 @@ export function validateRegressionFidelity(
       if (payload.resolution === "applied") {
         const planned = plans.get(payload.actionId);
         const terminal = terminals.get(payload.actionId);
-        const effective = effectiveInteractionSuccesses(
-          events.slice(0, index + 1),
-        ).find((success) => success.actionId === payload.actionId);
+        const effective = effectiveInteractionSuccessFor(
+          effectiveInteractions,
+          payload.actionId,
+        );
         if (
           planned?.payload.kind === "interaction" &&
           planned.payload.recoveryForStepId === undefined &&

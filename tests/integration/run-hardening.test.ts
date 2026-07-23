@@ -22,6 +22,8 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
+import { EVENT_SCHEMA_VERSION } from "../../src/schemas/versions.js";
+import { validateProtocolEvents } from "../../src/services/run-protocol/run-protocol-service.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
@@ -81,6 +83,74 @@ function runDirectory(projectRoot: string, runId = "run-1"): string {
   return join(projectRoot, ".ai-qa", "runs", runId);
 }
 
+function buildBudgetSizedJournal(): RunEvent[] {
+  const events: RunEvent[] = [];
+  for (let index = 0; index < 100; index += 1) {
+    const actionId = `event-budget-plan-${String(index)}`;
+    const stepId = `step-budget-${String(index)}`;
+    events.push(
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: actionId,
+        runId: "run-1",
+        sequence: events.length + 1,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: `budget-plan-${String(index)}`,
+        payload: {
+          phase: "planned",
+          kind: "observation",
+          intent: `Observe budget step ${String(index)}`,
+          stepId,
+          target: { description: `Budget target ${String(index)}` },
+        },
+        relatedIds: [],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: `event-budget-complete-${String(index)}`,
+        runId: "run-1",
+        sequence: events.length + 2,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: `complete:${actionId}`,
+        payload: {
+          phase: "completed",
+          actionId,
+          toolResult: { summary: `Observed budget step ${String(index)}` },
+        },
+        relatedIds: [actionId],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: `event-budget-observation-${String(index)}`,
+        runId: "run-1",
+        sequence: events.length + 3,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "observation",
+        idempotencyKey: `observation:${actionId}`,
+        payload: {
+          actionId,
+          stepId,
+          summary: `Budget step ${String(index)} is visible`,
+          state: { index },
+        },
+        relatedIds: [actionId],
+      },
+    );
+  }
+  return events;
+}
+
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
 }
@@ -97,6 +167,219 @@ async function initializeProject(): Promise<{ projectRoot: string }> {
   await initializeTestProject({ projectRoot, config });
   return { projectRoot };
 }
+
+describe("single-pass protocol validation parity", () => {
+  it("accepts completed, failed, recovered, and retried interactions", () => {
+    const workOrder = makeWorkOrder();
+    const events: RunEvent[] = [
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-success-plan",
+        runId: "run-1",
+        sequence: 1,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "success-plan",
+        payload: {
+          phase: "planned",
+          kind: "interaction",
+          intent: "Complete the first interaction",
+          stepId: "step-success",
+          target: { description: "First target" },
+        },
+        relatedIds: [],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-success-complete",
+        runId: "run-1",
+        sequence: 2,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "complete:event-success-plan",
+        payload: {
+          phase: "completed",
+          actionId: "event-success-plan",
+          toolResult: { summary: "The first interaction completed" },
+        },
+        relatedIds: ["event-success-plan"],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-failed-plan",
+        runId: "run-1",
+        sequence: 3,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "failed-plan",
+        payload: {
+          phase: "planned",
+          kind: "interaction",
+          intent: "Attempt the second interaction",
+          stepId: "step-retry",
+          target: { description: "Second target" },
+        },
+        relatedIds: [],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-failed-terminal",
+        runId: "run-1",
+        sequence: 4,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "complete:event-failed-plan",
+        payload: {
+          phase: "unknown",
+          actionId: "event-failed-plan",
+          toolResult: { summary: "The second interaction result is unknown" },
+        },
+        relatedIds: ["event-failed-plan"],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-recovery-observation-plan",
+        runId: "run-1",
+        sequence: 5,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "recovery-observation-plan",
+        payload: {
+          phase: "planned",
+          kind: "observation",
+          intent: "Observe the failed interaction",
+          stepId: "step-retry",
+          target: { description: "Second target state" },
+        },
+        relatedIds: [],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-recovery-observation-complete",
+        runId: "run-1",
+        sequence: 6,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "complete:event-recovery-observation-plan",
+        payload: {
+          phase: "completed",
+          actionId: "event-recovery-observation-plan",
+          toolResult: { summary: "The second target state was observed" },
+        },
+        relatedIds: ["event-recovery-observation-plan"],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-recovery-observation",
+        runId: "run-1",
+        sequence: 7,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "observation",
+        idempotencyKey: "observation:event-recovery-observation-plan",
+        payload: {
+          actionId: "event-recovery-observation-plan",
+          stepId: "step-retry",
+          summary: "The second interaction was not applied",
+          state: { applied: false },
+        },
+        relatedIds: ["event-recovery-observation-plan"],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-recovery",
+        runId: "run-1",
+        sequence: 8,
+        timestamp: fixedNow().toISOString(),
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        type: "recovery",
+        idempotencyKey: "recovery:event-failed-plan",
+        payload: {
+          actionId: "event-failed-plan",
+          resolution: "not_applied",
+          observationId: "event-recovery-observation",
+          rationale: "The fresh observation shows no state change",
+        },
+        relatedIds: ["event-failed-plan", "event-recovery-observation"],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-retry-plan",
+        runId: "run-1",
+        sequence: 9,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "retry-plan",
+        payload: {
+          phase: "planned",
+          kind: "interaction",
+          intent: "Retry the second interaction",
+          stepId: "step-retry",
+          target: { description: "Second target" },
+          recoveryForStepId: "step-retry",
+        },
+        relatedIds: [],
+      },
+      {
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: "event-retry-complete",
+        runId: "run-1",
+        sequence: 10,
+        timestamp: fixedNow().toISOString(),
+        actor: "agent",
+        platform: "web",
+        tool: "chrome-devtools-mcp",
+        type: "action",
+        idempotencyKey: "complete:event-retry-plan",
+        payload: {
+          phase: "completed",
+          actionId: "event-retry-plan",
+          toolResult: { summary: "The retry completed" },
+        },
+        relatedIds: ["event-retry-plan"],
+      },
+    ];
+
+    expect(() =>
+      validateProtocolEvents(events, workOrder, workOrder.runId),
+    ).not.toThrow();
+  });
+
+  it("validates a budget-sized journal quickly", () => {
+    const workOrder = makeWorkOrder();
+    const events = buildBudgetSizedJournal();
+    const startedAt = performance.now();
+
+    validateProtocolEvents(events, workOrder, workOrder.runId);
+
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+});
 
 describe("run path confinement", () => {
   it("rejects a symlinked runs root before creating a journal outside the project", async () => {

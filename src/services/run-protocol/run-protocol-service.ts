@@ -85,6 +85,12 @@ interface TerminalAction {
   payload: TerminalActionPayload;
 }
 
+interface RecoveryRetryAccumulator {
+  latestInteractionByStep: Map<string, PlannedAction>;
+  terminals: Map<string, TerminalAction>;
+  resolutions: Map<string, RecoveryPayload>;
+}
+
 export class RunProtocolService {
   private readonly runId: string;
 
@@ -161,7 +167,10 @@ export class RunProtocolService {
               },
             );
           }
-          requireRecoveryRetryPermitted(events, parsed.recoveryForStepId);
+          requireRecoveryRetryPermitted(
+            buildRecoveryRetryAccumulator(events),
+            parsed.recoveryForStepId,
+          );
         } else if (
           workOrder.kind !== "regression" &&
           parsed.kind === "interaction" &&
@@ -613,38 +622,60 @@ function requireKnownStep(
 }
 
 function requireRecoveryRetryPermitted(
-  events: readonly RunEvent[],
+  state: RecoveryRetryAccumulator,
   stepId: string,
 ): void {
-  const lineage = plannedActions(events).filter(
-    ({ payload }) =>
-      payload.kind === "interaction" &&
-      (payload.stepId === stepId || payload.recoveryForStepId === stepId),
-  );
-  const latest = lineage.at(-1);
+  const latest = state.latestInteractionByStep.get(stepId);
   if (latest === undefined) {
     throw retryNotPermitted(stepId);
   }
-  const terminals = terminalActions(events, latest.event.id);
-  if (terminals.length !== 1) {
+  const terminal = state.terminals.get(latest.event.id);
+  if (terminal === undefined) {
     throw retryNotPermitted(stepId, latest.event.id);
   }
-  const terminal = terminals[0]!;
   if (terminal.payload.phase === "completed") {
     if (latest.payload.recoveryForStepId === undefined) return;
     throw retryNotPermitted(stepId, latest.event.id);
   }
 
-  const resolutions = events.flatMap((event) => {
-    if (event.type !== "recovery") return [];
-    const payload = recoveryPayloadSchema.parse(event.payload);
-    return payload.actionId === latest.event.id ? [{ event, payload }] : [];
-  });
-  if (
-    resolutions.length !== 1 ||
-    resolutions[0]!.payload.resolution !== "not_applied"
-  ) {
+  const resolution = state.resolutions.get(latest.event.id);
+  if (resolution?.resolution !== "not_applied") {
     throw retryNotPermitted(stepId, latest.event.id);
+  }
+}
+
+function buildRecoveryRetryAccumulator(
+  events: readonly RunEvent[],
+): RecoveryRetryAccumulator {
+  const state: RecoveryRetryAccumulator = {
+    latestInteractionByStep: new Map(),
+    terminals: new Map(),
+    resolutions: new Map(),
+  };
+  for (const event of events) {
+    if (event.type === "action") {
+      const payload = actionPayloadSchema.parse(event.payload);
+      if (payload.phase === "planned") {
+        accumulateRecoveryRetryPlan(state, { event, payload });
+      } else {
+        state.terminals.set(payload.actionId, { event, payload });
+      }
+    } else if (event.type === "recovery") {
+      const payload = recoveryPayloadSchema.parse(event.payload);
+      state.resolutions.set(payload.actionId, payload);
+    }
+  }
+  return state;
+}
+
+function accumulateRecoveryRetryPlan(
+  state: RecoveryRetryAccumulator,
+  plan: PlannedAction,
+): void {
+  if (plan.payload.kind !== "interaction") return;
+  state.latestInteractionByStep.set(plan.payload.stepId, plan);
+  if (plan.payload.recoveryForStepId !== undefined) {
+    state.latestInteractionByStep.set(plan.payload.recoveryForStepId, plan);
   }
 }
 
@@ -802,15 +833,21 @@ export function validateProtocolEvents(
     const observations = new Map<string, RunEvent>();
     const observationActions = new Set<string>();
     const evidenceIds = new Set<string>();
-    const recoveryActions = new Set<string>();
+    const recoveryResolutions = new Map<string, RecoveryPayload>();
     const interactionSteps = new Set<string>();
+    const plannedSteps = new Set<string>();
+    const recoveryRetryState: RecoveryRetryAccumulator = {
+      latestInteractionByStep: new Map<string, PlannedAction>(),
+      terminals,
+      resolutions: recoveryResolutions,
+    };
     const knownCriteria = new Set(
       workOrder.acceptanceCriteria.map((criterion) => criterion.id),
     );
     let plannedCount = 0;
     let recoveryCount = 0;
 
-    for (const [index, event] of events.entries()) {
+    for (const event of events) {
       requireSemantic(event.platform === workOrder.platform);
       const eventIdOwner = eventIdOwners.get(event.id);
       requireSemantic(
@@ -860,17 +897,12 @@ export function validateProtocolEvents(
             if (payload.recoveryForStepId !== undefined) {
               requireSemantic(payload.kind === "interaction");
               requireSemantic(payload.stepId === payload.recoveryForStepId);
-              requireSemantic(
-                [...plans.values()].some(
-                  ({ payload: planned }) =>
-                    planned.stepId === payload.recoveryForStepId,
-                ),
-              );
+              requireSemantic(plannedSteps.has(payload.recoveryForStepId));
               requireSemantic(
                 recoveryCount < workOrder.budget.maxRecoveryActions,
               );
               requireRecoveryRetryPermitted(
-                events.slice(0, index),
+                recoveryRetryState,
                 payload.recoveryForStepId,
               );
               recoveryCount += 1;
@@ -883,7 +915,10 @@ export function validateProtocolEvents(
             if (payload.kind === "interaction") {
               interactionSteps.add(payload.stepId);
             }
-            plans.set(event.id, { event, payload });
+            const plan = { event, payload };
+            plans.set(event.id, plan);
+            plannedSteps.add(payload.stepId);
+            accumulateRecoveryRetryPlan(recoveryRetryState, plan);
             plannedCount += 1;
             break;
           }
@@ -897,7 +932,8 @@ export function validateProtocolEvents(
             idempotencyKey: `complete:${payload.actionId}`,
             relatedIds: [payload.actionId],
           });
-          terminals.set(payload.actionId, { event, payload });
+          const terminal = { event, payload };
+          terminals.set(payload.actionId, terminal);
           break;
         }
         case "observation": {
@@ -928,11 +964,7 @@ export function validateProtocolEvents(
             payload.evidenceIds.every((id) => evidenceIds.has(id)),
           );
           if (payload.stepId !== undefined) {
-            requireSemantic(
-              [...plans.values()].some(
-                ({ payload: planned }) => planned.stepId === payload.stepId,
-              ),
-            );
+            requireSemantic(plannedSteps.has(payload.stepId));
           }
           requireProtocolMetadata(event, {
             actor: "agent",
@@ -1016,14 +1048,14 @@ export function validateProtocolEvents(
             observationTerminal.event.sequence > terminal.event.sequence,
           );
           requireSemantic(observation.sequence > terminal.event.sequence);
-          requireSemantic(!recoveryActions.has(payload.actionId));
+          requireSemantic(!recoveryResolutions.has(payload.actionId));
           requireProtocolMetadata(event, {
             actor: "ai-qa",
             tool: "ai-qa",
             idempotencyKey: `recovery:${payload.actionId}`,
             relatedIds: [payload.actionId, payload.observationId],
           });
-          recoveryActions.add(payload.actionId);
+          recoveryResolutions.set(payload.actionId, payload);
           break;
         }
       }
