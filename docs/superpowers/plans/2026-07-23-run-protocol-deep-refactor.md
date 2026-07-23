@@ -372,6 +372,7 @@ git commit -m "feat: distinguish malformed stdin JSON from schema mismatches"
 **Files:**
 - Create: `src/core/fs/locking.ts`
 - Create: `tests/unit/locking.test.ts`
+- Modify: `src/core/fs/atomic-write.ts`, `src/core/fs/json-lines.ts` (pre-commit guard option)
 - Modify (all nine `lockfile.lock` sites): `src/core/runs/journal.ts:152`, `src/core/runs/repository.ts:115`, `src/core/evidence/repository.ts:151`, `src/core/run-groups/repository.ts:108`, `src/core/run-groups/repository.ts:135`, `src/core/run-groups/repository.ts:223`, `src/core/cases/repository.ts:507`, `src/core/cases/repository.ts:513`, `src/core/reports/storage.ts:166`
 
 **Interfaces:**
@@ -556,7 +557,13 @@ export function assertNotCompromised(signal: LockSignal, path: string): void {
 }
 ```
 
-Every callback that writes must call `assertNotCompromised(signal, path)` immediately before each commit operation inside the lock — each `atomicWriteFile`, `writeJsonLines`, `rename`, `unlink`, and (later) journal line append. That applies to all nine call sites: cases, reports, evidence, RunGroup, and runs writes included. Read-only callbacks may ignore the signal. Nested locks combine guards: the inner callback checks both the outer and inner signals before writing (`assertNotCompromised(outerSignal, outerPath); assertNotCompromised(innerSignal, innerPath);`). Extend `tests/unit/locking.test.ts` with a case proving a write site aborts: a `withLock` callback that deletes the lockfile, waits for `signal.compromised()` to flip, then calls `assertNotCompromised` must throw `storage.lock_compromised` without performing its write.
+Every callback that writes must guard each commit operation inside the lock. Checking before *calling* a helper is not enough for atomic writes: `atomicWriteFile`'s real commit is its internal `rename` (`src/core/fs/atomic-write.ts:18`), and a compromise during the temp write/fsync would let a stale writer rename over a newer writer. Therefore, in this task:
+
+- `atomicWriteFile(path, content, options?: { preCommit?: () => void })` invokes `options.preCommit` immediately before the `rename`; a throwing `preCommit` aborts with the temp file cleaned up and the target untouched.
+- `writeJsonLines(path, records, options?)` gains and propagates the same option.
+- Guarded call sites pass `{ preCommit: () => assertNotCompromised(signal, path) }` to every `atomicWriteFile`/`writeJsonLines` inside a lock, and call `assertNotCompromised` directly before each bare `rename`, `unlink`, and (later) journal line append. That applies to all nine call sites: cases, reports, evidence, RunGroup, and runs writes included. Read-only callbacks may ignore the signal. Nested locks combine guards: the inner callback's `preCommit` checks both signals (`assertNotCompromised(outerSignal, outerPath); assertNotCompromised(innerSignal, innerPath);`).
+
+Add `src/core/fs/atomic-write.ts` and `src/core/fs/json-lines.ts` to this task's Files list. Extend `tests/unit/locking.test.ts` with two cases: (1) a `withLock` callback that deletes the lockfile, waits for `signal.compromised()` to flip, then calls `assertNotCompromised` must throw `storage.lock_compromised` without performing its write; (2) `atomicWriteFile` with a `preCommit` that throws must leave the pre-existing target byte-identical and no `*.tmp` file behind — this pins the compromise-between-sync-and-rename window.
 
 - [ ] **Step 5: Run the affected suites and commit**
 
@@ -856,7 +863,7 @@ Journal primitives land before RunSession (Task 9) needs them; this task keeps t
 
 **Interfaces:**
 - Produces (on `RunJournal`): `appendLine(event: RunEvent, signal: LockSignal): Promise<void>` — opens `events.jsonl` with flag `"a"`, calls `assertNotCompromised(signal, path)` immediately before writing, writes `` `${JSON.stringify(event)}\n` ``, fsyncs via the handle, closes. `appendBatch(events: readonly RunEvent[], priorEvents: readonly RunEvent[], signal: LockSignal): Promise<void>` — calls `assertNotCompromised(signal, path)` immediately before `writeJsonLines(path, [...priorEvents, ...events])` (existing atomic rewrite), then directory-fsyncs. Both primitives are compromise-guarded; there is no unguarded commit path.
-- Produces (in `journal.ts`, private): `classifyJournalTail(content: Buffer): { kind: "ok"; complete: Buffer } | { kind: "torn"; complete: Buffer; tailOffset: number; tailBytes: Buffer }` — operates on raw bytes, never on a decoded string, because `ftruncate` offsets are bytes and a truncated multi-byte UTF-8 sequence must survive classification losslessly. `torn` iff the buffer is non-empty and its last byte is not `0x0a`; `tailOffset` is the byte offset after the last `0x0a` (or 0); `complete` is the newline-terminated prefix, which is the only region ever decoded (`complete.toString("utf8")`) and line-split for JSON parsing. A decoded line that fails `JSON.parse` remains `journal.integrity_error` via Task 4's catch.
+- Produces (in `journal.ts`, private): `classifyJournalTail(content: Buffer): { kind: "ok"; complete: Buffer } | { kind: "torn"; complete: Buffer; tailOffset: number; tailBytes: Buffer }` — operates on raw bytes, never on a decoded string, because `ftruncate` offsets are bytes and a truncated multi-byte UTF-8 sequence must survive classification losslessly. `torn` iff the buffer is non-empty and its last byte is not `0x0a`; `tailOffset` is the byte offset after the last `0x0a` (or 0); `complete` is the newline-terminated prefix, which is the only region ever decoded — via `new TextDecoder("utf-8", { fatal: true }).decode(complete)`, never `Buffer.toString("utf8")`, because the lossy decoder replaces malformed bytes with U+FFFD and corruption inside a JSON string value would then parse cleanly and be silently accepted. A fatal-decode failure or a decoded line that fails `JSON.parse` remains `journal.integrity_error` via Task 4's catch.
 - Produces: `readAll` reads the file as a Buffer, classifies first: `torn` → `AiQaError("journal.torn_write", "Run journal has an unacknowledged torn tail; run \"ai-qa run repair <run-id>\"", { runId, tailOffset })`; otherwise parse the complete region and run the existing invariant loop. `appendPrepared` internally routes its single-event write through `appendLine` (replacing the full-file rewrite in `appendToSnapshot`), so existing callers keep working unchanged until Task 9 migrates them.
 
 - [ ] **Step 1: Write failing tests**
@@ -876,6 +883,10 @@ it("classifies the four tail states", async () => {
   // (c) invalid bytes without trailing newline (truncated multi-byte UTF-8:
   //     write a valid event line, then append Buffer.from([0xe4, 0xb8])) -> journal.torn_write
   // (d) invalid JSON line WITH trailing newline -> journal.integrity_error
+  // (e) malformed UTF-8 INSIDE a newline-terminated line (take a valid event
+  //     line containing "測", corrupt one of that character's bytes to 0xff,
+  //     keep the trailing newline) -> journal.integrity_error from the fatal
+  //     decoder, NOT a silent parse of a U+FFFD-substituted string.
   // For (b) and (c) also assert details.tailOffset equals the BYTE length of
   // the newline-terminated prefix — include a non-ASCII character ("測")
   // inside an earlier event's intent string so a UTF-16 index would be wrong.
@@ -934,7 +945,13 @@ git commit -m "perf: append-only single-event journal writes with torn-tail clas
 export interface RunSnapshot {
   readonly workOrder: Readonly<WorkOrder>;
   readonly events: readonly RunEvent[];
+  readonly lifecycle: LifecycleState; // derived: current phase + effective verdict, computed once
 }
+export function validateRunSnapshot(snapshot: RunSnapshot): void;
+// Aggregate of ALL run validators: validateProtocolEvents, the lifecycle
+// history validation (core/runs/lifecycle.ts:58), verdict/blocker history
+// validation (verdict-service.ts), and — for regression work orders —
+// validateRegressionFidelity. One call is the complete validity check.
 export interface ProtocolCommandResult {
   readonly event: RunEvent;
   readonly state: RunStateSummary; // { status, effectiveVerdict?, requiresFreshObservation }
@@ -951,7 +968,7 @@ export interface RunSession {
 }
 ```
 
-- `withRunSession` acquires the journal `hot` lock once (via `withLock`), first calls `requireNoIncompleteRepair(projectRoot, runId)` (Task 11 supplies it; until then the session omits the gate), reads and parses events once, calls `readVerifiedWorkOrder(projectRoot, runId, events)` (new signature: takes the parsed events, does not re-read the journal — change `src/core/runs/repository.ts:166-170` accordingly), and assembles the snapshot. `append` enforces the idempotency/sequence/platform invariants (moved out of `appendToSnapshot`), runs `validateProtocolEvents` over the prospective event list once, writes via the Task 8 primitives (`appendLine` for one event, `appendBatch` for more, both receiving the session's `LockSignal`), and updates the in-memory snapshot.
+- `withRunSession` acquires the journal `hot` lock once (via `withLock`), first calls `requireNoIncompleteRepair(projectRoot, runId)` (Task 11 supplies it; until then the session omits the gate), reads and parses events once, calls `readVerifiedWorkOrder(projectRoot, runId, events)` (new signature: takes the parsed events, does not re-read the journal — change `src/core/runs/repository.ts:166-170` accordingly), and assembles the snapshot. `withRunSession` runs `validateRunSnapshot` once at open. `append` enforces the idempotency/sequence/platform invariants (moved out of `appendToSnapshot`), builds the prospective snapshot (current events plus the new batch, with lifecycle re-derived), runs `validateRunSnapshot` on it — the full aggregate, not just `validateProtocolEvents`, because lifecycle, blocker/verdict-history, and regression-fidelity violations must reject BEFORE anything is persisted — and only then writes via the Task 8 primitives (`appendLine` for one event, `appendBatch` for more, both receiving the session's `LockSignal`) and adopts the prospective snapshot as current.
 - `RunProtocolService` methods (`planAction`, `completeAction`, `addObservation`, `recordAssertion`, `recordDecision`, `resolveUnknownAction`) change return type from `Promise<RunEvent>` to `Promise<ProtocolCommandResult>`, computed inside the session.
 - `writeProtocolEvent` in `protocol-helpers.ts` takes a `ProtocolCommandResult` and prints it; it no longer calls `resolveProject` or `readRunState`. Its JSON shape is unchanged.
 - `cancelRun` becomes one `withRunSession` whose `append` receives the cancellation verdict event and the `cancelled` lifecycle event as one batch; `resumeRun`'s two lifecycle events likewise.
@@ -977,7 +994,7 @@ Implement with the file's existing direct-journal helpers; the assertion is that
 
 - [ ] **Step 3: Implement `run-session.ts` and migrate**
 
-Order of migration: (1) change `readVerifiedWorkOrder` to accept events; (2) implement `withRunSession`/`append`/`state` (move invariant enforcement out of `appendToSnapshot`; `state()` reuses the logic currently in `read-run-state.ts`, which becomes a pure function over `RunSnapshot` exported as `deriveRunState(snapshot): RunStateSummary & { permittedNextActions }`); (3) convert `RunProtocolService.appendValidated` to run inside the session and return `ProtocolCommandResult`; (4) convert `cancelRun`/`resumeRun` to session batches; (5) update `protocol-helpers.ts` and every `src/cli/commands/*.ts` caller of `writeProtocolEvent`; (6) update `finalize-run.ts` and `verdict-service.ts` to open a session instead of doing their own lock+read+validate; (7) migrate `register-evidence.ts` into the session with the nested evidence lock and dual-signal guards; (8) delete `RunJournal.appendPrepared` and `appendToSnapshot` and fix the remaining compile errors. Keep each sub-step compiling; run `pnpm typecheck` between them.
+Order of migration: (1) change `readVerifiedWorkOrder` to accept events; (2) implement `validateRunSnapshot` (compose the four existing validators over a snapshot; no semantic changes) and `withRunSession`/`append`/`state` (move invariant enforcement out of `appendToSnapshot`; derive lifecycle state into the snapshot once; `state()` reuses the logic currently in `read-run-state.ts`, which becomes a pure function over `RunSnapshot` exported as `deriveRunState(snapshot): RunStateSummary & { permittedNextActions }`); (3) convert `RunProtocolService.appendValidated` to run inside the session and return `ProtocolCommandResult`; (4) convert `cancelRun`/`resumeRun` to session batches; (5) update `protocol-helpers.ts` and every `src/cli/commands/*.ts` caller of `writeProtocolEvent`; (6) update `finalize-run.ts` and `verdict-service.ts` to open a session instead of doing their own lock+read+validate; (7) migrate `register-evidence.ts` into the session with the nested evidence lock and dual-signal guards; (8) delete `RunJournal.appendPrepared` and `appendToSnapshot` and fix the remaining compile errors. Keep each sub-step compiling; run `pnpm typecheck` between them.
 
 - [ ] **Step 4: Cancel single-critical-section test**
 
@@ -989,6 +1006,14 @@ it("commits cancellation verdict and lifecycle together", async () => {
   // event and the cancelled lifecycle event must be adjacent, and re-reading
   // state must be terminal. No observable state may exist where the verdict
   // is present without the lifecycle event (assert via the journal contents).
+});
+
+it("persists nothing when a batch fails aggregate validation", async () => {
+  // Build a session batch that passes validateProtocolEvents but violates
+  // lifecycle history (e.g. a cancelled lifecycle event on an already-
+  // completed run). session.append must reject, and the raw journal must
+  // byte-equal its pre-append content — the aggregate validator runs BEFORE
+  // the write, so no invalid event is ever persisted.
 });
 ```
 
@@ -1060,15 +1085,24 @@ export interface RepairReport {
 - Produces: manifest file `.ai-qa/recovery/<run-id>/repair-manifest.json` validated by a Zod schema in `repair-run.ts`:
 
 ```ts
+import { normalizedRelativePosixPathSchema } from "../../core/evidence/schema.js";
+
 const repairRelocationSchema = z
   .object({
     kind: z.enum(["evidence-file", "evidence-index-entry", "journal-tail"]),
     evidenceId: z.string().optional(), // absent for journal-tail
-    sourcePath: z.string(), // project-relative; for index entries, the index file
-    recoveryPath: z.string(), // project-relative destination
+    sourcePath: normalizedRelativePosixPathSchema, // for index entries, the index file
+    recoveryPath: normalizedRelativePosixPathSchema,
     contentHash: z.string(), // sha256 of the bytes being relocated, captured at plan time
   })
-  .strict();
+  .strict()
+  .superRefine((relocation, context) => {
+    // Kind-specific root constraints — a reloaded manifest is untrusted input.
+    // sourcePath must start with ".ai-qa/evidence/" (evidence-file,
+    // evidence-index-entry) or ".ai-qa/runs/" (journal-tail); recoveryPath
+    // must start with ".ai-qa/recovery/". Reject anything else with a custom
+    // issue; the exact prefixes are asserted by the malicious-manifest tests.
+  });
 
 const repairManifestSchema = z
   .object({
@@ -1091,6 +1125,8 @@ const repairManifestSchema = z
 ```
 
 The manifest must be self-sufficient for recovery after the index entries and source files are gone: every relocation records its source path, recovery path, and expected content hash, so a resumed repair can verify each copy by hashing the destination, decide index-rewrite completion by checking the orphan IDs' absence, decide truncation by comparing the journal's byte length to `truncateOffset`, and decide source deletion by existence — without consulting any state the earlier steps destroyed.
+
+A reloaded manifest is untrusted: it persisted across a crash and could be corrupted or tampered with, and repair copies and deletes whatever it names. Beyond the schema constraints above, every path is resolved through the project-storage containment helpers before each operation — use `requireProjectLocalRegularFile` / the descendant- and symlink-safe checks in `src/core/fs/project-storage.ts` exactly as `clear-project.ts` does — so a manifest naming an escaping or symlinked path fails with `storage.integrity_error` before any I/O.
 
 - Produces: `requireNoIncompleteRepair(projectRoot: string, runId: string): Promise<void>` exported from `repair-run.ts`, throwing `AiQaError("run.repair_incomplete", "An interrupted repair exists; run \"ai-qa run repair <run-id>\"", { runId })` when a manifest exists without `completedAt`. The gate must cover every path that reads or mutates the run, with `repairRun` itself as the sole bypass: wire it (1) into `withRunSession` (Task 9 left the hook point) — this covers every protocol command, state read, verdict, cancel/resume, finish, and evidence registration in one place — and (2) into the non-session readers: `generate-run-report.ts` and `draft-case.ts` (case promotion). Do not wire it anywhere else piecemeal; if a future reader bypasses the session, it must call the gate itself.
 - Protocol (spec-binding): under `withLock(journal, "hot", ...)` then nested `withLock(evidenceIndex, "cold", ...)`: (1) compute plan, atomically write manifest; (2) copy orphaned evidence files and the torn tail bytes into the recovery directory; (3) atomically rewrite the index without orphans; (4) `ftruncate` the journal at the offset; (5) delete orphaned source files; (6) atomically rewrite the manifest with `completedAt`. Every write step (manifest writes, copies, index rewrite, truncate, deletes) calls `assertNotCompromised` against both lock signals immediately before committing. A rerun with an incomplete manifest re-executes from the manifest's plan; every step is a no-op when its effect already holds (copy verifies the destination against the manifest's `contentHash`, index rewrite checks the orphan IDs' absence, truncate compares the journal byte length to `truncateOffset`, delete checks existence).
@@ -1128,6 +1164,17 @@ it("blocks every run consumer while a repair is incomplete");
 it("does not deadlock against concurrent evidence registration");
 // Run repairRun and an evidence add concurrently 20 times; both must settle
 // (either order), never hang. Guard with a 15s timeout.
+
+it("refuses a malicious or corrupted manifest before any I/O");
+// Three sub-cases, each writing a syntactically valid manifest by hand and
+// asserting repairRun fails WITHOUT copying, deleting, or truncating anything
+// (snapshot the .ai-qa tree before/after and compare):
+// (a) sourcePath "../../outside.txt" -> schema rejection;
+// (b) recoveryPath ".ai-qa/evidence/<run-id>/file.png" (valid shape, wrong
+//     root for its kind) -> schema rejection;
+// (c) schema-valid paths where the recovery directory has been replaced by a
+//     symlink pointing outside the project -> storage.integrity_error from
+//     the containment helpers.
 ```
 
 Write each body fully using the project fixture helpers; the boundary-state test builds states with plain `fs` calls mirroring the protocol steps.
