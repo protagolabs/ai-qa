@@ -303,26 +303,24 @@ function blockerAppendInput(
   platform: WorkOrder["platform"],
   payload: BlockerPayload,
 ): AppendRunEvent {
-  return typedAppendInput(
-    platform,
-    "blocker",
-    `blocker:${sha256Canonical(payload)}`,
+  return typedAppendInput(platform, {
+    type: "blocker",
+    idempotencyKey: `blocker:${sha256Canonical(payload)}`,
     payload,
-    [...payload.attemptEventIds, ...payload.criterionIds],
-  );
+    relatedIds: [...payload.attemptEventIds, ...payload.criterionIds],
+  });
 }
 
 function verdictAppendInput(
   platform: WorkOrder["platform"],
   payload: VerdictPayload,
 ): AppendRunEvent {
-  return typedAppendInput(
-    platform,
-    "verdict",
-    `verdict:${sha256Canonical(payload)}`,
+  return typedAppendInput(platform, {
+    type: "verdict",
+    idempotencyKey: `verdict:${sha256Canonical(payload)}`,
     payload,
-    verdictRelatedIds(payload),
-  );
+    relatedIds: verdictRelatedIds(payload),
+  });
 }
 
 function appendInput(event: RunEvent): AppendRunEvent {
@@ -339,23 +337,42 @@ function appendInput(event: RunEvent): AppendRunEvent {
   } as AppendRunEvent;
 }
 
-function typedAppendInput<Type extends "blocker" | "verdict">(
+type TypedAppendInputByType = {
+  [Type in "blocker" | "verdict"]: {
+    type: Type;
+    idempotencyKey: string;
+    payload: Extract<AppendRunEvent, { type: Type }>["payload"];
+    relatedIds: string[];
+  };
+};
+
+type TypedAppendInput = TypedAppendInputByType[keyof TypedAppendInputByType];
+
+type IsAssignable<Source, Target> = [Source] extends [Target] ? true : false;
+type ExpectFalse<Value extends false> = Value;
+type VerdictAppendMismatchRejected = ExpectFalse<
+  IsAssignable<
+    {
+      type: "blocker" | "verdict";
+      idempotencyKey: string;
+      payload: VerdictPayload;
+      relatedIds: string[];
+    },
+    TypedAppendInput
+  >
+>;
+
+function typedAppendInput(
   platform: WorkOrder["platform"],
-  type: Type,
-  idempotencyKey: string,
-  payload: Extract<AppendRunEvent, { type: Type }>["payload"],
-  relatedIds: string[],
-): Extract<AppendRunEvent, { type: Type }> {
-  assertJsonValue(payload);
+  input: VerdictAppendMismatchRejected extends false ? TypedAppendInput : never,
+): AppendRunEvent {
+  assertJsonValue(input.payload);
   return {
-    type,
     actor: "agent",
     platform,
     tool: "ai-qa",
-    idempotencyKey,
-    payload,
-    relatedIds,
-  } as Extract<AppendRunEvent, { type: Type }>;
+    ...input,
+  };
 }
 
 function verdictRelatedIds(payload: VerdictPayload): string[] {
