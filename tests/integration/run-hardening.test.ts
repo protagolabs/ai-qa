@@ -1153,6 +1153,86 @@ describe("durable journal concurrency", () => {
 });
 
 describe("run session command atomicity", () => {
+  it("isolates beforeValidate from the parsed session graph", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-before-validate-immutable-"),
+    );
+    const { repository, workOrder } = await createRepositoryRun(projectRoot);
+    let eventMutationAccepted: boolean | undefined;
+    let payloadMutationAccepted: boolean | undefined;
+    let workOrderMutationAccepted: boolean | undefined;
+
+    const [appended] = await withRunSession(
+      {
+        projectRoot,
+        runId: "run-1",
+        now: fixedNow,
+        beforeValidate: ({ events, workOrder: inspectionWorkOrder }) => {
+          const started = events[0];
+          if (started === undefined) throw new Error("missing start event");
+          eventMutationAccepted = Reflect.set(started, "sequence", 100);
+          payloadMutationAccepted = Reflect.set(
+            started.payload,
+            "workOrderHash",
+            "sha256:hook-mutation",
+          );
+          workOrderMutationAccepted = Reflect.set(
+            inspectionWorkOrder,
+            "goal",
+            "Hook-mutated goal",
+          );
+          return Promise.resolve();
+        },
+      },
+      async (session) => {
+        expect(session.snapshot.workOrder.goal).toBe(workOrder.goal);
+        const started = session.snapshot.events[0];
+        expect(started).toMatchObject({ sequence: 1 });
+        if (
+          started === undefined ||
+          started.payload === null ||
+          typeof started.payload !== "object" ||
+          !("workOrderHash" in started.payload)
+        ) {
+          throw new Error("missing start work-order hash");
+        }
+        expect(started.payload.workOrderHash).toBe(sha256Canonical(workOrder));
+        const payload = {
+          kind: "semantic" as const,
+          rationale: "Append after immutable pre-validation inspection",
+          relatedIds: [],
+        };
+        return session.append([
+          {
+            type: "decision",
+            actor: "agent",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(payload)}`,
+            payload,
+            relatedIds: [],
+          },
+        ]);
+      },
+    );
+
+    expect({
+      eventMutationAccepted,
+      payloadMutationAccepted,
+      workOrderMutationAccepted,
+      appendedSequence: appended?.sequence,
+    }).toEqual({
+      eventMutationAccepted: false,
+      payloadMutationAccepted: false,
+      workOrderMutationAccepted: false,
+      appendedSequence: 2,
+    });
+    await expect(repository.journal("run-1").readAll()).resolves.toMatchObject([
+      { sequence: 1, type: "run" },
+      { sequence: 2, type: "decision" },
+    ]);
+  });
+
   it("rejects a supplied lifecycle that disagrees with event history", async () => {
     const projectRoot = await mkdtemp(
       join(tmpdir(), "ai-qa-session-lifecycle-coherence-"),

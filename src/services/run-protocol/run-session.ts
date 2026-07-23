@@ -42,6 +42,11 @@ export interface RunSnapshot {
   readonly lifecycle: LifecycleState;
 }
 
+export interface RunInspectionSnapshot {
+  readonly workOrder: Readonly<WorkOrder>;
+  readonly events: readonly Readonly<RunEvent>[];
+}
+
 export interface SessionCommandState {
   readonly state: RunStateSummary;
   readonly permittedNextActions: readonly string[];
@@ -104,9 +109,7 @@ export async function withRunSession<T>(
     projectRoot: string;
     runId: string;
     now: () => Date;
-    beforeValidate?: (
-      snapshot: Pick<RunSnapshot, "workOrder" | "events">,
-    ) => Promise<void>;
+    beforeValidate?: (snapshot: RunInspectionSnapshot) => Promise<void>;
   },
   callback: (session: RunSession) => T | Promise<T>,
 ): Promise<T> {
@@ -120,7 +123,7 @@ export async function withRunSession<T>(
   const journalPath = resolveRunPaths(project.projectRoot, runId).events;
   return journal.readLocked(async (events, signal) => {
     const workOrder = await repository.readVerifiedWorkOrder(runId, events);
-    await input.beforeValidate?.({ workOrder, events });
+    await input.beforeValidate?.(createRunInspection(workOrder, events));
     const snapshot = createValidatedSnapshot(workOrder, events);
     const session = new LockedRunSession(
       runId,
@@ -286,6 +289,16 @@ function createValidatedSnapshot(
     workOrder: immutableWorkOrder,
     events: candidate.events,
     lifecycle,
+  });
+}
+
+function createRunInspection(
+  workOrder: Readonly<WorkOrder>,
+  events: readonly RunEvent[],
+): RunInspectionSnapshot {
+  return immutableClone({
+    workOrder,
+    events: [...events],
   });
 }
 
