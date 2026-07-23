@@ -6,14 +6,10 @@ import {
   type RunGroupManifest,
   type RunGroupMember,
 } from "../../core/run-groups/schema.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import type { WorkOrder } from "../../core/runs/schema.js";
 import { resolveProject } from "../project-root/resolve-project.js";
-import { requireNoIncompleteRepair } from "../run-repair/repair-run.js";
-import {
-  readRunState,
-  type RunStateSnapshot,
-} from "../run-protocol/read-run-state.js";
+import type { RunStateSnapshot } from "../run-protocol/read-run-state.js";
+import { withRunSession } from "../run-protocol/run-session.js";
 
 export async function finishRunGroup(input: {
   projectRoot: string;
@@ -70,25 +66,26 @@ export async function readVerifiedRunGroupMemberStates(input: {
     state: RunStateSnapshot;
   }>
 > {
-  const repository = new RunRepository(input.projectRoot, input.now);
   const result = [];
   for (const member of input.manifest.members) {
-    const workOrder = await repository
-      .journal(member.runId)
-      .readLocked(
-        (events) => repository.readVerifiedWorkOrder(member.runId, events),
+    result.push(
+      await withRunSession(
         {
-          beforeRead: () =>
-            requireNoIncompleteRepair(input.projectRoot, member.runId),
+          projectRoot: input.projectRoot,
+          runId: member.runId,
+          now: input.now,
         },
-      );
-    requireMemberIdentity(input.manifest, member, workOrder);
-    const state = await readRunState({
-      projectRoot: input.projectRoot,
-      runId: member.runId,
-      now: input.now,
-    });
-    result.push({ member, workOrder, state });
+        (session) => {
+          const workOrder = session.snapshot.workOrder;
+          requireMemberIdentity(input.manifest, member, workOrder);
+          const state = {
+            runId: member.runId,
+            ...session.state(),
+          };
+          return { member, workOrder, state };
+        },
+      ),
+    );
   }
   return result;
 }

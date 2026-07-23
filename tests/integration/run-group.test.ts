@@ -26,6 +26,7 @@ import {
 } from "../../src/core/run-groups/schema.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
+import { RunJournal } from "../../src/core/runs/journal.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import { workOrderSchema, type WorkOrder } from "../../src/core/runs/schema.js";
 import { generateRunGroupReport } from "../../src/services/report-generation/generate-group-report.js";
@@ -772,6 +773,35 @@ describe("immutable run groups", () => {
     expect(first.status).toBe("completed");
   });
 
+  it("derives each member identity and state from one locked journal snapshot", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "login", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["login"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const member = started.manifest.members[0]!;
+    await cancelRun({
+      projectRoot,
+      runId: member.runId,
+      reason: "terminal fixture",
+      now,
+    });
+    const readLocked = vi.spyOn(RunJournal.prototype, "readLocked");
+
+    await finishRunGroup({
+      projectRoot,
+      runGroupId: started.manifest.id,
+      now,
+    });
+
+    expect(readLocked).toHaveBeenCalledTimes(1);
+  });
+
   it("canonically cancels only non-terminal members and is idempotent", async () => {
     const { projectRoot, cases } = await fixture(["web", "ios-simulator"]);
     await createActiveCase({
@@ -854,7 +884,10 @@ describe("immutable run groups", () => {
     ).rejects.toMatchObject({
       code: "run_group.materialization_failed",
       details: {
-        causeCode: "internal.unexpected_error",
+        cause: {
+          code: "parse_error",
+          message: "injected child failure",
+        },
       },
     });
     create.mockRestore();

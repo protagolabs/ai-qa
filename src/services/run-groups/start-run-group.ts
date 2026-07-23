@@ -7,7 +7,7 @@ import {
   configuredPlatforms,
   projectConfigSchema,
 } from "../../core/config/schema.js";
-import { AiQaError } from "../../core/errors.js";
+import { AiQaError, toErrorCause } from "../../core/errors.js";
 import {
   ensureProjectLocalDirectory,
   sweepStaleStaging,
@@ -229,8 +229,7 @@ export async function startRunGroup(
       "Run-group manifest is persisted but child materialization is incomplete; resume the frozen group",
       {
         runGroupId,
-        causeCode:
-          error instanceof AiQaError ? error.code : "internal.unexpected_error",
+        cause: toErrorCause(error),
       },
     );
   }
