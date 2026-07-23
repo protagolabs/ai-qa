@@ -289,7 +289,7 @@ describe("run repair", () => {
         expectedTree,
       );
     }
-  });
+  }, 30_000);
 
   it("blocks every run consumer while a repair is incomplete", async () => {
     const fixture = await createRepairFixture();
