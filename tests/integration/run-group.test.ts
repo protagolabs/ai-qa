@@ -501,8 +501,12 @@ describe("immutable run groups", () => {
     expect(first).toEqual(second);
     expect(first.status).toBe("materialized");
     for (const member of manifest.members) {
+      const runRepository = new RunRepository(projectRoot, now);
       await expect(
-        new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+        runRepository.readVerifiedWorkOrder(
+          member.runId,
+          await runRepository.journal(member.runId).readAll(),
+        ),
       ).resolves.toEqual(member.workOrder);
     }
     const events = await repository.readEvents(runGroupId!);
@@ -676,8 +680,12 @@ describe("immutable run groups", () => {
       await expect(
         materializeRunGroup({ projectRoot, runGroupId: runGroupId!, now }),
       ).resolves.toMatchObject({ status: "materialized" });
+      const runRepository = new RunRepository(projectRoot, now);
       await expect(
-        new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+        runRepository.readVerifiedWorkOrder(
+          member.runId,
+          await runRepository.journal(member.runId).readAll(),
+        ),
       ).resolves.toEqual(member.workOrder);
       expect((await readdir(residue)).sort()).toEqual(
         residueKind === "directory-only"
@@ -856,8 +864,12 @@ describe("immutable run groups", () => {
         now,
       }),
     ).rejects.toMatchObject({ code: "run_group.member_integrity_error" });
+    const runRepository = new RunRepository(projectRoot, now);
     await expect(
-      new RunRepository(projectRoot, now).readVerifiedWorkOrder(member.runId),
+      runRepository.readVerifiedWorkOrder(
+        member.runId,
+        await runRepository.journal(member.runId).readAll(),
+      ),
     ).resolves.toEqual(mismatched);
   });
 

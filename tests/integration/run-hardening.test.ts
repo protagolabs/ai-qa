@@ -11,9 +11,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../../src/cli/program.js";
+import { sha256Canonical } from "../../src/core/canonical-json.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import type { LockSignal } from "../../src/core/fs/locking.js";
 import { RunJournal } from "../../src/core/runs/journal.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -23,8 +25,12 @@ import {
   type WorkOrder,
 } from "../../src/core/runs/schema.js";
 import { EVENT_SCHEMA_VERSION } from "../../src/schemas/versions.js";
+import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
+import { readRunState } from "../../src/services/run-protocol/read-run-state.js";
+import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
 import { validateProtocolEvents } from "../../src/services/run-protocol/run-protocol-service.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -160,6 +166,14 @@ async function createRepositoryRun(projectRoot: string, runId = "run-1") {
   const workOrder = makeWorkOrder(runId);
   const result = await repository.create(workOrder);
   return { repository, workOrder, ...result };
+}
+
+async function readVerifiedWorkOrder(
+  repository: RunRepository,
+  runId = "run-1",
+): Promise<WorkOrder> {
+  const events = await repository.journal(runId).readAll();
+  return repository.readVerifiedWorkOrder(runId, events);
 }
 
 async function initializeProject(): Promise<{ projectRoot: string }> {
@@ -448,7 +462,7 @@ describe("run path confinement", () => {
     await expect(repository.create(unsafe)).rejects.toBeDefined();
     expect(() => repository.journal("../outside")).toThrow();
     await expect(
-      repository.readVerifiedWorkOrder("../outside"),
+      repository.readVerifiedWorkOrder("../outside", []),
     ).rejects.toBeDefined();
     await expectMissing(join(projectRoot, ".ai-qa", "outside"));
   });
@@ -567,7 +581,7 @@ describe("strict work-order integrity", () => {
       "work-order.json",
     ]);
     await expect(
-      new RunRepository(projectRoot, fixedNow).readVerifiedWorkOrder("run-1"),
+      readVerifiedWorkOrder(new RunRepository(projectRoot, fixedNow)),
     ).resolves.toEqual(makeWorkOrder());
   });
 
@@ -592,7 +606,7 @@ describe("strict work-order integrity", () => {
       "run-1",
     ]);
     await expect(
-      new RunRepository(projectRoot, fixedNow).readVerifiedWorkOrder("run-1"),
+      readVerifiedWorkOrder(new RunRepository(projectRoot, fixedNow)),
     ).resolves.toEqual(workOrder);
   });
 
@@ -601,7 +615,7 @@ describe("strict work-order integrity", () => {
     const repository = new RunRepository(projectRoot, fixedNow);
 
     await expect(
-      repository.readVerifiedWorkOrder("run-missing"),
+      repository.readVerifiedWorkOrder("run-missing", []),
     ).rejects.toMatchObject({
       code: "run.not_found",
       message: "Run does not exist",
@@ -617,7 +631,7 @@ describe("strict work-order integrity", () => {
     await rm(join(runDirectory(projectRoot), "events.jsonl"));
 
     await expect(
-      repository.readVerifiedWorkOrder("run-1"),
+      repository.readVerifiedWorkOrder("run-1", []),
     ).rejects.toMatchObject({
       code: "work_order.integrity_error",
       message: "Work order integrity verification failed",
@@ -634,9 +648,9 @@ describe("strict work-order integrity", () => {
     await rm(workOrderPath);
     await symlink(outsidePath, workOrderPath);
 
-    await expect(
-      repository.readVerifiedWorkOrder("run-1"),
-    ).rejects.toMatchObject({ code: "work_order.integrity_error" });
+    await expect(readVerifiedWorkOrder(repository)).rejects.toMatchObject({
+      code: "work_order.integrity_error",
+    });
   });
 
   it.each([
@@ -665,9 +679,7 @@ describe("strict work-order integrity", () => {
     const path = join(runDirectory(projectRoot), "work-order.json");
     await writeFile(path, tamper(await readFile(path, "utf8")));
 
-    await expect(
-      repository.readVerifiedWorkOrder("run-1"),
-    ).rejects.toMatchObject({
+    await expect(readVerifiedWorkOrder(repository)).rejects.toMatchObject({
       code: "work_order.integrity_error",
       message: "Work order integrity verification failed",
     });
@@ -683,7 +695,7 @@ describe("strict work-order integrity", () => {
 
     const validRoot = await mkdtemp(join(tmpdir(), "ai-qa-frozen-order-"));
     const { repository } = await createRepositoryRun(validRoot);
-    const verified = await repository.readVerifiedWorkOrder("run-1");
+    const verified = await readVerifiedWorkOrder(repository);
     expect(Object.isFrozen(verified)).toBe(true);
     expect(Object.isFrozen(verified.acceptanceCriteria)).toBe(true);
     expect(Object.isFrozen(verified.acceptanceCriteria[0])).toBe(true);
@@ -864,7 +876,7 @@ describe("journal and start-anchor integrity", () => {
     );
 
     await expect(
-      repository.readVerifiedWorkOrder("run-1"),
+      repository.readVerifiedWorkOrder("run-1", [observation, moved]),
     ).rejects.toMatchObject({
       code: "work_order.integrity_error",
     });
@@ -884,7 +896,7 @@ describe("journal and start-anchor integrity", () => {
       relatedIds: [],
     });
     await expect(
-      duplicate.repository.readVerifiedWorkOrder("run-1"),
+      readVerifiedWorkOrder(duplicate.repository),
     ).rejects.toMatchObject({ code: "work_order.integrity_error" });
 
     const extraRoot = await mkdtemp(join(tmpdir(), "ai-qa-anchor-extra-"));
@@ -900,20 +912,23 @@ describe("journal and start-anchor integrity", () => {
         payload: { ...(anchor.payload as object), unexpected: true },
       })}\n`,
     );
+    const extraAnchor = {
+      ...anchor,
+      payload: { ...(anchor.payload as object), unexpected: true },
+    } as unknown as RunEvent;
     await expect(
-      extra.repository.readVerifiedWorkOrder("run-1"),
+      extra.repository.readVerifiedWorkOrder("run-1", [extraAnchor]),
     ).rejects.toMatchObject({ code: "work_order.integrity_error" });
   });
 
-  it("wraps journal corruption as work-order integrity failure", async () => {
+  it("verifies against supplied parsed events without rereading the journal", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-anchor-journal-"));
-    const { repository } = await createRepositoryRun(projectRoot);
+    const { repository, workOrder } = await createRepositoryRun(projectRoot);
+    const events = await repository.journal("run-1").readAll();
     await writeFile(join(runDirectory(projectRoot), "events.jsonl"), "{");
     await expect(
-      repository.readVerifiedWorkOrder("run-1"),
-    ).rejects.toMatchObject({
-      code: "work_order.integrity_error",
-    });
+      repository.readVerifiedWorkOrder("run-1", events),
+    ).resolves.toEqual(workOrder);
   });
 
   it.each([
@@ -932,9 +947,7 @@ describe("journal and start-anchor integrity", () => {
     ) as RunEvent;
     await writeFile(path, `${JSON.stringify(tamper(anchor))}\n`);
 
-    await expect(
-      repository.readVerifiedWorkOrder("run-1"),
-    ).rejects.toMatchObject({
+    await expect(readVerifiedWorkOrder(repository)).rejects.toMatchObject({
       code: "work_order.integrity_error",
     });
   });
@@ -1130,5 +1143,236 @@ describe("durable journal concurrency", () => {
       }),
     ).rejects.toBeDefined();
     await expect(readFile(path, "utf8")).resolves.toBe("");
+  });
+});
+
+describe("run session command atomicity", () => {
+  it("returns state computed from the same critical section as the append", async () => {
+    const { projectRoot } = await initializeProject();
+    const repository = new RunRepository(projectRoot, fixedNow);
+    await repository.create(makeWorkOrder());
+    const concurrentJournal = repository.journal("run-1");
+    const decisionPayload = {
+      kind: "semantic" as const,
+      rationale: "A concurrent writer recorded a later semantic decision",
+      relatedIds: [],
+    };
+    let concurrentWrite: Promise<RunEvent> | undefined;
+    // The test must invoke the original method with the intercepted journal.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalReadLocked = RunJournal.prototype.readLocked;
+    const readBack = vi
+      .spyOn(RunJournal.prototype, "readLocked")
+      .mockImplementation(async function <T>(
+        this: RunJournal,
+        inspect: (
+          events: readonly RunEvent[],
+          signal: LockSignal,
+        ) => T | Promise<T>,
+      ): Promise<T> {
+        if (this === concurrentJournal) {
+          return originalReadLocked.call(this, inspect) as Promise<T>;
+        }
+        if (inspect.length >= 2) {
+          const result = (await originalReadLocked.call(this, inspect)) as T;
+          concurrentWrite ??= concurrentJournal.append({
+            type: "decision",
+            actor: "agent",
+            platform: "web",
+            tool: "ai-qa",
+            idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+            payload: decisionPayload,
+            relatedIds: [],
+          });
+          await concurrentWrite;
+          return result;
+        }
+        concurrentWrite ??= concurrentJournal.append({
+          type: "decision",
+          actor: "agent",
+          platform: "web",
+          tool: "ai-qa",
+          idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+          payload: decisionPayload,
+          relatedIds: [],
+        });
+        await concurrentWrite;
+        return (await originalReadLocked.call(this, inspect)) as T;
+      });
+    const captured = createCapturedCli({
+      cwd: projectRoot,
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            idempotencyKey: "critical-section-plan",
+            kind: "interaction",
+            intent: "Plan before the concurrent decision",
+            tool: "chrome-devtools-mcp",
+            target: { description: "Login button" },
+          }),
+        ),
+    });
+
+    try {
+      expect(
+        await runCli(
+          [
+            "--project",
+            projectRoot,
+            "action",
+            "plan",
+            "--run",
+            "run-1",
+            "--stdin-json",
+          ],
+          captured.context,
+        ),
+      ).toBe(0);
+    } finally {
+      readBack.mockRestore();
+    }
+    concurrentWrite ??= concurrentJournal.append({
+      type: "decision",
+      actor: "agent",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: `decision:${sha256Canonical(decisionPayload)}`,
+      payload: decisionPayload,
+      relatedIds: [],
+    });
+    await concurrentWrite;
+
+    const output = JSON.parse(captured.stdout[0]!) as {
+      sequence: number;
+      state: { status: string; requiresFreshObservation: boolean };
+      permittedNextActions: string[];
+    };
+    expect(output).toMatchObject({
+      sequence: 2,
+      state: { status: "running", requiresFreshObservation: false },
+      permittedNextActions: ["invoke-tool", "action.complete"],
+    });
+    expect((await concurrentJournal.readAll()).at(-1)).toMatchObject({
+      sequence: 3,
+      type: "decision",
+    });
+  });
+
+  it("commits cancellation verdict and lifecycle together", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-cancel-batch-"),
+    );
+    const { repository } = await createRepositoryRun(projectRoot);
+    const eventsPath = join(runDirectory(projectRoot), "events.jsonl");
+    const before = await stat(eventsPath);
+
+    const result = await cancelRun({
+      projectRoot,
+      runId: "run-1",
+      reason: "The operator stopped the run",
+      now: fixedNow,
+    });
+
+    const after = await stat(eventsPath);
+    const events = await repository.journal("run-1").readAll();
+    const [verdict, cancelled] = events.slice(-2);
+    expect(after.ino).not.toBe(before.ino);
+    expect(verdict).toMatchObject({
+      type: "verdict",
+      sequence: events.length - 1,
+      payload: {
+        classification: "not_verified",
+        reasonCode: "cancelled",
+      },
+    });
+    expect(cancelled).toMatchObject({
+      type: "run",
+      sequence: events.length,
+      payload: {
+        phase: "cancelled",
+        verdictId: verdict?.id,
+        reason: "The operator stopped the run",
+      },
+    });
+    expect(result).toEqual({
+      runId: "run-1",
+      status: "cancelled",
+      verdict: "not_verified",
+    });
+    await expect(
+      readRunState({ projectRoot, runId: "run-1", now: fixedNow }),
+    ).resolves.toMatchObject({
+      status: "cancelled",
+      effectiveVerdict: "not_verified",
+      permittedNextActions: ["report.generate"],
+    });
+  });
+
+  it("persists nothing when a batch fails aggregate validation", async () => {
+    const projectRoot = await mkdtemp(
+      join(tmpdir(), "ai-qa-session-invalid-batch-"),
+    );
+    const repository = new RunRepository(projectRoot, fixedNow);
+    const workOrder = {
+      ...makeWorkOrder(),
+      readiness: { platform: "web", status: "not_ready", checks: [] },
+      preflightResult: true,
+    } as WorkOrder;
+    await repository.create(workOrder);
+    await new VerdictService(projectRoot, "run-1", fixedNow).set({
+      classification: "not_verified",
+      reasonCode: "incomplete_coverage",
+      summary: "The preflight run has incomplete coverage",
+      criterionResults: [],
+    });
+    await finalizeRun({ projectRoot, runId: "run-1", now: fixedNow });
+    const journal = repository.journal("run-1");
+    const events = await journal.readAll();
+    const verdict = events.findLast((event) => event.type === "verdict");
+    if (verdict === undefined) throw new Error("missing completed verdict");
+    const eventsPath = join(runDirectory(projectRoot), "events.jsonl");
+    const before = await readFile(eventsPath);
+    const invalidLifecycle: RunEvent = {
+      schemaVersion: EVENT_SCHEMA_VERSION,
+      id: "event-invalid-post-completion-cancel",
+      runId: "run-1",
+      sequence: events.length + 1,
+      timestamp: fixedNow().toISOString(),
+      type: "run",
+      actor: "ai-qa",
+      platform: "web",
+      tool: "ai-qa",
+      idempotencyKey: "cancel:run-1",
+      payload: {
+        phase: "cancelled",
+        verdictId: verdict.id,
+        reason: "This lifecycle transition is invalid after completion",
+      },
+      relatedIds: [verdict.id],
+    };
+    expect(() =>
+      validateProtocolEvents([...events, invalidLifecycle], workOrder, "run-1"),
+    ).not.toThrow();
+    const { withRunSession } =
+      await import("../../src/services/run-protocol/run-session.js");
+
+    await expect(
+      withRunSession(
+        { projectRoot, runId: "run-1", now: fixedNow },
+        (session) =>
+          session.append([
+            {
+              type: "run",
+              actor: "ai-qa",
+              platform: "web",
+              tool: "ai-qa",
+              idempotencyKey: "cancel:run-1",
+              payload: invalidLifecycle.payload,
+              relatedIds: [verdict.id],
+            },
+          ]),
+      ),
+    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    expect(await readFile(eventsPath)).toEqual(before);
   });
 });

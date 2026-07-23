@@ -24,10 +24,10 @@ export function registerVerdictCommands(
       context,
       options.run,
     );
-    const event = await service.set(
+    const result = await service.set(
       await readJsonInput(context, verdictPayloadSchema),
     );
-    await writeProtocolEvent(setCommand, context, options.run, event);
+    writeProtocolEvent(context, result);
   });
 
   const reviseCommand = verdictCommand
@@ -48,11 +48,11 @@ export function registerVerdictCommands(
         "Supply verdict supersession only through --supersedes",
       );
     }
-    const event = await service.revise({
+    const result = await service.revise({
       ...body,
       supersedes: options.supersedes,
     });
-    await writeProtocolEvent(reviseCommand, context, options.run, event);
+    writeProtocolEvent(context, result);
   });
 }
 

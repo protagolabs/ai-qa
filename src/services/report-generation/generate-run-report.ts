@@ -241,7 +241,7 @@ async function buildVerifiedRunReport(
   const verified = await repository
     .journal(runId)
     .readLocked(async (events) => {
-      const workOrder = await repository.readVerifiedWorkOrder(runId);
+      const workOrder = await repository.readVerifiedWorkOrder(runId, events);
       if (workOrder.projectId !== config.project.id) {
         throw new AiQaError(
           "work_order.integrity_error",

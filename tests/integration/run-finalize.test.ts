@@ -18,8 +18,8 @@ import {
   cancelRun,
   resumeRun,
 } from "../../src/services/run-protocol/run-lifecycle.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
-import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 
@@ -1379,9 +1379,12 @@ describe("preflight result runs", () => {
     });
     expect(result).not.toHaveProperty("workOrder");
     const repository = new RunRepository(fixture.projectRoot, now);
-    const workOrder = await repository.readVerifiedWorkOrder(result.runId);
-    expect(workOrder.readiness.status).toBe("not_ready");
     const events = await repository.journal(result.runId).readAll();
+    const workOrder = await repository.readVerifiedWorkOrder(
+      result.runId,
+      events,
+    );
+    expect(workOrder.readiness.status).toBe("not_ready");
     expect(events.map((event) => event.type)).toEqual([
       "run",
       "blocker",

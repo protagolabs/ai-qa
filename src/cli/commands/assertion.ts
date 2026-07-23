@@ -28,10 +28,10 @@ export function registerAssertionCommands(
       context,
       options.run,
     );
-    const event = await service.recordAssertion({
+    const result = await service.recordAssertion({
       ...body,
       ...(options.step === undefined ? {} : { stepId: options.step }),
     });
-    await writeProtocolEvent(recordCommand, context, options.run, event);
+    writeProtocolEvent(context, result);
   });
 }

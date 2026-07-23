@@ -8,7 +8,6 @@ import {
   controllerSchema,
   type Platform,
 } from "../../core/platforms/schema.js";
-import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -22,8 +21,6 @@ import {
   type ObservationPayload,
   type RecoveryPayload,
 } from "../../core/runs/event-payloads.js";
-import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import {
   actionIdSchema,
   runIdSchema,
@@ -32,8 +29,11 @@ import {
   type RunEvent,
   type WorkOrder,
 } from "../../core/runs/schema.js";
-import { resolveProject } from "../project-root/resolve-project.js";
-import { validateRegressionFidelity } from "./regression-fidelity.js";
+import {
+  withRunSession,
+  type ProtocolCommandResult,
+  type RunSession,
+} from "./run-session.js";
 
 export const planActionInputSchema = z
   .object({
@@ -102,7 +102,7 @@ export class RunProtocolService {
     this.runId = runIdSchema.parse(runId);
   }
 
-  async planAction(input: PlanActionInput): Promise<RunEvent> {
+  async planAction(input: PlanActionInput): Promise<ProtocolCommandResult> {
     const parsed = planActionInputSchema.parse(input);
     let enforceDeadline = true;
     return this.appendValidated(
@@ -204,12 +204,6 @@ export class RunProtocolService {
           parsed.idempotencyKey,
           payload,
         );
-        if (workOrder.kind === "regression") {
-          validateRegressionFidelity(workOrder, [
-            ...events,
-            prospectiveEvent(workOrder, events, candidate),
-          ]);
-        }
         return candidate;
       },
       (workOrder, timestamp) => {
@@ -231,7 +225,9 @@ export class RunProtocolService {
     );
   }
 
-  async completeAction(input: CompleteActionInput): Promise<RunEvent> {
+  async completeAction(
+    input: CompleteActionInput,
+  ): Promise<ProtocolCommandResult> {
     const parsed = completeActionInputSchema.parse(input);
     return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
@@ -259,7 +255,9 @@ export class RunProtocolService {
     });
   }
 
-  async addObservation(input: ObservationPayload): Promise<RunEvent> {
+  async addObservation(
+    input: ObservationPayload,
+  ): Promise<ProtocolCommandResult> {
     const parsed = observationPayloadSchema.parse(input);
     return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
@@ -304,7 +302,9 @@ export class RunProtocolService {
     });
   }
 
-  async recordAssertion(input: AssertionPayload): Promise<RunEvent> {
+  async recordAssertion(
+    input: AssertionPayload,
+  ): Promise<ProtocolCommandResult> {
     const parsed = assertionPayloadSchema.parse(input);
     return this.appendValidated((workOrder, events) => {
       if (
@@ -336,7 +336,7 @@ export class RunProtocolService {
     });
   }
 
-  async recordDecision(input: DecisionPayload): Promise<RunEvent> {
+  async recordDecision(input: DecisionPayload): Promise<ProtocolCommandResult> {
     const parsed = decisionPayloadSchema.parse(input);
     return this.appendValidated((workOrder) =>
       protocolAppendInput({
@@ -351,7 +351,9 @@ export class RunProtocolService {
     );
   }
 
-  async resolveUnknownAction(input: RecoveryPayload): Promise<RunEvent> {
+  async resolveUnknownAction(
+    input: RecoveryPayload,
+  ): Promise<ProtocolCommandResult> {
     const parsed = recoveryPayloadSchema.parse(input);
     return this.appendValidated((workOrder, events) => {
       const planned = requirePlannedAction(events, parsed.actionId);
@@ -391,47 +393,38 @@ export class RunProtocolService {
       events: readonly RunEvent[],
     ) => AppendRunEvent,
     validateTimestamp?: (workOrder: WorkOrder, timestamp: string) => void,
-  ): Promise<RunEvent> {
-    const project = await resolveProject({
-      cwd: this.projectRoot,
-      explicitProject: this.projectRoot,
-    });
-    const repository = new RunRepository(project.projectRoot, this.now);
-    return repository.journal(this.runId).appendPrepared(async (events) => {
-      const workOrder = await repository.readVerifiedWorkOrder(this.runId);
-      validateProtocolEvents(events, workOrder, this.runId);
-      if (workOrder.kind === "regression") {
-        validateRegressionFidelity(workOrder, [...events]);
-      }
-      const lifecycle = validateRunLifecycleHistory(events, this.runId);
-      if (lifecycle.current.payload.phase === "interrupted") {
-        throw new AiQaError(
-          "run.interrupted",
-          "Interrupted runs must be resumed or cancelled before protocol work",
-          { runEventId: lifecycle.current.event.id },
-        );
-      }
-      if (
-        lifecycle.current.payload.phase === "completed" ||
-        lifecycle.current.payload.phase === "cancelled"
-      ) {
-        throw new AiQaError(
-          "run.terminal",
-          "Completed or cancelled runs cannot accept protocol events",
-          { runEventId: lifecycle.current.event.id },
-        );
-      }
-      return {
-        input: prepare(workOrder, events),
-        ...(validateTimestamp === undefined
-          ? {}
-          : {
-              validateTimestamp: (timestamp: string) =>
-                validateTimestamp(workOrder, timestamp),
-            }),
-        resolve: (event: RunEvent) => event,
-      };
-    });
+  ): Promise<ProtocolCommandResult> {
+    let commandTime: Date | undefined;
+    const now = () => (commandTime ??= this.now());
+    return withRunSession(
+      { projectRoot: this.projectRoot, runId: this.runId, now },
+      async (session) => {
+        const { events, lifecycle, workOrder } = session.snapshot;
+        if (lifecycle.current.payload.phase === "interrupted") {
+          throw new AiQaError(
+            "run.interrupted",
+            "Interrupted runs must be resumed or cancelled before protocol work",
+            { runEventId: lifecycle.current.event.id },
+          );
+        }
+        if (
+          lifecycle.current.payload.phase === "completed" ||
+          lifecycle.current.payload.phase === "cancelled"
+        ) {
+          throw new AiQaError(
+            "run.terminal",
+            "Completed or cancelled runs cannot accept protocol events",
+            { runEventId: lifecycle.current.event.id },
+          );
+        }
+        const input = prepare(workOrder, events);
+        validateTimestamp?.(workOrder, now().toISOString());
+        const event = (await session.append([input]))[0];
+        if (event === undefined)
+          throw new Error("protocol append returned no event");
+        return commandResult(session, event);
+      },
+    );
   }
 }
 
@@ -500,21 +493,6 @@ function actionAppendInput(
   });
 }
 
-function prospectiveEvent(
-  workOrder: WorkOrder,
-  events: readonly RunEvent[],
-  input: AppendRunEvent,
-): RunEvent {
-  return {
-    schemaVersion: EVENT_SCHEMA_VERSION,
-    id: `event-prospective-${String(events.length + 1)}`,
-    runId: workOrder.runId,
-    sequence: events.length + 1,
-    timestamp: workOrder.startedAt,
-    ...input,
-  } as RunEvent;
-}
-
 function appendInput(event: RunEvent): AppendRunEvent {
   return {
     actor: event.actor,
@@ -527,6 +505,14 @@ function appendInput(event: RunEvent): AppendRunEvent {
     payload: event.payload,
     relatedIds: event.relatedIds,
   } as AppendRunEvent;
+}
+
+function commandResult(
+  session: RunSession,
+  event: RunEvent,
+): ProtocolCommandResult {
+  const { permittedNextActions, ...state } = session.state();
+  return { event, state, permittedNextActions };
 }
 
 function matchesPlanRetry(event: RunEvent, input: PlanActionInput): boolean {

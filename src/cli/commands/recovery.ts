@@ -27,10 +27,8 @@ export function registerRecoveryCommands(
       context,
       options.run,
     );
-    await writeProtocolEvent(
-      resolveCommand,
+    writeProtocolEvent(
       context,
-      options.run,
       await service.resolveUnknownAction({ actionId, ...body }),
     );
   });

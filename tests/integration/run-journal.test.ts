@@ -19,6 +19,7 @@ import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
+  runEventSchema,
 } from "../../src/core/runs/schema.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
 import { writeProjectConfig } from "../../src/core/config/repository.js";
@@ -472,7 +473,7 @@ describe("RunJournal", () => {
     ).rejects.toMatchObject({ code: "event.idempotency_conflict" });
   });
 
-  it("holds the journal lock across prepared work and its append", async () => {
+  it("holds the journal lock across coordinated work and its append", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
     const journal = await RunJournal.create(
       projectRoot,
@@ -487,25 +488,29 @@ describe("RunJournal", () => {
     const prepareReleased = new Promise<void>((resolve) => {
       releasePrepare = resolve;
     });
-    const coordinated = journal.appendPrepared(async () => {
+    const coordinated = journal.readLocked(async (events, signal) => {
       enterPrepare();
       await prepareReleased;
-      return {
-        input: {
-          type: "decision" as const,
-          actor: "ai-qa" as const,
-          platform: "web" as const,
-          tool: "ai-qa",
-          idempotencyKey: "coordinated-key",
-          payload: {
-            kind: "semantic",
-            rationale: "Prepared",
-            relatedIds: [],
-          },
+      const event = runEventSchema.parse({
+        schemaVersion: 2,
+        id: "event-coordinated",
+        runId: "run-1",
+        sequence: (events.at(-1)?.sequence ?? 0) + 1,
+        timestamp: "2026-07-13T00:00:00.000Z",
+        type: "decision",
+        actor: "ai-qa",
+        platform: "web",
+        tool: "ai-qa",
+        idempotencyKey: "coordinated-key",
+        payload: {
+          kind: "semantic",
+          rationale: "Prepared",
           relatedIds: [],
         },
-        resolve: (event: { id: string }) => event.id,
-      };
+        relatedIds: [],
+      });
+      await journal.appendLine(event, signal);
+      return event.id;
     });
     await prepareEntered;
     let competitorSettled = false;
@@ -562,9 +567,10 @@ describe("RunRepository", () => {
     );
 
     await repository.create(workOrder);
-    await expect(repository.readVerifiedWorkOrder("run-1")).resolves.toEqual(
-      workOrder,
-    );
+    const events = await repository.journal("run-1").readAll();
+    await expect(
+      repository.readVerifiedWorkOrder("run-1", events),
+    ).resolves.toEqual(workOrder);
     await expect(repository.create(workOrder)).rejects.toMatchObject({
       code: "run.already_exists",
     });
@@ -583,7 +589,7 @@ describe("RunRepository", () => {
     tampered.goal = "Tampered goal";
     await writeFile(path, JSON.stringify(tampered));
     await expect(
-      repository.readVerifiedWorkOrder("run-1"),
+      repository.readVerifiedWorkOrder("run-1", events),
     ).rejects.toMatchObject({ code: "work_order.integrity_error" });
   });
 });
@@ -703,10 +709,11 @@ describe("exploratory run start", () => {
       readiness,
       now,
     });
-    const workOrder = await new RunRepository(
-      projectRoot,
-      now,
-    ).readVerifiedWorkOrder(result.runId);
+    const repository = new RunRepository(projectRoot, now);
+    const workOrder = await repository.readVerifiedWorkOrder(
+      result.runId,
+      await repository.journal(result.runId).readAll(),
+    );
 
     expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
   });
@@ -846,10 +853,14 @@ describe("exploratory run start", () => {
       blockerSubtype: "environment",
     });
     expect(result).not.toHaveProperty("workOrder");
-    const workOrder = await new RunRepository(
+    const repository = new RunRepository(
       projectRoot,
       () => new Date("2026-07-13T00:00:00.000Z"),
-    ).readVerifiedWorkOrder(result.runId);
+    );
+    const workOrder = await repository.readVerifiedWorkOrder(
+      result.runId,
+      await repository.journal(result.runId).readAll(),
+    );
     expect(workOrder).toMatchObject({
       preflightResult: true,
       recordingPolicy: { mode: "local-only" },
@@ -904,10 +915,14 @@ describe("exploratory run start", () => {
       runId: string;
       blockerSubtype: string;
     };
-    const workOrder = await new RunRepository(
+    const repository = new RunRepository(
       projectRoot,
       () => new Date("2026-07-13T00:00:00.000Z"),
-    ).readVerifiedWorkOrder(result.runId);
+    );
+    const workOrder = await repository.readVerifiedWorkOrder(
+      result.runId,
+      await repository.journal(result.runId).readAll(),
+    );
 
     expect(result).toMatchObject({ blockerSubtype: "environment" });
     expect(workOrder.readiness.status).toBe("not_ready");

@@ -1,29 +1,27 @@
+import { sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
+import { createId } from "../../core/ids.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import type { Platform } from "../../core/platforms/schema.js";
 import {
   cancelledRunPayloadSchema,
   interruptedRunPayloadSchema,
   resumedRunPayloadSchema,
-  validateRunLifecycleHistory,
   type LifecycleEntry,
   type LifecyclePayload,
 } from "../../core/runs/lifecycle.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import {
   runIdSchema,
   type AppendRunEvent,
   type RunEvent,
 } from "../../core/runs/schema.js";
-import { resolveProject } from "../project-root/resolve-project.js";
-import { validateProtocolEvents } from "./run-protocol-service.js";
 import {
-  effectiveVerdictFrom,
-  validateVerdictHistory,
-  VerdictService,
-} from "./verdict-service.js";
+  verdictPayloadSchema,
+  type VerdictPayload,
+} from "../../core/verdicts/schema.js";
+import { withPreparedRunEventId, withRunSession } from "./run-session.js";
 
 export async function resumeRun(input: {
   projectRoot: string;
@@ -35,66 +33,49 @@ export async function resumeRun(input: {
   requiresFreshObservation: true;
 }> {
   const runId = runIdSchema.parse(input.runId);
-  const project = await resolveProject({
-    cwd: input.projectRoot,
-    explicitProject: input.projectRoot,
-  });
-  const repository = new RunRepository(project.projectRoot, input.now);
-  const journal = repository.journal(runId);
-
-  const first = await journal.appendPrepared(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    const evidence = await new EvidenceRepository(
-      project.projectRoot,
-      runId,
-      input.now,
-      workOrder.platform,
-    ).verifyAll();
-    validateEvidenceParity(events, evidence, runId);
-    validateProtocolEvents(events, workOrder, runId);
-    validateVerdictHistory(events, workOrder);
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    requireMutableLifecycle(lifecycle.current);
-    const append =
-      lifecycle.current.payload.phase === "interrupted"
-        ? resumedAppend(workOrder.platform, runId, lifecycle.current.event.id)
-        : interruptedAppend(
-            workOrder.platform,
-            runId,
-            lifecycle.current.event.id,
-          );
-    return { input: append, resolve: (event: RunEvent) => event };
-  });
-
-  if (isRunPhase(first, "interrupted")) {
-    await journal.appendPrepared(async (events) => {
-      const workOrder = await repository.readVerifiedWorkOrder(runId);
-      const evidence = await new EvidenceRepository(
-        project.projectRoot,
-        runId,
-        input.now,
-        workOrder.platform,
-      ).verifyAll();
-      validateEvidenceParity(events, evidence, runId);
-      validateProtocolEvents(events, workOrder, runId);
-      validateVerdictHistory(events, workOrder);
-      const lifecycle = validateRunLifecycleHistory(events, runId);
+  return withRunSession(
+    {
+      ...input,
+      beforeValidate: async ({ events, workOrder }) => {
+        const evidence = await new EvidenceRepository(
+          input.projectRoot,
+          runId,
+          input.now,
+          workOrder.platform,
+        ).verifyAll();
+        validateEvidenceParity(events, evidence, runId);
+      },
+    },
+    async (session) => {
+      const { lifecycle, workOrder } = session.snapshot;
       requireMutableLifecycle(lifecycle.current);
-      if (lifecycle.current.event.id !== first.id) {
-        throw new AiQaError(
-          "run.resume_conflict",
-          "Run lifecycle changed while resuming",
-          { runId },
-        );
+      if (lifecycle.current.payload.phase === "interrupted") {
+        await session.append([
+          resumedAppend(workOrder.platform, runId, lifecycle.current.event.id),
+        ]);
+      } else {
+        const interruptedEventId = createId("event");
+        await session.append([
+          withPreparedRunEventId(
+            interruptedAppend(
+              workOrder.platform,
+              runId,
+              lifecycle.current.event.id,
+            ),
+            interruptedEventId,
+          ),
+          resumedAppend(workOrder.platform, runId, interruptedEventId),
+        ]);
       }
-      return {
-        input: resumedAppend(workOrder.platform, runId, first.id),
-        resolve: (event: RunEvent) => event,
-      };
-    });
-  }
+      return { runId, status: "running", requiresFreshObservation: true };
+    },
+  );
+}
 
-  return { runId, status: "running", requiresFreshObservation: true };
+export interface CancelRunResult {
+  readonly runId: string;
+  readonly status: "cancelled";
+  readonly verdict: "not_verified";
 }
 
 export async function cancelRun(input: {
@@ -102,11 +83,7 @@ export async function cancelRun(input: {
   runId: string;
   reason: string;
   now: () => Date;
-}): Promise<{
-  runId: string;
-  status: "cancelled";
-  verdict: "not_verified";
-}> {
+}): Promise<CancelRunResult> {
   const runId = runIdSchema.parse(input.runId);
   const reason = input.reason.trim();
   if (reason.length === 0) {
@@ -115,55 +92,47 @@ export async function cancelRun(input: {
       "Cancel reason is required",
     );
   }
-  const project = await resolveProject({
-    cwd: input.projectRoot,
-    explicitProject: input.projectRoot,
-  });
-  const repository = new RunRepository(project.projectRoot, input.now);
-  const journal = repository.journal(runId);
-  await journal.readLocked(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    validateProtocolEvents(events, workOrder, runId);
-    validateVerdictHistory(events, workOrder);
-    requireMutableLifecycle(validateRunLifecycleHistory(events, runId).current);
-  });
-
-  const verdictService = new VerdictService(
-    project.projectRoot,
-    runId,
-    input.now,
-  );
-  const verdict = await verdictService.recordCancellation(reason);
-
-  await journal.appendPrepared(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    validateProtocolEvents(events, workOrder, runId);
-    const effective = effectiveVerdictFrom(
-      validateVerdictHistory(events, workOrder),
-    );
-    const lifecycle = validateRunLifecycleHistory(events, runId);
+  return withRunSession(input, async (session) => {
+    const { lifecycle, workOrder } = session.snapshot;
     requireMutableLifecycle(lifecycle.current);
-    if (effective?.event.id !== verdict.id) {
-      throw new AiQaError(
-        "run.cancel_verdict_conflict",
-        "Cancel verdict is no longer effective",
-        { runId },
-      );
-    }
+    const current = lifecycle.effectiveVerdict;
+    const existingCancellation =
+      current?.payload.classification === "not_verified" &&
+      current.payload.reasonCode === "cancelled" &&
+      current.payload.summary === reason &&
+      current.payload.criterionResults.length === 0
+        ? current
+        : undefined;
+    const verdictPayload =
+      existingCancellation?.payload ??
+      verdictPayloadSchema.parse({
+        classification: "not_verified",
+        reasonCode: "cancelled",
+        summary: reason,
+        criterionResults: [],
+        ...(current === undefined ? {} : { supersedes: current.event.id }),
+      });
+    const verdictId = existingCancellation?.event.id ?? createId("event");
+    const verdictInput =
+      existingCancellation === undefined
+        ? withPreparedRunEventId(
+            cancellationVerdictAppend(workOrder.platform, verdictPayload),
+            verdictId,
+          )
+        : appendInput(existingCancellation.event);
     const payload = cancelledRunPayloadSchema.parse({
       phase: "cancelled",
-      verdictId: verdict.id,
+      verdictId,
       reason,
     });
-    return {
-      input: lifecycleAppend(workOrder.platform, `cancel:${runId}`, payload, [
-        verdict.id,
+    await session.append([
+      verdictInput,
+      lifecycleAppend(workOrder.platform, `cancel:${runId}`, payload, [
+        verdictId,
       ]),
-      resolve: (event: RunEvent) => event,
-    };
+    ]);
+    return { runId, status: "cancelled", verdict: "not_verified" };
   });
-
-  return { runId, status: "cancelled", verdict: "not_verified" };
 }
 
 function interruptedAppend(
@@ -220,6 +189,37 @@ function lifecycleAppend(
   };
 }
 
+function cancellationVerdictAppend(
+  platform: Platform,
+  payload: VerdictPayload,
+): AppendRunEvent {
+  return {
+    type: "verdict",
+    actor: "agent",
+    platform,
+    tool: "ai-qa",
+    idempotencyKey: `verdict:${sha256Canonical(payload)}`,
+    payload,
+    relatedIds: payload.supersedes === undefined ? [] : [payload.supersedes],
+  };
+}
+
+function appendInput(
+  event: Extract<RunEvent, { type: "verdict" }>,
+): AppendRunEvent {
+  return {
+    type: event.type,
+    actor: event.actor,
+    platform: event.platform,
+    tool: event.tool,
+    ...(event.idempotencyKey === undefined
+      ? {}
+      : { idempotencyKey: event.idempotencyKey }),
+    payload: event.payload,
+    relatedIds: event.relatedIds,
+  };
+}
+
 function requireMutableLifecycle(entry: LifecycleEntry): void {
   if (
     entry.payload.phase === "completed" ||
@@ -231,8 +231,4 @@ function requireMutableLifecycle(entry: LifecycleEntry): void {
       { runEventId: entry.event.id },
     );
   }
-}
-
-function isRunPhase(event: RunEvent, phase: string): boolean {
-  return event.type === "run" && event.payload.phase === phase;
 }

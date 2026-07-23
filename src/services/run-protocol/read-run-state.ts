@@ -2,23 +2,19 @@ import {
   actionPayloadSchema,
   recoveryPayloadSchema,
 } from "../../core/runs/event-payloads.js";
-import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import { runIdSchema, type RunEvent } from "../../core/runs/schema.js";
 import type { VerdictPayload } from "../../core/verdicts/schema.js";
-import { resolveProject } from "../project-root/resolve-project.js";
-import { validateProtocolEvents } from "./run-protocol-service.js";
-import {
-  effectiveVerdictFrom,
-  validateVerdictHistory,
-} from "./verdict-service.js";
+import { withRunSession, type RunSnapshot } from "./run-session.js";
 
-export interface RunStateSnapshot {
-  runId: string;
-  status: "running" | "interrupted" | "completed" | "cancelled";
-  effectiveVerdict?: VerdictPayload["classification"];
-  requiresFreshObservation: boolean;
-  permittedNextActions: string[];
+export interface RunStateSummary {
+  readonly status: "running" | "interrupted" | "completed" | "cancelled";
+  readonly effectiveVerdict?: VerdictPayload["classification"];
+  readonly requiresFreshObservation: boolean;
+}
+
+export interface RunStateSnapshot extends RunStateSummary {
+  readonly runId: string;
+  readonly permittedNextActions: readonly string[];
 }
 
 export async function readRunState(input: {
@@ -27,44 +23,41 @@ export async function readRunState(input: {
   now: () => Date;
 }): Promise<RunStateSnapshot> {
   const runId = runIdSchema.parse(input.runId);
-  const project = await resolveProject({
-    cwd: input.projectRoot,
-    explicitProject: input.projectRoot,
-  });
-  const repository = new RunRepository(project.projectRoot, input.now);
-  return repository.journal(runId).readLocked(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    validateProtocolEvents(events, workOrder, runId);
-    const verdict = effectiveVerdictFrom(
-      validateVerdictHistory(events, workOrder),
-    );
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    const requiresFreshObservation = needsFreshObservation(
+  return withRunSession(input, (session) => ({
+    runId,
+    ...session.state(),
+  }));
+}
+
+export function deriveRunState(
+  snapshot: RunSnapshot,
+): RunStateSummary & { readonly permittedNextActions: readonly string[] } {
+  const { events, lifecycle } = snapshot;
+  const verdict = lifecycle.effectiveVerdict;
+  const requiresFreshObservation = needsFreshObservation(
+    events,
+    lifecycle.current.event,
+    lifecycle.current.payload.phase,
+  );
+  const status =
+    lifecycle.current.payload.phase === "completed" ||
+    lifecycle.current.payload.phase === "cancelled" ||
+    lifecycle.current.payload.phase === "interrupted"
+      ? lifecycle.current.payload.phase
+      : "running";
+  return {
+    status,
+    ...(verdict === undefined
+      ? {}
+      : { effectiveVerdict: verdict.payload.classification }),
+    requiresFreshObservation,
+    permittedNextActions: permittedNextActions({
       events,
-      lifecycle.current.event,
-      lifecycle.current.payload.phase,
-    );
-    const status =
-      lifecycle.current.payload.phase === "completed" ||
-      lifecycle.current.payload.phase === "cancelled" ||
-      lifecycle.current.payload.phase === "interrupted"
-        ? lifecycle.current.payload.phase
-        : "running";
-    return {
-      runId,
-      status,
-      ...(verdict === undefined
-        ? {}
-        : { effectiveVerdict: verdict.payload.classification }),
+      lifecyclePhase: lifecycle.current.payload.phase,
       requiresFreshObservation,
-      permittedNextActions: permittedNextActions({
-        events,
-        lifecyclePhase: lifecycle.current.payload.phase,
-        requiresFreshObservation,
-        hasVerdict: verdict !== undefined,
-      }),
-    };
-  });
+      hasVerdict: verdict !== undefined,
+    }),
+  };
 }
 
 function needsFreshObservation(

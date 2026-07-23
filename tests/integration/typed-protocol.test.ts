@@ -14,11 +14,9 @@ import {
 import { controllerForPlatform } from "../../src/core/tools.js";
 import { effectiveInteractionSuccesses } from "../../src/services/run-protocol/effective-interactions.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import {
-  planActionInputSchema,
-  RunProtocolService,
-} from "../../src/services/run-protocol/run-protocol-service.js";
+import { planActionInputSchema } from "../../src/services/run-protocol/run-protocol-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");
 
@@ -1326,13 +1324,43 @@ describe("typed run protocol", () => {
     const output = JSON.parse(captured.stdout[0]!) as {
       eventId: string;
       sequence: number;
-      payload: { phase: string };
+      payload: {
+        phase: string;
+        kind: string;
+        intent: string;
+        stepId: string;
+        target: { description: string };
+      };
+      state: {
+        status: string;
+        effectiveVerdict?: string;
+        requiresFreshObservation: boolean;
+      };
       permittedNextActions: string[];
     };
     expect(output.eventId).toMatch(/^event-/);
-    expect(output).toMatchObject({
+    expect(output.payload.stepId).toMatch(/^step-/);
+    expect(Object.keys(output)).toEqual([
+      "eventId",
+      "sequence",
+      "payload",
+      "state",
+      "permittedNextActions",
+    ]);
+    expect(output).toEqual({
+      eventId: output.eventId,
       sequence: 2,
-      payload: { phase: "planned" },
+      payload: {
+        phase: "planned",
+        kind: "observation",
+        intent: "Observe through CLI",
+        stepId: output.payload.stepId,
+        target: { description: "Page" },
+      },
+      state: {
+        status: "running",
+        requiresFreshObservation: false,
+      },
       permittedNextActions: ["invoke-tool", "action.complete"],
     });
 

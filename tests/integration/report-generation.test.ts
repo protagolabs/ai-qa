@@ -41,9 +41,9 @@ import {
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
-import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,

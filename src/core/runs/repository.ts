@@ -21,7 +21,7 @@ import {
 } from "./schema.js";
 
 function startedWorkOrderHash(
-  events: RunEvent[],
+  events: readonly RunEvent[],
   runId: string,
   platform: WorkOrder["platform"],
 ): string {
@@ -140,7 +140,10 @@ export class RunRepository {
     }
   }
 
-  async readVerifiedWorkOrder(runId: string): Promise<WorkOrder> {
+  async readVerifiedWorkOrder(
+    runId: string,
+    events: readonly RunEvent[],
+  ): Promise<WorkOrder> {
     resolveRunPaths(this.projectRoot, runId);
     let serialized: string;
     try {
@@ -162,7 +165,7 @@ export class RunRepository {
       const rawHash = sha256Canonical(raw);
       const validatedHash = sha256Canonical(workOrder);
       const expectedHash = startedWorkOrderHash(
-        await this.journal(runId).readAll(),
+        events,
         runId,
         workOrder.platform,
       );

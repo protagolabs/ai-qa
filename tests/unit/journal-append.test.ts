@@ -85,26 +85,23 @@ function actionEvent(
   });
 }
 
-function appendPrepared(
+function appendSingle(
   journal: RunJournal,
   intent: string,
   idempotencyKey: string,
 ): Promise<RunEvent> {
-  const input = actionInput(intent, idempotencyKey);
-  return journal.appendPrepared(() =>
-    Promise.resolve({ input, resolve: (event) => event }),
-  );
+  return journal.append(actionInput(intent, idempotencyKey));
 }
 
 describe("RunJournal append mechanics", () => {
   it("appends a single event without rewriting the file", async () => {
     const { journal, eventsPath } = await createJournal();
 
-    await appendPrepared(journal, "First action", "single-1");
+    await appendSingle(journal, "First action", "single-1");
     const first = await stat(eventsPath);
-    await appendPrepared(journal, "Second action", "single-2");
+    await appendSingle(journal, "Second action", "single-2");
     const second = await stat(eventsPath);
-    await appendPrepared(journal, "Third action", "single-3");
+    await appendSingle(journal, "Third action", "single-3");
     const third = await stat(eventsPath);
 
     expect(second.ino).toBe(first.ino);
@@ -158,7 +155,7 @@ describe("RunJournal append mechanics", () => {
   it("uses the atomic rewrite for batches", async () => {
     const runId = "run-atomic-batch";
     const { journal, eventsPath } = await createJournal(runId);
-    const prior = await appendPrepared(journal, "Prior action", "prior");
+    const prior = await appendSingle(journal, "Prior action", "prior");
     const before = await stat(eventsPath);
     const batch = [
       actionEvent(runId, 2, "Batch action two"),
@@ -175,7 +172,7 @@ describe("RunJournal append mechanics", () => {
   it("leaves zero of a batch's events when the batch write crashes", async () => {
     const runId = "run-failed-batch";
     const { journal, eventsPath } = await createJournal(runId);
-    const prior = await appendPrepared(journal, "Prior action", "prior");
+    const prior = await appendSingle(journal, "Prior action", "prior");
     const before = await readFile(eventsPath);
     const batch = [
       actionEvent(runId, 2, "Batch action two"),

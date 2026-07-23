@@ -25,11 +25,6 @@ export function registerObservationCommands(
       context,
       options.run,
     );
-    await writeProtocolEvent(
-      addCommand,
-      context,
-      options.run,
-      await service.addObservation(body),
-    );
+    writeProtocolEvent(context, await service.addObservation(body));
   });
 }

@@ -27,7 +27,7 @@ import {
 } from "../../src/core/runs/schema.js";
 import { controllerForPlatform } from "../../src/core/tools.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 
 const fixedNow = () => new Date("2026-07-13T00:00:00.000Z");

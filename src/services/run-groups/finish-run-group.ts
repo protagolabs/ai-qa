@@ -72,7 +72,11 @@ export async function readVerifiedRunGroupMemberStates(input: {
   const repository = new RunRepository(input.projectRoot, input.now);
   const result = [];
   for (const member of input.manifest.members) {
-    const workOrder = await repository.readVerifiedWorkOrder(member.runId);
+    const workOrder = await repository
+      .journal(member.runId)
+      .readLocked((events) =>
+        repository.readVerifiedWorkOrder(member.runId, events),
+      );
     requireMemberIdentity(input.manifest, member, workOrder);
     const state = await readRunState({
       projectRoot: input.projectRoot,

@@ -1,8 +1,6 @@
 import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { AiQaError } from "../../core/errors.js";
 import { assertJsonValue } from "../../core/json-value.js";
-import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import {
   runIdSchema,
   type AppendRunEvent,
@@ -15,11 +13,14 @@ import {
   type BlockerPayload,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
-import { resolveProject } from "../project-root/resolve-project.js";
-import { validateProtocolEvents } from "./run-protocol-service.js";
+import {
+  withRunSession,
+  type ProtocolCommandResult,
+  type RunSession,
+} from "./run-session.js";
 
 export interface VerdictEntry {
-  event: RunEvent;
+  event: Extract<RunEvent, { type: "verdict" }>;
   payload: VerdictPayload;
 }
 
@@ -34,7 +35,7 @@ export class VerdictService {
     this.runId = runIdSchema.parse(runId);
   }
 
-  async recordBlocker(input: BlockerPayload): Promise<RunEvent> {
+  async recordBlocker(input: BlockerPayload): Promise<ProtocolCommandResult> {
     const payload = blockerPayloadSchema.parse(input);
     return this.appendValidated((workOrder, events) => {
       requireMutableRun(events);
@@ -53,7 +54,7 @@ export class VerdictService {
     });
   }
 
-  async set(input: VerdictPayload): Promise<RunEvent> {
+  async set(input: VerdictPayload): Promise<ProtocolCommandResult> {
     const payload = verdictPayloadSchema.parse(input);
     requireLifecycleOwnedCancellation(payload);
     if (payload.supersedes !== undefined) {
@@ -89,7 +90,7 @@ export class VerdictService {
 
   async revise(
     input: VerdictPayload & { supersedes: string },
-  ): Promise<RunEvent> {
+  ): Promise<ProtocolCommandResult> {
     const payload = verdictPayloadSchema.parse(input);
     requireLifecycleOwnedCancellation(payload);
     if (payload.supersedes === undefined) {
@@ -130,17 +131,13 @@ export class VerdictService {
   }
 
   async effectiveVerdict(): Promise<RunEvent | undefined> {
-    const repository = await this.repository();
-    return repository.journal(this.runId).readLocked(async (events) => {
-      const workOrder = await repository.readVerifiedWorkOrder(this.runId);
-      validateProtocolEvents(events, workOrder, this.runId);
-      validateRunLifecycleHistory(events, this.runId);
-      return effectiveVerdictFrom(validateVerdictHistory(events, workOrder))
-        ?.event;
-    });
+    return withRunSession(
+      { projectRoot: this.projectRoot, runId: this.runId, now: this.now },
+      (session) => session.snapshot.lifecycle.effectiveVerdict?.event,
+    );
   }
 
-  async recordCancellation(reason: string): Promise<RunEvent> {
+  async recordCancellation(reason: string): Promise<ProtocolCommandResult> {
     const summary = reason.trim();
     if (summary.length === 0) {
       throw new AiQaError(
@@ -180,36 +177,28 @@ export class VerdictService {
       verdicts: readonly VerdictEntry[],
     ) => AppendRunEvent,
     options: { allowInterrupted?: boolean } = {},
-  ): Promise<RunEvent> {
-    const repository = await this.repository();
-    return repository.journal(this.runId).appendPrepared(async (events) => {
-      const workOrder = await repository.readVerifiedWorkOrder(this.runId);
-      validateProtocolEvents(events, workOrder, this.runId);
-      const lifecycle = validateRunLifecycleHistory(events, this.runId);
-      if (
-        lifecycle.current.payload.phase === "interrupted" &&
-        options.allowInterrupted !== true
-      ) {
-        throw new AiQaError(
-          "run.interrupted",
-          "Interrupted runs must be resumed or cancelled before verdict mutation",
-          { runEventId: lifecycle.current.event.id },
-        );
-      }
-      const verdicts = validateVerdictHistory(events, workOrder);
-      return {
-        input: prepare(workOrder, events, verdicts),
-        resolve: (event: RunEvent) => event,
-      };
-    });
-  }
-
-  private async repository(): Promise<RunRepository> {
-    const project = await resolveProject({
-      cwd: this.projectRoot,
-      explicitProject: this.projectRoot,
-    });
-    return new RunRepository(project.projectRoot, this.now);
+  ): Promise<ProtocolCommandResult> {
+    return withRunSession(
+      { projectRoot: this.projectRoot, runId: this.runId, now: this.now },
+      async (session) => {
+        const { events, lifecycle, workOrder } = session.snapshot;
+        if (
+          lifecycle.current.payload.phase === "interrupted" &&
+          options.allowInterrupted !== true
+        ) {
+          throw new AiQaError(
+            "run.interrupted",
+            "Interrupted runs must be resumed or cancelled before verdict mutation",
+            { runEventId: lifecycle.current.event.id },
+          );
+        }
+        const input = prepare(workOrder, events, verdictEntries(events));
+        const event = (await session.append([input]))[0];
+        if (event === undefined)
+          throw new Error("verdict append returned no event");
+        return commandResult(session, event);
+      },
+    );
   }
 }
 
@@ -297,6 +286,20 @@ export function effectiveVerdictFrom(
     );
   }
   return effective[0];
+}
+
+function verdictEntries(events: readonly RunEvent[]): VerdictEntry[] {
+  return events.flatMap((event) =>
+    event.type === "verdict" ? [{ event, payload: event.payload }] : [],
+  );
+}
+
+function commandResult(
+  session: RunSession,
+  event: RunEvent,
+): ProtocolCommandResult {
+  const { permittedNextActions, ...state } = session.state();
+  return { event, state, permittedNextActions };
 }
 
 function blockerAppendInput(

@@ -32,7 +32,7 @@ export async function materializeRunGroup(input: {
       for (const member of manifest.members) {
         let stored: WorkOrder;
         try {
-          stored = await runRepository.readVerifiedWorkOrder(member.runId);
+          stored = await readVerifiedWorkOrder(runRepository, member.runId);
         } catch (error: unknown) {
           if (!(error instanceof AiQaError) || error.code !== "run.not_found") {
             throw memberIntegrityError(runGroupId, member.runId);
@@ -51,7 +51,7 @@ export async function materializeRunGroup(input: {
             }
           }
           try {
-            stored = await runRepository.readVerifiedWorkOrder(member.runId);
+            stored = await readVerifiedWorkOrder(runRepository, member.runId);
           } catch {
             throw memberIntegrityError(runGroupId, member.runId);
           }
@@ -68,6 +68,15 @@ export async function materializeRunGroup(input: {
     eventId: result.event.id,
     memberRunIds: result.manifest.members.map((member) => member.runId),
   };
+}
+
+async function readVerifiedWorkOrder(
+  repository: RunRepository,
+  runId: string,
+): Promise<WorkOrder> {
+  return repository
+    .journal(runId)
+    .readLocked((events) => repository.readVerifiedWorkOrder(runId, events));
 }
 
 function memberIntegrityError(runGroupId: string, runId: string): AiQaError {

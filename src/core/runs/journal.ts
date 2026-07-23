@@ -35,12 +35,6 @@ function appendInput(event: RunEvent): AppendRunEvent {
   } as AppendRunEvent;
 }
 
-export interface PreparedRunAppend<T> {
-  input: AppendRunEvent;
-  validateTimestamp?: (timestamp: string) => void;
-  resolve: (event: RunEvent) => T;
-}
-
 export class RunJournal {
   private constructor(
     private readonly projectRoot: string,
@@ -146,35 +140,52 @@ export class RunJournal {
   }
 
   async append(input: AppendRunEvent): Promise<RunEvent> {
-    return this.appendPrepared(() =>
-      Promise.resolve({ input, resolve: (event) => event }),
-    );
+    return this.readLocked(async (events, signal) => {
+      const timestamp = this.now().toISOString();
+      const immutablePlatform = events[0]?.platform;
+      if (
+        immutablePlatform !== undefined &&
+        input.platform !== immutablePlatform
+      ) {
+        throw new AiQaError(
+          "journal.integrity_error",
+          "Run journal integrity verification failed",
+          { runId: this.runId },
+        );
+      }
+      if (input.idempotencyKey !== undefined) {
+        const existing = events.find(
+          (event) => event.idempotencyKey === input.idempotencyKey,
+        );
+        if (existing !== undefined) {
+          if (canonicalJson(appendInput(existing)) === canonicalJson(input)) {
+            return existing;
+          }
+          throw new AiQaError(
+            "event.idempotency_conflict",
+            "Idempotency key was already used for a different event",
+            { idempotencyKey: input.idempotencyKey },
+          );
+        }
+      }
+      const event = runEventSchema.parse({
+        schemaVersion: EVENT_SCHEMA_VERSION,
+        id: createId("event"),
+        runId: this.runId,
+        sequence: (events.at(-1)?.sequence ?? 0) + 1,
+        timestamp,
+        ...input,
+      });
+      await this.appendLine(event, signal);
+      return event;
+    });
   }
 
   async readLocked<T>(
-    inspect: (events: readonly RunEvent[]) => T | Promise<T>,
-  ): Promise<T> {
-    try {
-      await requireProjectLocalRegularFile(this.projectRoot, [
-        ".ai-qa",
-        "runs",
-        this.runId,
-        "events.jsonl",
-      ]);
-      return await withLock(this.path, "hot", async () =>
-        inspect(await this.readAll()),
-      );
-    } catch (error: unknown) {
-      if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
-      throw error;
-    }
-  }
-
-  async appendPrepared<T>(
-    prepare: (
+    inspect: (
       events: readonly RunEvent[],
-      preCommit: () => void,
-    ) => Promise<PreparedRunAppend<T>>,
+      signal: LockSignal,
+    ) => T | Promise<T>,
   ): Promise<T> {
     try {
       await requireProjectLocalRegularFile(this.projectRoot, [
@@ -183,20 +194,9 @@ export class RunJournal {
         this.runId,
         "events.jsonl",
       ]);
-      return await withLock(this.path, "hot", async (signal) => {
-        const events = await this.readAll();
-        const preCommit = () => assertNotCompromised(signal, this.path);
-        const prepared = await prepare(events, preCommit);
-        const timestamp = this.now().toISOString();
-        prepared.validateTimestamp?.(timestamp);
-        const event = await this.appendToSnapshot(
-          events,
-          prepared.input,
-          timestamp,
-          signal,
-        );
-        return prepared.resolve(event);
-      });
+      return await withLock(this.path, "hot", async (signal) =>
+        inspect(await this.readAll(), signal),
+      );
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) await this.throwMissingRunOrJournal();
       throw error;
@@ -270,52 +270,6 @@ export class RunJournal {
       "Run journal integrity verification failed",
       { runId: this.runId },
     );
-  }
-
-  private async appendToSnapshot(
-    events: RunEvent[],
-    input: AppendRunEvent,
-    timestamp: string,
-    signal: LockSignal,
-  ): Promise<RunEvent> {
-    const immutablePlatform = events[0]?.platform;
-    if (
-      immutablePlatform !== undefined &&
-      input.platform !== immutablePlatform
-    ) {
-      throw new AiQaError(
-        "journal.integrity_error",
-        "Run journal integrity verification failed",
-        { runId: this.runId },
-      );
-    }
-    if (input.idempotencyKey !== undefined) {
-      const existing = events.find(
-        (event) => event.idempotencyKey === input.idempotencyKey,
-      );
-      if (existing !== undefined) {
-        if (canonicalJson(appendInput(existing)) === canonicalJson(input)) {
-          return existing;
-        }
-        throw new AiQaError(
-          "event.idempotency_conflict",
-          "Idempotency key was already used for a different event",
-          { idempotencyKey: input.idempotencyKey },
-        );
-      }
-    }
-
-    const event = runEventSchema.parse({
-      schemaVersion: EVENT_SCHEMA_VERSION,
-      id: createId("event"),
-      runId: this.runId,
-      sequence: (events.at(-1)?.sequence ?? 0) + 1,
-      timestamp,
-      ...input,
-    });
-    await this.appendLine(event, signal);
-    events.push(event);
-    return event;
   }
 }
 

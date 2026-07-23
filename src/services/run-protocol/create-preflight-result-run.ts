@@ -144,14 +144,16 @@ export async function createPreflightResultRun(
 
   if (failedChecks.length > 0) {
     const blockerSubtype = classifyFailedChecks(failedChecks);
-    const blocker = await verdicts.recordBlocker({
-      subtype: blockerSubtype,
-      condition: failedChecks
-        .map((check) => `${check.code}: ${check.message}`)
-        .join("; "),
-      attemptEventIds: [started.id],
-      criterionIds: [],
-    });
+    const blocker = (
+      await verdicts.recordBlocker({
+        subtype: blockerSubtype,
+        condition: failedChecks
+          .map((check) => `${check.code}: ${check.message}`)
+          .join("; "),
+        attemptEventIds: [started.id],
+        criterionIds: [],
+      })
+    ).event;
     await verdicts.set({
       classification: "blocked",
       blockerSubtype,

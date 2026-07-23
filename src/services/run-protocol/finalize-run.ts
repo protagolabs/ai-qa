@@ -8,10 +8,7 @@ import { EvidenceRepository } from "../../core/evidence/repository.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
 import { assertJsonValue } from "../../core/json-value.js";
-import {
-  completedRunPayloadSchema,
-  validateRunLifecycleHistory,
-} from "../../core/runs/lifecycle.js";
+import { completedRunPayloadSchema } from "../../core/runs/lifecycle.js";
 import {
   actionPayloadSchema,
   assertionPayloadSchema,
@@ -19,7 +16,6 @@ import {
   recoveryPayloadSchema,
   type AssertionPayload,
 } from "../../core/runs/event-payloads.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import {
   runIdSchema,
   type AppendRunEvent,
@@ -31,15 +27,10 @@ import {
   type CriterionResult,
   type VerdictPayload,
 } from "../../core/verdicts/schema.js";
-import { resolveProject } from "../project-root/resolve-project.js";
 import { validatePassEvidenceFreshness } from "./evidence-semantics.js";
-import { validateProtocolEvents } from "./run-protocol-service.js";
 import { validateRegressionFidelity } from "./regression-fidelity.js";
-import {
-  effectiveVerdictFrom,
-  validateVerdictHistory,
-  type VerdictEntry,
-} from "./verdict-service.js";
+import { withRunSession } from "./run-session.js";
+import type { VerdictEntry } from "./verdict-service.js";
 
 export interface FinalizeRunResult {
   runId: string;
@@ -54,104 +45,102 @@ export async function finalizeRun(input: {
   now: () => Date;
 }): Promise<FinalizeRunResult> {
   const runId = runIdSchema.parse(input.runId);
-  const project = await resolveProject({
-    cwd: input.projectRoot,
-    explicitProject: input.projectRoot,
-  });
-  const repository = new RunRepository(project.projectRoot, input.now);
-  return repository.journal(runId).appendPrepared(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
-    const evidence = await new EvidenceRepository(
-      project.projectRoot,
+  let commandTime: Date | undefined;
+  let verifiedEvidence: readonly EvidenceRecord[] | undefined;
+  const now = (): Date => (commandTime ??= input.now());
+  return withRunSession(
+    {
+      projectRoot: input.projectRoot,
       runId,
-      input.now,
-      workOrder.platform,
-    ).verifyAll();
-    validateEvidenceParity(events, evidence, runId);
-    validateProtocolEvents(events, workOrder, runId);
-    const verdicts = validateVerdictHistory(events, workOrder);
-    const lifecycle = validateRunLifecycleHistory(events, runId);
-    if (lifecycle.current.payload.phase === "cancelled") {
-      throw new AiQaError(
-        "run.cancelled",
-        "Cancelled runs cannot be finalized",
-        { runId },
-      );
-    }
-    if (lifecycle.current.payload.phase === "interrupted") {
-      throw new AiQaError(
-        "run.interrupted",
-        "Interrupted runs must be resumed before normal finalization",
-        { runId },
-      );
-    }
-    if (lifecycle.current.payload.phase === "completed") {
-      const effective = effectiveVerdictFrom(verdicts);
-      if (
-        effective === undefined ||
-        lifecycle.current.payload.verdictId !== effective.event.id
-      ) {
+      now,
+      beforeValidate: async ({ events, workOrder }) => {
+        verifiedEvidence = await new EvidenceRepository(
+          input.projectRoot,
+          runId,
+          now,
+          workOrder.platform,
+        ).verifyAll();
+        validateEvidenceParity(events, verifiedEvidence, runId);
+      },
+    },
+    async (session) => {
+      const { events, lifecycle, workOrder } = session.snapshot;
+      const evidence = verifiedEvidence;
+      if (evidence === undefined) {
+        throw new Error("finalization evidence was not verified");
+      }
+      if (lifecycle.current.payload.phase === "cancelled") {
         throw new AiQaError(
-          "run.completion_conflict",
-          "Completed run does not match the effective verdict",
+          "run.cancelled",
+          "Cancelled runs cannot be finalized",
           { runId },
         );
       }
-      validateFinalization({
-        workOrder,
-        events,
-        evidence,
-        verdict: effective,
-        completionTime: new Date(lifecycle.current.event.timestamp),
-      });
-      const result = completionResult(
-        runId,
-        effective.payload,
-        lifecycle.current.event.timestamp,
-      );
-      return {
-        input: appendInput(lifecycle.current.event),
-        resolve: () => result,
-      };
-    }
-
-    if (workOrder.kind === "regression") {
-      await validatePinnedRegressionCase(
-        project.projectRoot,
-        workOrder,
-        input.now,
-      );
-      validateRegressionFidelity(workOrder, [...events]);
-    }
-
-    const effective = effectiveVerdictFrom(verdicts);
-    if (effective === undefined) {
-      throw new AiQaError(
-        "verdict.missing",
-        "A run requires one effective verdict before completion",
-        { runId },
-      );
-    }
-    const completionInput = completionAppendInput(
-      workOrder.platform,
-      runId,
-      effective.event.id,
-    );
-    return {
-      input: completionInput,
-      validateTimestamp: (timestamp: string) => {
+      if (lifecycle.current.payload.phase === "interrupted") {
+        throw new AiQaError(
+          "run.interrupted",
+          "Interrupted runs must be resumed before normal finalization",
+          { runId },
+        );
+      }
+      if (lifecycle.current.payload.phase === "completed") {
+        const effective = lifecycle.effectiveVerdict;
+        if (
+          effective === undefined ||
+          lifecycle.current.payload.verdictId !== effective.event.id
+        ) {
+          throw new AiQaError(
+            "run.completion_conflict",
+            "Completed run does not match the effective verdict",
+            { runId },
+          );
+        }
         validateFinalization({
           workOrder,
           events,
           evidence,
           verdict: effective,
-          completionTime: new Date(timestamp),
+          completionTime: new Date(lifecycle.current.event.timestamp),
         });
-      },
-      resolve: (event: RunEvent) =>
-        completionResult(runId, effective.payload, event.timestamp),
-    };
-  });
+        return completionResult(
+          runId,
+          effective.payload,
+          lifecycle.current.event.timestamp,
+        );
+      }
+
+      if (workOrder.kind === "regression") {
+        await validatePinnedRegressionCase(input.projectRoot, workOrder, now);
+      }
+
+      const effective = lifecycle.effectiveVerdict;
+      if (effective === undefined) {
+        throw new AiQaError(
+          "verdict.missing",
+          "A run requires one effective verdict before completion",
+          { runId },
+        );
+      }
+      const completionInput = completionAppendInput(
+        workOrder.platform,
+        runId,
+        effective.event.id,
+      );
+      const completionTime = now();
+      validateFinalization({
+        workOrder,
+        events,
+        evidence,
+        verdict: effective,
+        completionTime,
+      });
+      const event = (await session.append([completionInput]))[0];
+      if (event === undefined) {
+        throw new Error("completion append returned no event");
+      }
+      return completionResult(runId, effective.payload, event.timestamp);
+    },
+  );
 }
 
 export function validateFinalization(input: {
@@ -620,20 +609,6 @@ function completionResult(
     verdict: verdict.classification,
     completedAt,
   };
-}
-
-function appendInput(event: RunEvent): AppendRunEvent {
-  return {
-    actor: event.actor,
-    platform: event.platform,
-    tool: event.tool,
-    type: event.type,
-    ...(event.idempotencyKey === undefined
-      ? {}
-      : { idempotencyKey: event.idempotencyKey }),
-    payload: event.payload,
-    relatedIds: event.relatedIds,
-  } as AppendRunEvent;
 }
 
 function unsupportedPass(message: string): AiQaError {

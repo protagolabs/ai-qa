@@ -296,7 +296,7 @@ async function readCompletedExploratoryRun(
   const now = () => new Date(0);
   const repository = new RunRepository(projectRoot, now);
   return repository.journal(runId).readLocked(async (events) => {
-    const workOrder = await repository.readVerifiedWorkOrder(runId);
+    const workOrder = await repository.readVerifiedWorkOrder(runId, events);
     if (workOrder.kind !== "exploratory") {
       throw new AiQaError(
         "case.source_run_not_exploratory",

@@ -30,9 +30,9 @@ export function registerBlockerCommands(
       options.run,
       context.now,
     );
-    const event = await service.recordBlocker(
+    const result = await service.recordBlocker(
       await readJsonInput(context, blockerPayloadSchema),
     );
-    await writeProtocolEvent(recordCommand, context, options.run, event);
+    writeProtocolEvent(context, result);
   });
 }

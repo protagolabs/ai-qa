@@ -9,7 +9,7 @@ import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
 } from "../../src/core/runs/schema.js";
-import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 
 const now = () => new Date("2026-07-13T00:00:00.000Z");
 

@@ -33,11 +33,11 @@ export function registerActionCommands(
       context,
       options.run,
     );
-    const event = await service.planAction({
+    const result = await service.planAction({
       ...body,
       ...(options.step === undefined ? {} : { stepId: options.step }),
     });
-    await writeProtocolEvent(planCommand, context, options.run, event);
+    writeProtocolEvent(context, result);
   });
 
   const completeCommand = actionCommand
@@ -52,7 +52,7 @@ export function registerActionCommands(
       context,
       options.run,
     );
-    const event = await service.completeAction({ actionId, ...body });
-    await writeProtocolEvent(completeCommand, context, options.run, event);
+    const result = await service.completeAction({ actionId, ...body });
+    writeProtocolEvent(context, result);
   });
 }

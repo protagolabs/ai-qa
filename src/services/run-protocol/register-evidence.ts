@@ -19,8 +19,6 @@ import {
   type ActionPayload,
   type EvidenceEventPayload,
 } from "../../core/runs/event-payloads.js";
-import { validateRunLifecycleHistory } from "../../core/runs/lifecycle.js";
-import { RunRepository } from "../../core/runs/repository.js";
 import {
   criterionIdSchema,
   eventIdSchema,
@@ -30,7 +28,7 @@ import {
 } from "../../core/runs/schema.js";
 import { assertJsonValue } from "../../core/json-value.js";
 import { resolveProject } from "../project-root/resolve-project.js";
-import { validateProtocolEvents } from "./run-protocol-service.js";
+import { assertRunSessionActive, withRunSession } from "./run-session.js";
 
 const citationInputSchema = z
   .object({
@@ -56,123 +54,119 @@ export async function registerEvidence(input: {
     criterionIds: input.criterionIds,
     observationIds: input.observationIds,
   });
-  const runRepository = new RunRepository(project.projectRoot, input.now);
-  const journal = runRepository.journal(input.runId);
-  const record = await journal.appendPrepared(async (events, preCommit) => {
-    const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
-    const expectedController = controllerForPlatform(workOrder.platform);
-    if (payload.sourceTool !== expectedController) {
-      throw new AiQaError(
-        "evidence.controller_mismatch",
-        "Evidence provenance must match the immutable run platform",
-        {
-          runId: workOrder.runId,
-          platform: workOrder.platform,
-          expectedController,
-          evidencePlatform: workOrder.platform,
-          sourceTool: payload.sourceTool,
-        },
-      );
-    }
-    validateProtocolEvents(events, workOrder, input.runId);
-    requireKnownCriteria(workOrder, citations.criterionIds);
-    const lifecycle = validateRunLifecycleHistory(events, input.runId);
-    if (lifecycle.current.payload.phase === "interrupted") {
-      throw new AiQaError(
-        "run.interrupted",
-        "Interrupted runs must be resumed or cancelled before evidence registration",
-        { runEventId: lifecycle.current.event.id },
-      );
-    }
-    if (
-      lifecycle.current.payload.phase === "completed" ||
-      lifecycle.current.payload.phase === "cancelled"
-    ) {
-      throw new AiQaError(
-        "run.terminal",
-        "Completed or cancelled runs cannot register evidence",
-        { runEventId: lifecycle.current.event.id },
-      );
-    }
-    const existing = events.find(
-      (event) => event.idempotencyKey === payload.idempotencyKey,
-    );
-    if (existing !== undefined && existing.type !== "evidence") {
-      throw idempotencyConflict(payload.idempotencyKey);
-    }
-    const existingPayload =
-      existing === undefined
-        ? undefined
-        : parseExistingEvidenceEvent(existing, payload.idempotencyKey);
-    const capture = requireCompletedCaptureAction(
-      events,
-      payload.captureActionId,
-    );
-    if (
-      capture.event.tool !== expectedController ||
-      payload.sourceTool !== capture.event.tool
-    ) {
-      throw new AiQaError(
-        "evidence.controller_mismatch",
-        "Evidence provenance must match the immutable run platform",
-        {
-          runId: workOrder.runId,
-          platform: workOrder.platform,
-          expectedController,
-          evidencePlatform: workOrder.platform,
-          sourceTool: payload.sourceTool,
-          captureActionId: payload.captureActionId,
-          captureActionTool: capture.event.tool,
-        },
-      );
-    }
-    requireValidObservations(events, citations.observationIds);
-
-    const repository = new EvidenceRepository(
-      project.projectRoot,
-      input.runId,
-      input.now,
-      workOrder.platform,
-    );
-    if (existingPayload !== undefined) {
-      const indexed = (await repository.readAll()).find(
-        (record) => record.idempotencyKey === payload.idempotencyKey,
-      );
-      if (
-        indexed === undefined ||
-        canonicalJson(indexed) !==
-          canonicalJson(evidenceRecordFromEventPayload(existingPayload))
-      ) {
+  return withRunSession(
+    {
+      projectRoot: project.projectRoot,
+      runId: input.runId,
+      now: input.now,
+    },
+    async (session) => {
+      const { events, lifecycle, workOrder } = session.snapshot;
+      const expectedController = controllerForPlatform(workOrder.platform);
+      if (payload.sourceTool !== expectedController) {
         throw new AiQaError(
-          "evidence.integrity_error",
-          "Evidence event does not match the immutable evidence index",
-          { idempotencyKey: payload.idempotencyKey },
+          "evidence.controller_mismatch",
+          "Evidence provenance must match the immutable run platform",
+          {
+            runId: workOrder.runId,
+            platform: workOrder.platform,
+            expectedController,
+            evidencePlatform: workOrder.platform,
+            sourceTool: payload.sourceTool,
+          },
         );
       }
-    }
+      requireKnownCriteria(workOrder, citations.criterionIds);
+      if (lifecycle.current.payload.phase === "interrupted") {
+        throw new AiQaError(
+          "run.interrupted",
+          "Interrupted runs must be resumed or cancelled before evidence registration",
+          { runEventId: lifecycle.current.event.id },
+        );
+      }
+      if (
+        lifecycle.current.payload.phase === "completed" ||
+        lifecycle.current.payload.phase === "cancelled"
+      ) {
+        throw new AiQaError(
+          "run.terminal",
+          "Completed or cancelled runs cannot register evidence",
+          { runEventId: lifecycle.current.event.id },
+        );
+      }
+      const existing = events.find(
+        (event) => event.idempotencyKey === payload.idempotencyKey,
+      );
+      if (existing !== undefined && existing.type !== "evidence") {
+        throw idempotencyConflict(payload.idempotencyKey);
+      }
+      const existingPayload =
+        existing === undefined
+          ? undefined
+          : parseExistingEvidenceEvent(existing, payload.idempotencyKey);
+      const capture = requireCompletedCaptureAction(
+        events,
+        payload.captureActionId,
+      );
+      if (
+        capture.event.tool !== expectedController ||
+        payload.sourceTool !== capture.event.tool
+      ) {
+        throw new AiQaError(
+          "evidence.controller_mismatch",
+          "Evidence provenance must match the immutable run platform",
+          {
+            runId: workOrder.runId,
+            platform: workOrder.platform,
+            expectedController,
+            evidencePlatform: workOrder.platform,
+            sourceTool: payload.sourceTool,
+            captureActionId: payload.captureActionId,
+            captureActionTool: capture.event.tool,
+          },
+        );
+      }
+      requireValidObservations(events, citations.observationIds);
 
-    const record = await repository.registerRaw(payload, { preCommit });
-    const eventPayload = evidenceEventPayloadSchema.parse({
-      ...record,
-      criterionIds: citations.criterionIds,
-      observationIds: citations.observationIds,
-    });
-    return {
-      input: evidenceAppendInput(workOrder.platform, eventPayload),
-      resolve: () => record,
-    };
-  });
-  await journal.readLocked(async (events) => {
-    const workOrder = await runRepository.readVerifiedWorkOrder(input.runId);
-    const records = await new EvidenceRepository(
-      project.projectRoot,
-      input.runId,
-      input.now,
-      workOrder.platform,
-    ).verifyAll();
-    validateEvidenceParity(events, records, input.runId);
-  });
-  return record;
+      const repository = new EvidenceRepository(
+        project.projectRoot,
+        workOrder.runId,
+        input.now,
+        workOrder.platform,
+      );
+      if (existingPayload !== undefined) {
+        const indexed = (await repository.readAll()).find(
+          (record) => record.idempotencyKey === payload.idempotencyKey,
+        );
+        if (
+          indexed === undefined ||
+          canonicalJson(indexed) !==
+            canonicalJson(evidenceRecordFromEventPayload(existingPayload))
+        ) {
+          throw new AiQaError(
+            "evidence.integrity_error",
+            "Evidence event does not match the immutable evidence index",
+            { idempotencyKey: payload.idempotencyKey },
+          );
+        }
+      }
+
+      const record = await repository.registerRaw(payload, {
+        preCommit: () => assertRunSessionActive(session),
+      });
+      const eventPayload = evidenceEventPayloadSchema.parse({
+        ...record,
+        criterionIds: citations.criterionIds,
+        observationIds: citations.observationIds,
+      });
+      await session.append([
+        evidenceAppendInput(workOrder.platform, eventPayload),
+      ]);
+      const records = await repository.verifyAll();
+      validateEvidenceParity(session.snapshot.events, records, workOrder.runId);
+      return record;
+    },
+  );
 }
 
 function evidenceAppendInput(

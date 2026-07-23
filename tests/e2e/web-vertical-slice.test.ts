@@ -34,10 +34,10 @@ import {
 } from "../../src/services/report-generation/generate-run-report.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { startExploratoryRun } from "../../src/services/run-protocol/start-exploratory-run.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
-import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 import { syncGlobalSkill } from "../../src/services/skill-management/global-skill.js";
 import { initializeTestProject } from "../helpers/project-fixture.js";
 

@@ -16,9 +16,9 @@ import { RunRepository } from "../../src/core/runs/repository.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
-import { RunProtocolService } from "../../src/services/run-protocol/run-protocol-service.js";
+import { RunProtocolService } from "../helpers/run-protocol-service.js";
 import { startRegressionRun } from "../../src/services/run-protocol/start-regression-run.js";
-import { VerdictService } from "../../src/services/run-protocol/verdict-service.js";
+import { VerdictService } from "../helpers/verdict-service.js";
 import { createCapturedCli } from "../helpers/cli-context.js";
 import {
   initializeTestProject,
@@ -1228,10 +1228,11 @@ describe("pinned regression replay", () => {
       },
       now,
     });
-    const workOrder = await new RunRepository(
-      fixture.projectRoot,
-      now,
-    ).readVerifiedWorkOrder(result.runId);
+    const runRepository = new RunRepository(fixture.projectRoot, now);
+    const workOrder = await runRepository.readVerifiedWorkOrder(
+      result.runId,
+      await runRepository.journal(result.runId).readAll(),
+    );
 
     expect(result).toMatchObject({
       status: "completed",
@@ -1299,10 +1300,11 @@ describe("pinned regression replay", () => {
       ),
     ).toBe(0);
     const result = JSON.parse(captured.stdout.join("")) as { runId: string };
-    const workOrder = await new RunRepository(
-      fixture.projectRoot,
-      now,
-    ).readVerifiedWorkOrder(result.runId);
+    const runRepository = new RunRepository(fixture.projectRoot, now);
+    const workOrder = await runRepository.readVerifiedWorkOrder(
+      result.runId,
+      await runRepository.journal(result.runId).readAll(),
+    );
 
     expect(workOrder).toMatchObject({
       kind: "regression",
