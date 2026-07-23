@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -1433,6 +1440,139 @@ describe("run lifecycle", () => {
 });
 
 describe("preflight result runs", () => {
+  it("sweeps stale run staging before publishing a preflight result", async () => {
+    const fixture = await createPreflightProject();
+    const runsRoot = join(fixture.projectRoot, ".ai-qa", "runs");
+    const staleStaging = join(runsRoot, ".run-staging-preflight-stale");
+    await mkdir(staleStaging, { recursive: true });
+    const staleTime = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(staleStaging, staleTime, staleTime);
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "web.chrome_devtools_mcp" as const,
+          status: "agent_confirmation_required" as const,
+          message: "Agent must confirm MCP capability",
+          category: "tool" as const,
+        },
+      ],
+    };
+
+    const result = await createPreflightResultRun({
+      ...fixture,
+      kind: "exploratory",
+      exploratoryPayload: {
+        goal: "Verify successful login",
+        acceptanceCriteria: [
+          {
+            id: "authenticated-home-visible",
+            description: "Authenticated home is visible",
+            requiredEvidence: ["post-action-screenshot"],
+          },
+        ],
+        readiness,
+      },
+      execution: "local",
+      readiness,
+      now,
+    });
+
+    expect(await readdir(runsRoot)).toEqual([result.runId]);
+  });
+
+  it("publishes the terminal preflight journal without opening a RunSession", async () => {
+    const fixture = await createPreflightProject();
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "web.chrome_devtools_mcp" as const,
+          status: "agent_confirmation_required" as const,
+          message: "Agent must confirm MCP capability",
+          category: "tool" as const,
+        },
+      ],
+    };
+    const readLocked = vi.spyOn(RunJournal.prototype, "readLocked");
+
+    try {
+      await createPreflightResultRun({
+        ...fixture,
+        kind: "exploratory",
+        exploratoryPayload: {
+          goal: "Verify successful login",
+          acceptanceCriteria: [
+            {
+              id: "authenticated-home-visible",
+              description: "Authenticated home is visible",
+              requiredEvidence: ["post-action-screenshot"],
+            },
+          ],
+          readiness,
+        },
+        execution: "local",
+        readiness,
+        now,
+      });
+    } finally {
+      expect(readLocked).not.toHaveBeenCalled();
+      readLocked.mockRestore();
+    }
+  });
+
+  it("publishes no partial run when terminal preflight staging fails", async () => {
+    const fixture = await createPreflightProject();
+    const readiness = {
+      platform: "web" as const,
+      status: "not_ready" as const,
+      checks: [
+        {
+          code: "web.entry_page",
+          status: "fail" as const,
+          message: "Entry page is unreachable",
+          category: "environment" as const,
+        },
+      ],
+    };
+    const failure = new Error("injected preflight publication failure");
+
+    await expect(
+      createPreflightResultRun(
+        {
+          ...fixture,
+          kind: "exploratory",
+          exploratoryPayload: {
+            goal: "Verify successful login",
+            acceptanceCriteria: [
+              {
+                id: "authenticated-home-visible",
+                description: "Authenticated home is visible",
+                requiredEvidence: ["post-action-screenshot"],
+              },
+            ],
+            readiness,
+          },
+          execution: "local",
+          readiness,
+          now,
+        },
+        {
+          beforePublish: () => {
+            throw failure;
+          },
+        },
+      ),
+    ).rejects.toBe(failure);
+
+    const entries = await readdir(
+      join(fixture.projectRoot, ".ai-qa", "runs"),
+    ).catch(() => []);
+    expect(entries).toEqual([]);
+  });
+
   it("completes a failed controller preflight as blocked:tool", async () => {
     const fixture = await createPreflightProject();
 
@@ -1604,7 +1744,13 @@ describe("verdict and lifecycle CLI", () => {
       expected: {
         code: "filesystem.operation_failed",
         message: "A filesystem operation failed",
-        details: { code: "EIO", syscall: "write" },
+        details: {
+          cause: {
+            code: "EIO",
+            message: "A filesystem operation failed",
+          },
+          syscall: "write",
+        },
       },
     },
     {

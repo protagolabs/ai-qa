@@ -38,9 +38,13 @@ export interface LifecycleState {
   readonly effectiveVerdict?: VerdictEntry;
 }
 
-export interface RunSnapshot {
+export interface RunHistorySnapshot {
   readonly workOrder: Readonly<WorkOrder>;
   readonly events: readonly RunEvent[];
+  readonly lifecycle?: LifecycleState;
+}
+
+export interface RunSnapshot extends RunHistorySnapshot {
   readonly lifecycle: LifecycleState;
 }
 
@@ -71,11 +75,11 @@ interface SessionGuard {
   readonly path: string;
 }
 
-const validatedLifecycle = new WeakMap<RunSnapshot, LifecycleState>();
+const validatedLifecycle = new WeakMap<RunHistorySnapshot, LifecycleState>();
 const sessionGuards = new WeakMap<RunSession, SessionGuard>();
 const preparedEventIds = new WeakMap<AppendRunEvent, string>();
 
-export function validateRunSnapshot(snapshot: RunSnapshot): void {
+export function validateRunSnapshot(snapshot: RunHistorySnapshot): void {
   const { events, workOrder } = snapshot;
   const runId = workOrder.runId;
   validateProtocolEvents(events, workOrder, runId);
@@ -299,10 +303,9 @@ function createValidatedSnapshot(
 ): RunSnapshot {
   const immutableWorkOrder = immutableClone(workOrder);
   const immutableEvents = immutableClone([...events]);
-  const candidate: RunSnapshot = {
+  const candidate: RunHistorySnapshot = {
     workOrder: immutableWorkOrder,
     events: immutableEvents,
-    lifecycle: undefined as never,
   };
   validateRunSnapshot(candidate);
   const lifecycle = validatedLifecycle.get(candidate);

@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   rm,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -651,6 +652,29 @@ describe("exploratory run start", () => {
     });
 
     expect(workOrder.projectSkill).toEqual(expectedProjectSkillSnapshot());
+  });
+
+  it("sweeps stale run staging before publishing a regression run", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-run-start-"));
+    const now = () => new Date("2026-07-13T00:00:00.000Z");
+    await initializeTestProject({ projectRoot, config });
+    await createActiveRegressionCase(projectRoot, now);
+    const runsRoot = join(projectRoot, ".ai-qa", "runs");
+    const staleStaging = join(runsRoot, ".run-staging-regression-stale");
+    await mkdir(staleStaging, { recursive: true });
+    const staleTime = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(staleStaging, staleTime, staleTime);
+
+    const workOrder = await startRegressionRun({
+      projectRoot,
+      caseId: "login-success",
+      platform: "web",
+      execution: "local",
+      readiness: { platform: "web", status: "ready", checks: [] },
+      now,
+    });
+
+    expect(await readdir(runsRoot)).toEqual([workOrder.runId]);
   });
 
   it("rejects a configured platform missing from the active case", async () => {

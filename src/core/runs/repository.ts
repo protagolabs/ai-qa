@@ -2,12 +2,13 @@ import { lstat, mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { sha256Canonical } from "../canonical-json.js";
-import { AiQaError } from "../errors.js";
+import { AiQaError, errorCauseCode } from "../errors.js";
 import { serializeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
   ensureProjectLocalDirectory,
   requireProjectLocalRegularFile,
+  sweepStaleStaging,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
 import { isNodeError } from "../node-errors.js";
@@ -17,11 +18,24 @@ import {
   deepFreezeWorkOrder,
   runEventSchema,
   workOrderSchema,
+  type AppendRunEvent,
   type RunEvent,
   type WorkOrder,
 } from "./schema.js";
 
 export const runStagingPrefix = ".run-staging-";
+
+export interface StagedRunJournal {
+  readonly started: RunEvent;
+  readonly events: readonly RunEvent[];
+  append(input: AppendRunEvent): RunEvent;
+}
+
+export interface CreateRunOptions {
+  preCommit?: () => void;
+  prepareJournal?: (journal: StagedRunJournal) => void | Promise<void>;
+  validateJournal?: (events: readonly RunEvent[]) => void;
+}
 
 function startedWorkOrderHash(
   events: readonly RunEvent[],
@@ -67,14 +81,19 @@ export class RunRepository {
 
   async create(
     workOrder: WorkOrder,
-    options: { preCommit?: () => void } = {},
-  ): Promise<{ journal: RunJournal; workOrderHash: string }> {
+    options: CreateRunOptions = {},
+  ): Promise<{
+    journal: RunJournal;
+    workOrderHash: string;
+    events: readonly RunEvent[];
+  }> {
     const validated = workOrderSchema.parse(workOrder);
     resolveRunPaths(this.projectRoot, validated.runId);
     const runsRoot = await ensureProjectLocalDirectory(this.projectRoot, [
       ".ai-qa",
       "runs",
     ]);
+    await sweepStaleStaging(runsRoot, runStagingPrefix, this.now);
     const finalDirectory = resolve(runsRoot, validated.runId);
     if (await pathExists(finalDirectory)) {
       throw runAlreadyExists(validated.runId);
@@ -103,13 +122,37 @@ export class RunRepository {
         payload: { phase: "started", workOrderHash },
         relatedIds: [],
       });
+      const stagedEvents: RunEvent[] = [started];
+      const stagedJournal: StagedRunJournal = {
+        started,
+        get events() {
+          return Object.freeze([...stagedEvents]);
+        },
+        append: (input) => {
+          const event = runEventSchema.parse({
+            schemaVersion: EVENT_SCHEMA_VERSION,
+            id: createId("event"),
+            runId: validated.runId,
+            sequence: stagedEvents.length + 1,
+            timestamp: started.timestamp,
+            ...input,
+          });
+          stagedEvents.push(event);
+          return event;
+        },
+      };
+      await options.prepareJournal?.(stagedJournal);
+      const initialEvents = stagedEvents.map((event) =>
+        runEventSchema.parse(event),
+      );
+      options.validateJournal?.(initialEvents);
       await writeSyncedFile(
         resolve(stagingDirectory, "work-order.json"),
         JSON.stringify(validated),
       );
       await writeSyncedFile(
         resolve(stagingDirectory, "events.jsonl"),
-        serializeJsonLines([started]),
+        serializeJsonLines(initialEvents),
       );
       await syncDirectoryWhereSupported(stagingDirectory);
       const journal = RunJournal.open(
@@ -125,6 +168,7 @@ export class RunRepository {
           options.preCommit?.();
           assertNotCompromised(signal, runsRoot);
           await rename(stagingDirectory, finalDirectory);
+          await syncDirectoryWhereSupported(runsRoot);
         } catch (error: unknown) {
           if (await pathExists(finalDirectory)) {
             throw runAlreadyExists(validated.runId);
@@ -132,7 +176,11 @@ export class RunRepository {
           throw error;
         }
       });
-      return { journal, workOrderHash };
+      return {
+        journal,
+        workOrderHash,
+        events: Object.freeze([...initialEvents]),
+      };
     } catch (error: unknown) {
       try {
         await rm(stagingDirectory, { recursive: true, force: true });
@@ -252,6 +300,6 @@ function isMissingStoragePath(error: unknown): boolean {
     isNodeError(error, "ENOENT") ||
     (error instanceof AiQaError &&
       error.code === "storage.integrity_error" &&
-      error.details.causeCode === "ENOENT")
+      errorCauseCode(error) === "ENOENT")
   );
 }

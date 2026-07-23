@@ -1,4 +1,4 @@
-import { canonicalJson } from "../../core/canonical-json.js";
+import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
 import { readProjectConfig } from "../../core/config/repository.js";
 import {
   configuredPlatforms,
@@ -8,18 +8,23 @@ import {
 import { AiQaError } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { RunRepository } from "../../core/runs/repository.js";
+import { completedRunPayloadSchema } from "../../core/runs/lifecycle.js";
 import type { PlatformReadiness } from "../../core/readiness/schema.js";
 import {
   createExploratoryWorkOrder,
   exploratoryRunInputSchema,
+  type AppendRunEvent,
   type ExploratoryRunInput,
   type WorkOrder,
 } from "../../core/runs/schema.js";
+import {
+  blockerPayloadSchema,
+  verdictPayloadSchema,
+} from "../../core/verdicts/schema.js";
 import { readProjectSkillSnapshot } from "../project-skill/project-skill-file.js";
 import { resolveProject } from "../project-root/resolve-project.js";
-import { finalizeRun } from "./finalize-run.js";
 import { prepareRegressionWorkOrder } from "./start-regression-run.js";
-import { VerdictService } from "./verdict-service.js";
+import { validateRunSnapshot } from "./run-session.js";
 
 type NotReadyPlatformReadiness = PlatformReadiness & { status: "not_ready" };
 
@@ -55,8 +60,13 @@ type PreflightResultRunInput = {
     }
 );
 
+export interface CreatePreflightResultRunOptions {
+  beforePublish?: () => void;
+}
+
 export async function createPreflightResultRun(
   input: PreflightResultRunInput,
+  options: CreatePreflightResultRunOptions = {},
 ): Promise<PreflightResult> {
   const project = await resolveProject({
     cwd: input.projectRoot,
@@ -128,63 +138,114 @@ export async function createPreflightResultRun(
   }
   const runId = workOrder.runId;
   const repository = new RunRepository(project.projectRoot, input.now);
-  const { journal } = await repository.create(workOrder);
-  const started = (await journal.readAll())[0];
-  if (started === undefined) {
-    throw new AiQaError(
-      "run_protocol.integrity_error",
-      "Preflight run is missing its start anchor",
-      { runId },
-    );
-  }
-  const verdicts = new VerdictService(project.projectRoot, runId, input.now);
   const failedChecks = input.readiness.checks.filter(
     (check) => check.status === "fail",
   );
-
-  if (failedChecks.length > 0) {
-    const blockerSubtype = classifyFailedChecks(failedChecks);
-    const blocker = (
-      await verdicts.recordBlocker({
-        subtype: blockerSubtype,
-        condition: failedChecks
-          .map((check) => `${check.code}: ${check.message}`)
-          .join("; "),
-        attemptEventIds: [started.id],
-        criterionIds: [],
-      })
-    ).event;
-    await verdicts.set({
-      classification: "blocked",
-      blockerSubtype,
-      blockerIds: [blocker.id],
-      summary: "Preflight checks prevented QA execution",
-      criterionResults: [],
-    });
-    await finalizeRun({
-      projectRoot: project.projectRoot,
-      runId,
-      now: input.now,
-    });
-    return { runId, status: "completed", verdict: "blocked", blockerSubtype };
+  let result: PreflightResult | undefined;
+  await repository.create(workOrder, {
+    ...(options.beforePublish === undefined
+      ? {}
+      : { preCommit: options.beforePublish }),
+    prepareJournal: (journal) => {
+      let verdictId: string;
+      if (failedChecks.length > 0) {
+        const blockerSubtype = classifyFailedChecks(failedChecks);
+        const blockerPayload = blockerPayloadSchema.parse({
+          subtype: blockerSubtype,
+          condition: failedChecks
+            .map((check) => `${check.code}: ${check.message}`)
+            .join("; "),
+          attemptEventIds: [journal.started.id],
+          criterionIds: [],
+        });
+        const blocker = journal.append({
+          type: "blocker",
+          actor: "agent",
+          platform: workOrder.platform,
+          tool: "ai-qa",
+          idempotencyKey: `blocker:${sha256Canonical(blockerPayload)}`,
+          payload: blockerPayload,
+          relatedIds: [journal.started.id],
+        });
+        const verdictPayload = verdictPayloadSchema.parse({
+          classification: "blocked",
+          blockerSubtype,
+          blockerIds: [blocker.id],
+          summary: "Preflight checks prevented QA execution",
+          criterionResults: [],
+        });
+        const verdict = journal.append(
+          verdictAppendInput(workOrder, verdictPayload),
+        );
+        verdictId = verdict.id;
+        result = {
+          runId,
+          status: "completed",
+          verdict: "blocked",
+          blockerSubtype,
+        };
+      } else {
+        const verdictPayload = verdictPayloadSchema.parse({
+          classification: "not_verified",
+          reasonCode: "incomplete_coverage",
+          summary: "Agent confirmation is required before QA can execute",
+          criterionResults: [],
+        });
+        const verdict = journal.append(
+          verdictAppendInput(workOrder, verdictPayload),
+        );
+        verdictId = verdict.id;
+        result = {
+          runId,
+          status: "completed",
+          verdict: "not_verified",
+          reasonCode: "incomplete_coverage",
+        };
+      }
+      const completed = completedRunPayloadSchema.parse({
+        phase: "completed",
+        verdictId,
+      });
+      journal.append({
+        type: "run",
+        actor: "ai-qa",
+        platform: workOrder.platform,
+        tool: "ai-qa",
+        idempotencyKey: `finish:${runId}`,
+        payload: completed,
+        relatedIds: [verdictId],
+      });
+    },
+    validateJournal: (events) => {
+      validateRunSnapshot({
+        workOrder,
+        events,
+      });
+    },
+  });
+  if (result === undefined) {
+    throw new AiQaError(
+      "run_protocol.integrity_error",
+      "Preflight result staging did not construct a terminal run",
+      { runId },
+    );
   }
+  return result;
+}
 
-  await verdicts.set({
-    classification: "not_verified",
-    reasonCode: "incomplete_coverage",
-    summary: "Agent confirmation is required before QA can execute",
-    criterionResults: [],
-  });
-  await finalizeRun({
-    projectRoot: project.projectRoot,
-    runId,
-    now: input.now,
-  });
+function verdictAppendInput(
+  workOrder: WorkOrder,
+  payload: ReturnType<typeof verdictPayloadSchema.parse>,
+): AppendRunEvent {
   return {
-    runId,
-    status: "completed",
-    verdict: "not_verified",
-    reasonCode: "incomplete_coverage",
+    type: "verdict",
+    actor: "agent",
+    platform: workOrder.platform,
+    tool: "ai-qa",
+    idempotencyKey: `verdict:${sha256Canonical(payload)}`,
+    payload,
+    relatedIds:
+      payload.classification === "blocked" ? [...payload.blockerIds] : [],
   };
 }
 
