@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
@@ -11,7 +10,7 @@ import {
   type EvidenceRecord,
 } from "../../core/evidence/schema.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
-import { atomicWriteFile } from "../../core/fs/atomic-write.js";
+import { syncDirectoryWhereSupported } from "../../core/fs/atomic-write.js";
 import { serializeJsonLines } from "../../core/fs/json-lines.js";
 import {
   assertNotCompromised,
@@ -19,12 +18,15 @@ import {
   type LockSignal,
 } from "../../core/fs/locking.js";
 import {
+  atomicReplaceProjectLocalRegularFile,
   ensureProjectLocalDirectory,
   ensureProjectLocalDirectoryDurable,
   inspectOptionalProjectLocalRegularFile,
   prepareProjectLocalClaimedFileRemoval,
   publishProjectLocalRegularFile,
   requireProjectLocalRegularFile,
+  synchronizeProjectLocalRegularFile,
+  withProjectLocalRegularFile,
   type PreparedProjectLocalRemoval,
 } from "../../core/fs/project-storage.js";
 import { resolveRunPaths } from "../../core/runs/paths.js";
@@ -297,6 +299,13 @@ interface RepairContext {
   evidenceSignal: LockSignal;
   now: () => Date;
   hooks: RepairRunHooks;
+  resuming: boolean;
+  recoveryBindings: Map<string, RecoveryArtifactBinding>;
+}
+
+interface RecoveryArtifactBinding {
+  relocation: RepairRelocation;
+  identity: { dev: bigint; ino: bigint };
 }
 
 interface RepairRunHooks {
@@ -326,7 +335,11 @@ interface RepairRunHooks {
       | "repair-manifest-completed";
   }) => void | Promise<void>;
   beforeDestructiveCommit?: (input: {
-    step: "journal-truncate" | "evidence-delete";
+    step: "evidence-index" | "journal-truncate" | "evidence-delete";
+  }) => void | Promise<void>;
+  afterRedurabilize?: (input: {
+    step: "manifest" | "recovery-artifact" | "evidence-index" | "journal";
+    path: string;
   }) => void | Promise<void>;
 }
 
@@ -442,12 +455,15 @@ export async function repairRun(
         evidenceSignal,
         now: input.now,
         hooks: options.hooks ?? {},
+        resuming: false,
+        recoveryBindings: new Map(),
       };
       const reloaded = await loadManifest(projectRoot, runId);
-      const manifest =
-        reloaded !== undefined && reloaded.completedAt === undefined
-          ? reloaded
-          : await computeManifest(context);
+      context.resuming =
+        reloaded !== undefined && reloaded.completedAt === undefined;
+      const manifest = context.resuming
+        ? reloaded
+        : await computeManifest(context);
       if (manifest === undefined) return emptyReport(runId);
       const preparedRemovals = await preflightManifestState(
         context.projectRoot,
@@ -563,7 +579,7 @@ async function computeManifest(
   await context.hooks.afterDurablePublish?.({
     step: "recovery-ancestors",
   });
-  await writeManifest(context, manifest);
+  await writeManifest(context, manifest, true);
   return manifest;
 }
 
@@ -573,9 +589,19 @@ async function executeManifest(
   preparedRemovals: ReadonlyMap<string, PreparedProjectLocalRemoval>,
 ): Promise<void> {
   await ensureRecoveryDirectory(context);
+  if (context.resuming) {
+    const path = await synchronizeProjectLocalRegularFile(context.projectRoot, [
+      ".ai-qa",
+      "recovery",
+      context.runId,
+      "repair-manifest.json",
+    ]);
+    await context.hooks.afterRedurabilize?.({ step: "manifest", path });
+  }
   for (const relocation of manifest.relocations) {
     await copyRelocation(context, manifest, relocation);
   }
+  await verifyAllRecoveryBindings(context, manifest);
   await rewriteEvidenceIndex(context, manifest);
   await truncateJournal(context, manifest);
   await deleteEvidenceSources(context, manifest, preparedRemovals);
@@ -589,7 +615,7 @@ async function executeManifest(
     context.runId,
     "repair-manifest.json",
   ]);
-  await writeManifest(context, completed);
+  await writeManifest(context, completed, false);
 }
 
 async function preflightManifestPaths(
@@ -765,6 +791,10 @@ async function preflightManifestState(
                   await context.hooks.beforeDestructiveCommit?.({
                     step: "evidence-delete",
                   });
+                  assertBothLocks(context);
+                },
+                beforeUnlink: async () => {
+                  await verifyAllRecoveryBindings(context, manifest);
                   assertBothLocks(context);
                 },
                 afterClaimDirectoryDurable: async () => {
@@ -946,17 +976,14 @@ async function ensureRecoveryDirectory(
 async function writeManifest(
   context: RepairContext,
   manifest: RepairManifest,
+  allowMissing: boolean,
 ): Promise<void> {
-  const path = resolve(
-    context.projectRoot,
-    ".ai-qa",
-    "recovery",
-    context.runId,
-    "repair-manifest.json",
-  );
-  await atomicWriteFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+  await atomicReplaceProjectLocalRegularFile({
+    projectRoot: context.projectRoot,
+    segments: [".ai-qa", "recovery", context.runId, "repair-manifest.json"],
+    content: `${JSON.stringify(manifest, null, 2)}\n`,
+    allowMissing,
     preCommit: () => assertBothLocks(context),
-    durable: true,
   });
   await context.hooks.afterDurablePublish?.({
     step:
@@ -976,19 +1003,15 @@ async function copyRelocation(
     pathSegments(relocation.recoveryPath),
   );
   if (existing.state === "regular") {
-    const destination = await requireProjectLocalRegularFile(
-      context.projectRoot,
-      pathSegments(relocation.recoveryPath),
-    );
-    const actualHash = sha256(await readFile(destination));
-    if (actualHash !== relocation.contentHash) {
-      throw repairIntegrityError(
-        context.runId,
-        "Recovery copy content hash does not match its manifest",
-        relocation,
-        { actualHash },
-      );
-    }
+    const binding = await bindRecoveryArtifact(context, relocation);
+    context.recoveryBindings.set(relocation.recoveryPath, binding);
+    await context.hooks.afterRedurabilize?.({
+      step: "recovery-artifact",
+      path: resolve(
+        context.projectRoot,
+        ...pathSegments(relocation.recoveryPath),
+      ),
+    });
     return;
   }
 
@@ -1029,7 +1052,114 @@ async function copyRelocation(
       },
     },
   });
+  const binding = await bindRecoveryArtifact(context, relocation);
+  context.recoveryBindings.set(relocation.recoveryPath, binding);
   await context.hooks.afterDurablePublish?.({ step: relocation.kind });
+}
+
+async function bindRecoveryArtifact(
+  context: RepairContext,
+  relocation: RepairRelocation,
+): Promise<RecoveryArtifactBinding> {
+  const inspected = await inspectOptionalProjectLocalRegularFile(
+    context.projectRoot,
+    pathSegments(relocation.recoveryPath),
+  );
+  if (inspected.state !== "regular" || inspected.stats === undefined) {
+    throw repairIntegrityError(
+      context.runId,
+      "Recovery artifact is missing after publication",
+      relocation,
+    );
+  }
+  const binding: RecoveryArtifactBinding = {
+    relocation,
+    identity: {
+      dev: inspected.stats.dev,
+      ino: inspected.stats.ino,
+    },
+  };
+  await verifyRecoveryBinding(context, binding);
+  return binding;
+}
+
+async function verifyRecoveryBinding(
+  context: RepairContext,
+  binding: RecoveryArtifactBinding,
+): Promise<void> {
+  try {
+    await withProjectLocalRegularFile(
+      {
+        projectRoot: context.projectRoot,
+        segments: pathSegments(binding.relocation.recoveryPath),
+        mode: "read-write",
+      },
+      async ({ handle, parentPath, revalidate }) => {
+        await revalidate();
+        const before = await handle.stat({ bigint: true });
+        if (
+          before.dev !== binding.identity.dev ||
+          before.ino !== binding.identity.ino
+        ) {
+          throw repairIntegrityError(
+            context.runId,
+            "Recovery artifact identity changed after publication",
+            binding.relocation,
+          );
+        }
+        const bytes = await handle.readFile();
+        const after = await handle.stat({ bigint: true });
+        if (
+          before.dev !== after.dev ||
+          before.ino !== after.ino ||
+          before.size !== after.size ||
+          before.mtimeNs !== after.mtimeNs ||
+          sha256(bytes) !== binding.relocation.contentHash
+        ) {
+          throw repairIntegrityError(
+            context.runId,
+            "Recovery artifact bytes changed after publication",
+            binding.relocation,
+            { actualHash: sha256(bytes) },
+          );
+        }
+        await handle.sync();
+        await revalidate();
+        await syncDirectoryWhereSupported(parentPath);
+        await revalidate();
+      },
+    );
+  } catch (error: unknown) {
+    if (
+      error instanceof AiQaError &&
+      error.code === "run.repair_integrity_error"
+    ) {
+      throw error;
+    }
+    throw repairIntegrityError(
+      context.runId,
+      "Recovery artifact verification failed",
+      binding.relocation,
+      { cause: toErrorCause(error) },
+    );
+  }
+}
+
+async function verifyAllRecoveryBindings(
+  context: RepairContext,
+  manifest: RepairManifest,
+): Promise<void> {
+  for (const relocation of manifest.relocations) {
+    const binding = context.recoveryBindings.get(relocation.recoveryPath);
+    if (binding === undefined) {
+      throw repairIntegrityError(
+        context.runId,
+        "Recovery artifact is not identity-bound",
+        relocation,
+      );
+    }
+    await verifyRecoveryBinding(context, binding);
+  }
 }
 
 async function relocationBytes(
@@ -1111,19 +1241,35 @@ async function rewriteEvidenceIndex(
     `.ai-qa/evidence/${context.runId}/index.jsonl`,
   );
   const orphaned = new Set(manifest.orphanedEvidenceIds);
-  if (!records.some((record) => orphaned.has(record.id))) return;
+  if (!records.some((record) => orphaned.has(record.id))) {
+    const path = await synchronizeProjectLocalRegularFile(context.projectRoot, [
+      ".ai-qa",
+      "evidence",
+      context.runId,
+      "index.jsonl",
+    ]);
+    await context.hooks.afterRedurabilize?.({
+      step: "evidence-index",
+      path,
+    });
+    return;
+  }
   const retained = records.filter((record) => !orphaned.has(record.id));
-  await requireProjectLocalRegularFile(context.projectRoot, [
-    ".ai-qa",
-    "evidence",
-    context.runId,
-    "index.jsonl",
-  ]);
-  await atomicWriteFile(
-    context.evidenceIndexPath,
-    serializeJsonLines(retained),
-    { preCommit: () => assertBothLocks(context), durable: true },
-  );
+  await atomicReplaceProjectLocalRegularFile({
+    projectRoot: context.projectRoot,
+    segments: [".ai-qa", "evidence", context.runId, "index.jsonl"],
+    content: serializeJsonLines(retained),
+    preCommit: () => assertBothLocks(context),
+    hooks: {
+      afterFinalVerification: async () => {
+        await verifyAllRecoveryBindings(context, manifest);
+        await context.hooks.beforeDestructiveCommit?.({
+          step: "evidence-index",
+        });
+        await verifyAllRecoveryBindings(context, manifest);
+      },
+    },
+  });
   await context.hooks.afterDurablePublish?.({ step: "evidence-index" });
 }
 
@@ -1133,46 +1279,70 @@ async function truncateJournal(
 ): Promise<void> {
   const tail = manifest.journalTail;
   if (tail === undefined) return;
-  const path = await requireProjectLocalRegularFile(context.projectRoot, [
-    ".ai-qa",
-    "runs",
-    context.runId,
-    "events.jsonl",
-  ]);
-  const current = await stat(path);
-  if (current.size === tail.truncateOffset) return;
-  if (current.size !== tail.truncateOffset + tail.byteLength) {
+  await withProjectLocalRegularFile(
+    {
+      projectRoot: context.projectRoot,
+      segments: [".ai-qa", "runs", context.runId, "events.jsonl"],
+      mode: "read-write",
+    },
+    async ({ path, parentPath, handle, revalidate }) => {
+      await revalidate();
+      const current = await handle.stat();
+      if (current.size === tail.truncateOffset) {
+        await handle.sync();
+        await revalidate();
+        await syncDirectoryWhereSupported(parentPath);
+        await context.hooks.afterRedurabilize?.({
+          step: "journal",
+          path,
+        });
+        return;
+      }
+      if (current.size !== tail.truncateOffset + tail.byteLength) {
+        throw repairIntegrityError(
+          context.runId,
+          "Run journal length does not match the repair manifest",
+          undefined,
+          { byteLength: current.size },
+        );
+      }
+      const bytes = Buffer.alloc(tail.byteLength);
+      const { bytesRead } = await handle.read(
+        bytes,
+        0,
+        bytes.byteLength,
+        tail.truncateOffset,
+      );
+      if (
+        bytesRead !== bytes.byteLength ||
+        sha256(bytes) !== tail.contentHash
+      ) {
+        throw repairIntegrityError(
+          context.runId,
+          "Run journal tail content does not match the repair manifest",
+        );
+      }
+      await verifyAllRecoveryBindings(context, manifest);
+      await context.hooks.beforeDestructiveCommit?.({
+        step: "journal-truncate",
+      });
+      await verifyAllRecoveryBindings(context, manifest);
+      assertBothLocks(context);
+      await revalidate();
+      await handle.truncate(tail.truncateOffset);
+      await handle.sync();
+      await revalidate();
+      await syncDirectoryWhereSupported(parentPath);
+    },
+  ).catch((error: unknown) => {
+    if (error instanceof AiQaError) throw error;
     throw repairIntegrityError(
       context.runId,
-      "Run journal length does not match the repair manifest",
+      "Run journal truncation failed",
       undefined,
-      { byteLength: current.size },
+      { cause: toErrorCause(error) },
     );
-  }
-  const handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW);
-  try {
-    const bytes = Buffer.alloc(tail.byteLength);
-    const { bytesRead } = await handle.read(
-      bytes,
-      0,
-      bytes.byteLength,
-      tail.truncateOffset,
-    );
-    if (bytesRead !== bytes.byteLength || sha256(bytes) !== tail.contentHash) {
-      throw repairIntegrityError(
-        context.runId,
-        "Run journal tail content does not match the repair manifest",
-      );
-    }
-    await context.hooks.beforeDestructiveCommit?.({
-      step: "journal-truncate",
-    });
-    assertBothLocks(context);
-    await handle.truncate(tail.truncateOffset);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  });
 }
 
 async function deleteEvidenceSources(
@@ -1204,13 +1374,39 @@ async function readVerifiedJournal(
   events: RunEvent[];
   workOrder: WorkOrder;
 }> {
-  await requireProjectLocalRegularFile(projectRoot, [
-    ".ai-qa",
-    "runs",
-    runId,
-    "events.jsonl",
-  ]);
-  const classified = classifyJournal(await readFile(path));
+  const journalBytes = await withProjectLocalRegularFile(
+    {
+      projectRoot,
+      segments: [".ai-qa", "runs", runId, "events.jsonl"],
+      mode: "read",
+    },
+    async ({ path: verifiedPath, handle, revalidate }) => {
+      if (verifiedPath !== path) {
+        throw repairIntegrityError(
+          runId,
+          "Run journal path does not match its contained location",
+        );
+      }
+      await revalidate();
+      const before = await handle.stat({ bigint: true });
+      const bytes = await handle.readFile();
+      const after = await handle.stat({ bigint: true });
+      if (
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs
+      ) {
+        throw repairIntegrityError(
+          runId,
+          "Run journal changed while repair was reading it",
+        );
+      }
+      await revalidate();
+      return bytes;
+    },
+  );
+  const classified = classifyJournal(journalBytes);
   let events: RunEvent[];
   try {
     const decoded = new TextDecoder("utf-8", { fatal: true }).decode(

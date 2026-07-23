@@ -21,6 +21,7 @@ import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import type { EvidenceRecord } from "../../src/core/evidence/schema.js";
+import { AiQaError } from "../../src/core/errors.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
   createExploratoryWorkOrder,
@@ -1126,6 +1127,7 @@ describe("run repair", () => {
       "published:evidence-file",
       "published:evidence-index-entry",
       "published:journal-tail",
+      "destructive:evidence-index",
       "published:evidence-index",
       "destructive:journal-truncate",
       "published:evidence-deletion-claim",
@@ -1134,6 +1136,260 @@ describe("run repair", () => {
       "published:evidence-deletion-unlinked",
       "published:repair-manifest-completed",
     ]);
+  });
+
+  it.each(["remove", "replace-same-bytes"] as const)(
+    "rejects a journal recovery artifact %s after durable publication before truncation",
+    async (mutation) => {
+      const fixture = await createRepairFixture({ torn: true });
+      const journalBefore = await readFile(journalPath(fixture.projectRoot));
+      let recoveryPath: string | undefined;
+
+      await expect(
+        repairRun(
+          {
+            projectRoot: fixture.projectRoot,
+            runId,
+            now: fixedNow,
+          },
+          {
+            hooks: {
+              afterDurablePublish: async ({ step }) => {
+                if (step !== "journal-tail") return;
+                const manifest = await readManifest(fixture.projectRoot);
+                const relocation = manifest.relocations.find(
+                  (entry) => entry.kind === "journal-tail",
+                );
+                if (relocation === undefined)
+                  throw new Error("missing tail relocation");
+                recoveryPath = resolveProjectPath(
+                  fixture.projectRoot,
+                  relocation.recoveryPath,
+                );
+                if (mutation === "remove") {
+                  await unlink(recoveryPath);
+                } else {
+                  const bytes = await readFile(recoveryPath);
+                  await rename(recoveryPath, `${recoveryPath}.displaced`);
+                  await writeFile(recoveryPath, bytes);
+                }
+              },
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+
+      expect(recoveryPath).toBeDefined();
+      expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+        journalBefore,
+      );
+    },
+  );
+
+  it("reverifies recovered evidence index bytes before removing the source row", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    const indexBefore = await readFile(evidenceIndexPath(fixture.projectRoot));
+    const source = resolveProjectPath(
+      fixture.projectRoot,
+      orphan.projectRelativePath,
+    );
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            afterDurablePublish: async ({ step }) => {
+              if (step !== "evidence-index-entry") return;
+              const manifest = await readManifest(fixture.projectRoot);
+              const relocation = manifest.relocations.find(
+                (entry) => entry.kind === "evidence-index-entry",
+              );
+              if (relocation === undefined)
+                throw new Error("missing index relocation");
+              await unlink(
+                resolveProjectPath(
+                  fixture.projectRoot,
+                  relocation.recoveryPath,
+                ),
+              );
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+
+    expect(await readFile(evidenceIndexPath(fixture.projectRoot))).toEqual(
+      indexBefore,
+    );
+    await expect(readFile(source, "utf8")).resolves.toBe("orphaned-image");
+  });
+
+  it("reverifies recovered index bytes after the destructive commit hook", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const indexBefore = await readFile(evidenceIndexPath(fixture.projectRoot));
+    let hookReached = false;
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            beforeDestructiveCommit: async ({ step }) => {
+              if (step !== "evidence-index") return;
+              hookReached = true;
+              const manifest = await readManifest(fixture.projectRoot);
+              const relocation = manifest.relocations.find(
+                (entry) => entry.kind === "evidence-index-entry",
+              );
+              if (relocation === undefined)
+                throw new Error("missing index relocation");
+              await unlink(
+                resolveProjectPath(
+                  fixture.projectRoot,
+                  relocation.recoveryPath,
+                ),
+              );
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+
+    expect(hookReached).toBe(true);
+    expect(await readFile(evidenceIndexPath(fixture.projectRoot))).toEqual(
+      indexBefore,
+    );
+  });
+
+  it("reverifies recovered tail bytes after the destructive commit hook", async () => {
+    const fixture = await createRepairFixture({ torn: true });
+    const journalBefore = await readFile(journalPath(fixture.projectRoot));
+    let hookReached = false;
+
+    await expect(
+      repairRun(
+        {
+          projectRoot: fixture.projectRoot,
+          runId,
+          now: fixedNow,
+        },
+        {
+          hooks: {
+            beforeDestructiveCommit: async ({ step }) => {
+              if (step !== "journal-truncate") return;
+              hookReached = true;
+              const manifest = await readManifest(fixture.projectRoot);
+              const relocation = manifest.relocations.find(
+                (entry) => entry.kind === "journal-tail",
+              );
+              if (relocation === undefined)
+                throw new Error("missing tail relocation");
+              await unlink(
+                resolveProjectPath(
+                  fixture.projectRoot,
+                  relocation.recoveryPath,
+                ),
+              );
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "run.repair_integrity_error" });
+
+    expect(hookReached).toBe(true);
+    expect(await readFile(journalPath(fixture.projectRoot))).toEqual(
+      journalBefore,
+    );
+  });
+
+  it("reverifies every recovery artifact immediately before permanent unlink", async () => {
+    const fixture = await createRepairFixture({ orphan: true });
+    const orphan = requiredOrphan(fixture);
+    let claimedRecoveryPath: string | undefined;
+
+    const error = await repairRun(
+      {
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      },
+      {
+        hooks: {
+          afterDurablePublish: async ({ step }) => {
+            if (step !== "evidence-deletion-claimed") return;
+            const manifest = await readManifest(fixture.projectRoot);
+            const relocation = manifest.relocations.find(
+              (entry) => entry.kind === "evidence-file",
+            );
+            if (relocation === undefined)
+              throw new Error("missing evidence relocation");
+            await unlink(
+              resolveProjectPath(fixture.projectRoot, relocation.recoveryPath),
+            );
+            claimedRecoveryPath = evidenceDeletionClaimDirectory(
+              fixture.projectRoot,
+              orphan.id,
+            );
+          },
+        },
+      },
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AiQaError);
+    expect([
+      "run.repair_integrity_error",
+      "storage.recovery_required",
+    ]).toContain((error as AiQaError).code);
+    expect(claimedRecoveryPath).toBeDefined();
+    await expect(
+      readFile(join(claimedRecoveryPath!, "entry"), "utf8"),
+    ).resolves.toBe("orphaned-image");
+  });
+
+  it("re-establishes durability for every visible resumed repair artifact", async () => {
+    const fixture = await createRepairFixture({ orphan: true, torn: true });
+    const manifest = await orphanAndTailManifest(fixture);
+    await writeManifest(fixture.projectRoot, manifest);
+    await applyRecoveryCopies(fixture.projectRoot, manifest);
+    await applyIndexRewrite(fixture.projectRoot, manifest);
+    await applyJournalTruncate(fixture.projectRoot, manifest);
+    const redurable: string[] = [];
+
+    await repairRun(
+      {
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      },
+      {
+        hooks: {
+          afterRedurabilize: ({ step, path }) => {
+            redurable.push(`${step}:${path}`);
+          },
+        },
+      },
+    );
+
+    expect(
+      redurable.filter((entry) => entry.startsWith("manifest:")),
+    ).toHaveLength(1);
+    expect(
+      redurable.filter((entry) => entry.startsWith("recovery-artifact:")),
+    ).toHaveLength(manifest.relocations.length);
+    expect(redurable.some((entry) => entry.startsWith("evidence-index:"))).toBe(
+      true,
+    );
+    expect(redurable.some((entry) => entry.startsWith("journal:"))).toBe(true);
   });
 });
 
@@ -1300,6 +1556,27 @@ async function orphanManifest(
   fixture: RepairFixture,
 ): Promise<StoredRepairManifest> {
   return evidenceManifest(fixture, requiredOrphan(fixture));
+}
+
+async function orphanAndTailManifest(
+  fixture: RepairFixture,
+): Promise<StoredRepairManifest> {
+  const manifest = await orphanManifest(fixture);
+  const journal = await readFile(journalPath(fixture.projectRoot));
+  const tail = journal.subarray(fixture.cleanJournal.byteLength);
+  const contentHash = sha256(tail);
+  manifest.relocations.push({
+    kind: "journal-tail",
+    sourcePath: `.ai-qa/runs/${runId}/events.jsonl`,
+    recoveryPath: `.ai-qa/recovery/${runId}/journal/events.jsonl.${fixture.cleanJournal.byteLength}.tail`,
+    contentHash,
+  });
+  manifest.journalTail = {
+    truncateOffset: fixture.cleanJournal.byteLength,
+    byteLength: tail.byteLength,
+    contentHash,
+  };
+  return manifest;
 }
 
 async function evidenceManifest(
