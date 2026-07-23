@@ -105,6 +105,34 @@ describe("validateEvidenceParity", () => {
     expect(thrown).not.toMatchObject({ code: "evidence.orphaned_entries" });
   });
 
+  it("rejects an index-only record owned by another run as integrity", () => {
+    const wrongRun = evidenceRecordSchema.parse({
+      ...extraRecord,
+      runId: "run-2",
+      projectRelativePath:
+        ".ai-qa/evidence/run-2/files/evidence-extra-screen.png",
+    });
+
+    expect(() =>
+      validateEvidenceParity([event], [record, wrongRun], "run-1"),
+    ).toThrowError(
+      expect.objectContaining({ code: "evidence.integrity_error" }),
+    );
+  });
+
+  it("rejects an index-only controller mismatch as integrity", () => {
+    const wrongController = evidenceRecordSchema.parse({
+      ...extraRecord,
+      sourceTool: "pepper",
+    });
+
+    expect(() =>
+      validateEvidenceParity([event], [record, wrongController], "run-1"),
+    ).toThrowError(
+      expect.objectContaining({ code: "evidence.integrity_error" }),
+    );
+  });
+
   it("rejects duplicate typed evidence records", () => {
     const duplicate = runEventSchema.parse({
       ...event,

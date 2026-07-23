@@ -241,7 +241,17 @@ export class EvidenceRepository {
       return await readJsonLines(this.paths.index, evidenceRecordSchema);
     } catch (error: unknown) {
       if (isNodeError(error, "ENOENT")) return [];
-      throw error;
+      if (
+        error instanceof AiQaError &&
+        error.code === "evidence.integrity_error"
+      ) {
+        throw error;
+      }
+      throw new AiQaError(
+        "evidence.integrity_error",
+        "Evidence index integrity verification failed",
+        { runId: this.runId },
+      );
     }
   }
 

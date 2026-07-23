@@ -1152,6 +1152,42 @@ describe("run lifecycle", () => {
     });
   });
 
+  it.each([
+    ["malformed JSON", () => "{\n"],
+    ["a missing newline", (index: string) => index.trimEnd()],
+    [
+      "a schema-invalid row",
+      (index: string) => {
+        const record = JSON.parse(index.trim()) as Record<string, unknown>;
+        delete record.contentHash;
+        return `${JSON.stringify(record)}\n`;
+      },
+    ],
+  ])(
+    "normalizes %s in the evidence index before resuming",
+    async (_name, mutate) => {
+      const fixture = await createRun();
+      await recordSupportedCriterion(fixture);
+      const indexPath = join(
+        fixture.projectRoot,
+        ".ai-qa",
+        "evidence",
+        "run-1",
+        "index.jsonl",
+      );
+      const index = await readFile(indexPath, "utf8");
+      await writeFile(indexPath, mutate(index));
+
+      await expect(
+        resumeRun({
+          projectRoot: fixture.projectRoot,
+          runId: "run-1",
+          now,
+        }),
+      ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    },
+  );
+
   it("rejects duplicate evidence index records before resuming", async () => {
     const fixture = await createRun();
     await recordSupportedCriterion(fixture);

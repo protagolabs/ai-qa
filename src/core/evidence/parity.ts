@@ -13,9 +13,18 @@ export function validateEvidenceParity(
   let indexed: Map<string, EvidenceRecord>;
   let eventRecords: Map<string, EvidenceRecord>;
   try {
-    indexed = new Map(records.map((record) => [record.id, record]));
-    if (indexed.size !== records.length)
-      throw new Error("duplicate index record");
+    indexed = new Map<string, EvidenceRecord>();
+    for (const recordInput of records) {
+      const record = evidenceRecordSchema.parse(recordInput);
+      if (
+        record.runId !== runId ||
+        record.sourceTool !== controllerForPlatform(record.platform)
+      ) {
+        throw new Error("index evidence provenance mismatch");
+      }
+      if (indexed.has(record.id)) throw new Error("duplicate index record");
+      indexed.set(record.id, record);
+    }
 
     eventRecords = new Map<string, EvidenceRecord>();
     for (const event of events) {
