@@ -255,7 +255,15 @@ describe("typed run protocol", () => {
         rationale: "Force an audited history read",
         relatedIds: [],
       }),
-    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    ).rejects.toMatchObject({
+      code: "run_protocol.integrity_error",
+      details: {
+        cause: {
+          code: "parse_error",
+          message: expect.any(String),
+        },
+      },
+    });
   });
 
   it("plans an action and requires a fresh observation to resolve an unknown result", async () => {

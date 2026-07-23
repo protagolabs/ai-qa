@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AiQaError } from "../core/errors.js";
+import { AiQaError, toErrorCause } from "../core/errors.js";
 import type { CliContext } from "./context.js";
 
 export async function readJsonInput<T>(
@@ -12,7 +12,7 @@ export async function readJsonInput<T>(
     parsed = JSON.parse(source);
   } catch (error: unknown) {
     throw new AiQaError("input.invalid_json", "stdin must contain valid JSON", {
-      cause: error instanceof Error ? error.message : String(error),
+      cause: toErrorCause(error),
     });
   }
   const result = schema.safeParse(parsed);

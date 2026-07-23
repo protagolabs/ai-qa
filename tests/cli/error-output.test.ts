@@ -96,6 +96,10 @@ describe("readJsonInput", () => {
     );
     expect(error).toBeInstanceOf(AiQaError);
     expect((error as AiQaError).code).toBe("input.invalid_json");
+    expect((error as AiQaError).details.cause).toEqual({
+      code: "json.parse_error",
+      message: expect.any(String),
+    });
     expect((error as AiQaError).issues).toBeUndefined();
   });
 

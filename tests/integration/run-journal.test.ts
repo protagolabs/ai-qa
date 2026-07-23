@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/cli/program.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
+import { AiQaError } from "../../src/core/errors.js";
 import { RunJournal } from "../../src/core/runs/journal.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import {
@@ -301,6 +303,62 @@ describe("RunJournal", () => {
       }),
     ).rejects.toMatchObject({ code: "storage.integrity_error" });
   });
+
+  it("preserves the cause when journal parsing fails", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+    const journal = await RunJournal.create(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+    );
+    const eventsPath = join(
+      projectRoot,
+      ".ai-qa",
+      "runs",
+      "run-1",
+      "events.jsonl",
+    );
+    await writeFile(eventsPath, "not json\n", "utf8");
+
+    const error = await journal.readAll().catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AiQaError);
+    expect((error as AiQaError).code).toBe("journal.integrity_error");
+    expect((error as AiQaError).details.cause).toEqual({
+      code: expect.any(String),
+      message: expect.any(String),
+    });
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "surfaces filesystem failures as filesystem.operation_failed",
+    async () => {
+      const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));
+      const journal = await RunJournal.create(
+        projectRoot,
+        "run-1",
+        () => new Date("2026-07-13T00:00:00.000Z"),
+      );
+      const eventsPath = join(
+        projectRoot,
+        ".ai-qa",
+        "runs",
+        "run-1",
+        "events.jsonl",
+      );
+      await chmod(eventsPath, 0o000);
+      try {
+        const error = await journal
+          .readAll()
+          .catch((thrown: unknown) => thrown);
+
+        expect(error).toBeInstanceOf(AiQaError);
+        expect((error as AiQaError).code).toBe("filesystem.operation_failed");
+      } finally {
+        await chmod(eventsPath, 0o600);
+      }
+    },
+  );
 
   it("persists newline-terminated replacements across journal instances", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-journal-"));

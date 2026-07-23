@@ -16,6 +16,8 @@ import { runCli } from "../../src/cli/program.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
 import { CaseRepository } from "../../src/core/cases/repository.js";
 import type { ProjectConfig } from "../../src/core/config/schema.js";
+import { AiQaError } from "../../src/core/errors.js";
+import { EvidenceRepository } from "../../src/core/evidence/repository.js";
 import { controllerForPlatform } from "../../src/core/platforms/registry.js";
 import type { Platform } from "../../src/core/platforms/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
@@ -1375,7 +1377,7 @@ describe("case promotion", () => {
     });
   });
 
-  it("keeps a duplicate-index source as an inactive draft", async () => {
+  it("propagates evidence integrity errors from a duplicate source index", async () => {
     const { projectRoot, plannedActionId } = await createCompletedPassRun();
     const indexPath = join(
       projectRoot,
@@ -1386,88 +1388,110 @@ describe("case promotion", () => {
     );
     const index = await readFile(indexPath, "utf8");
     await writeFile(indexPath, `${index}${index}`);
-    const draft = await draftCaseFromRun({
-      projectRoot,
-      runId: "run-source",
-      input: {
-        caseId: "duplicate-source-evidence",
-        title: "Duplicate source evidence",
-        steps: [
-          {
-            sourceActionId: plannedActionId,
-            intent: "Submit valid credentials",
-            target: {
-              description: "Login button",
-              stability: "stable",
-              stabilityRationale: "Unique application-owned control",
-            },
-            expectedState: "Authenticated home is visible",
-            assertionStrategy: "Visible account text",
-            evidenceCheckpoints: ["post-action-screenshot"],
-          },
-        ],
-        excludedActions: [],
-      },
-    });
-
-    expect(draft.promotion.validationIssues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: "case.evidence_invalid" }),
-      ]),
-    );
     await expect(
-      activateCaseRevision({
+      draftCaseFromRun({
         projectRoot,
-        caseId: draft.caseId,
-        revision: draft.revision,
-        reviewConfirmed: true,
-        now: runNow,
+        runId: "run-source",
+        input: {
+          caseId: "duplicate-source-evidence",
+          title: "Duplicate source evidence",
+          steps: [
+            {
+              sourceActionId: plannedActionId,
+              intent: "Submit valid credentials",
+              target: {
+                description: "Login button",
+                stability: "stable",
+                stabilityRationale: "Unique application-owned control",
+              },
+              expectedState: "Authenticated home is visible",
+              assertionStrategy: "Visible account text",
+              evidenceCheckpoints: ["post-action-screenshot"],
+            },
+          ],
+          excludedActions: [],
+        },
       }),
-    ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
   });
 
-  it("keeps duplicate typed evidence as an inactive draft", async () => {
+  it("wraps unexpected evidence verification failures with their cause", async () => {
+    const { projectRoot, plannedActionId } = await createCompletedPassRun();
+    const sourceError = new Error("unexpected evidence reader failure");
+    const verifyAll = vi
+      .spyOn(EvidenceRepository.prototype, "verifyAll")
+      .mockRejectedValueOnce(sourceError);
+
+    try {
+      const error = await draftCaseFromRun({
+        projectRoot,
+        runId: "run-source",
+        input: {
+          caseId: "unexpected-evidence-error",
+          title: "Unexpected evidence error",
+          steps: [
+            {
+              sourceActionId: plannedActionId,
+              intent: "Submit valid credentials",
+              target: {
+                description: "Login button",
+                stability: "stable",
+                stabilityRationale: "Unique application-owned control",
+              },
+              expectedState: "Authenticated home is visible",
+              assertionStrategy: "Visible account text",
+              evidenceCheckpoints: ["post-action-screenshot"],
+            },
+          ],
+          excludedActions: [],
+        },
+      }).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(AiQaError);
+      expect(error).toMatchObject({
+        code: "case.source_run_integrity_error",
+        details: {
+          runId: "run-source",
+          cause: {
+            code: "parse_error",
+            message: "unexpected evidence reader failure",
+          },
+        },
+      });
+    } finally {
+      verifyAll.mockRestore();
+    }
+  });
+
+  it("propagates evidence integrity errors from duplicate typed evidence", async () => {
     const { projectRoot, plannedActionId } = await createCompletedPassRun();
     await appendDuplicateTypedEvidenceEvent(projectRoot);
 
-    const draft = await draftCaseFromRun({
-      projectRoot,
-      runId: "run-source",
-      input: {
-        caseId: "duplicate-typed-source-evidence",
-        title: "Duplicate typed source evidence",
-        steps: [
-          {
-            sourceActionId: plannedActionId,
-            intent: "Submit valid credentials",
-            target: {
-              description: "Login button",
-              stability: "stable",
-              stabilityRationale: "Unique application-owned control",
-            },
-            expectedState: "Authenticated home is visible",
-            assertionStrategy: "Visible account text",
-            evidenceCheckpoints: ["post-action-screenshot"],
-          },
-        ],
-        excludedActions: [],
-      },
-    });
-
-    expect(draft.promotion.validationIssues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: "case.evidence_invalid" }),
-      ]),
-    );
     await expect(
-      activateCaseRevision({
+      draftCaseFromRun({
         projectRoot,
-        caseId: draft.caseId,
-        revision: draft.revision,
-        reviewConfirmed: true,
-        now: runNow,
+        runId: "run-source",
+        input: {
+          caseId: "duplicate-typed-source-evidence",
+          title: "Duplicate typed source evidence",
+          steps: [
+            {
+              sourceActionId: plannedActionId,
+              intent: "Submit valid credentials",
+              target: {
+                description: "Login button",
+                stability: "stable",
+                stabilityRationale: "Unique application-owned control",
+              },
+              expectedState: "Authenticated home is visible",
+              assertionStrategy: "Visible account text",
+              evidenceCheckpoints: ["post-action-screenshot"],
+            },
+          ],
+          excludedActions: [],
+        },
       }),
-    ).rejects.toMatchObject({ code: "case.activation_validation_failed" });
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
   });
 
   it("does not let invalid evidence hide unrelated protocol corruption", async () => {
@@ -1516,7 +1540,7 @@ describe("case promotion", () => {
           excludedActions: [],
         },
       }),
-    ).rejects.toMatchObject({ code: "run_protocol.integrity_error" });
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
   });
 
   it("rejects a forged controller before emitting a case step", async () => {

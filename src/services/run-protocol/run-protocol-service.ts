@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { canonicalJson, sha256Canonical } from "../../core/canonical-json.js";
-import { AiQaError } from "../../core/errors.js";
+import { AiQaError, toErrorCause } from "../../core/errors.js";
 import { createId } from "../../core/ids.js";
 import { assertJsonValue, jsonValueSchema } from "../../core/json-value.js";
 import { controllerForPlatform } from "../../core/platforms/registry.js";
@@ -723,7 +723,9 @@ function requireFreshRecoveryObservation(
     observationPlan.payload.stepId !== recoveredPlan.payload.stepId ||
     observationPayload.stepId !== recoveredPlan.payload.stepId
   ) {
-    throw protocolIntegrityError();
+    throw protocolIntegrityError(
+      new Error("recovery observation does not match the recovered action"),
+    );
   }
 }
 
@@ -1042,15 +1044,17 @@ export function validateProtocolEvents(
         }
       }
     }
-  } catch {
-    throw protocolIntegrityError();
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw protocolIntegrityError(error);
   }
 }
 
-function protocolIntegrityError(): AiQaError {
+function protocolIntegrityError(cause: unknown): AiQaError {
   return new AiQaError(
     "run_protocol.integrity_error",
     "Typed run protocol event validation failed",
+    { cause: toErrorCause(cause) },
   );
 }
 

@@ -1,7 +1,7 @@
 import { open } from "node:fs/promises";
 import { EVENT_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
-import { AiQaError } from "../errors.js";
+import { AiQaError, normalizeUnknownError, toErrorCause } from "../errors.js";
 import { readJsonLines, writeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
 import {
@@ -95,11 +95,20 @@ export class RunJournal {
         }
       }
       return events;
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof AiQaError) throw error;
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        typeof (error as NodeJS.ErrnoException).code === "string" &&
+        (error as NodeJS.ErrnoException).code !== undefined
+      ) {
+        throw normalizeUnknownError(error);
+      }
       throw new AiQaError(
         "journal.integrity_error",
         "Run journal integrity verification failed",
-        { runId: this.runId },
+        { runId: this.runId, cause: toErrorCause(error) },
       );
     }
   }

@@ -4,6 +4,11 @@ export interface ErrorIssue {
   readonly message: string;
 }
 
+export interface ErrorCause {
+  readonly code: string;
+  readonly message: string;
+}
+
 export class AiQaError extends Error {
   readonly code: string;
   readonly details: Readonly<Record<string, unknown>>;
@@ -23,6 +28,29 @@ export class AiQaError extends Error {
     this.retryable = options.retryable === true;
     this.issues = options.issues;
   }
+}
+
+export function toErrorCause(error: unknown): ErrorCause {
+  if (error instanceof AiQaError) {
+    return { code: error.code, message: error.message };
+  }
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  ) {
+    return {
+      code: (error as NodeJS.ErrnoException).code as string,
+      message: error.message,
+    };
+  }
+  if (error instanceof SyntaxError) {
+    return { code: "json.parse_error", message: error.message };
+  }
+  return {
+    code: "parse_error",
+    message: error instanceof Error ? error.message : String(error),
+  };
 }
 
 export function normalizeUnknownError(error: unknown): AiQaError {

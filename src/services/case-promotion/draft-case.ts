@@ -9,7 +9,7 @@ import {
   type CaseRevision,
   type CaseValidationIssue,
 } from "../../core/cases/schema.js";
-import { AiQaError } from "../../core/errors.js";
+import { AiQaError, toErrorCause } from "../../core/errors.js";
 import { validateEvidenceParity } from "../../core/evidence/parity.js";
 import { EvidenceRepository } from "../../core/evidence/repository.js";
 import type { EvidenceRecord } from "../../core/evidence/schema.js";
@@ -376,8 +376,13 @@ async function readVerifiedEvidence(
     ).verifyAll();
     validateEvidenceParity(events, evidence, runId);
     return { evidence, valid: true };
-  } catch {
-    return { evidence: [], valid: false };
+  } catch (error: unknown) {
+    if (error instanceof AiQaError) throw error;
+    throw new AiQaError(
+      "case.source_run_integrity_error",
+      "Source run evidence integrity verification failed",
+      { runId, cause: toErrorCause(error) },
+    );
   }
 }
 
