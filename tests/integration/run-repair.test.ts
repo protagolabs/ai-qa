@@ -217,6 +217,40 @@ describe("run repair", () => {
     });
   });
 
+  it("rejects a missing evidence index when the journal contains evidence", async () => {
+    const fixture = await createRepairFixture();
+    await registerLiveEvidence(fixture, "missing-index-live");
+    await rm(evidenceIndexPath(fixture.projectRoot), { force: true });
+    const before = await snapshotTree(join(fixture.projectRoot, ".ai-qa"));
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).rejects.toMatchObject({ code: "evidence.integrity_error" });
+    expect(await snapshotTree(join(fixture.projectRoot, ".ai-qa"))).toEqual(
+      before,
+    );
+  });
+
+  it("treats a missing evidence index as clean when the journal has no evidence", async () => {
+    const fixture = await createRepairFixture();
+    await rm(evidenceIndexPath(fixture.projectRoot), { force: true });
+
+    await expect(
+      repairRun({
+        projectRoot: fixture.projectRoot,
+        runId,
+        now: fixedNow,
+      }),
+    ).resolves.toEqual({ runId, relocated: [] });
+    await expect(
+      lstat(evidenceIndexPath(fixture.projectRoot)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("resumes deterministically from every crash boundary", async () => {
     const seed = await createRepairFixture({ orphan: true, torn: true });
     const uninterruptedRoot = await cloneProject(seed.projectRoot);

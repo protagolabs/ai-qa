@@ -403,6 +403,9 @@ export async function repairRun(
       projectRoot,
       evidenceIndexSegments,
     );
+    if (index.state === "missing") {
+      validateEvidenceParity(journal.events, [], runId);
+    }
     const needsRepairCriticalSection =
       (currentManifest !== undefined &&
         currentManifest.completedAt === undefined) ||
