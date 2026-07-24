@@ -161,6 +161,34 @@ ai-qa run start --kind exploratory --platform ios-simulator --execution local --
 
 设置有 evidence 链接的 verdict、完成 run，再生成并验证报告。多平台探索式 QA 使用彼此独立的 run，不使用 RunGroup。
 
+### 验证 Bug 修复
+
+没有独立的 `bug start` 命令。Bug 修复 QA 使用两个彼此独立的 exploratory run，让修复前的失败与修复后的结果都保留可审计记录。以下使用 Web 作为示例；如果测试范围是已配置的 iOS Simulator 或 Android Emulator，请改选对应平台。
+
+修改应用程序前，请代理重现 Bug，并保留有证据支持的基准：
+
+> 请在 Web 启动 BUG-123 的修复前 QA。前置条件是已打开登录页，并备有有效账号。使用有效账号密码提交登录以重现问题。预期结果是进入仪表板且没有错误；实际结果是仍停留在登录页。请执行探索式 QA、取得操作后的新 observation 与截图证据、记录 fail verdict，并生成报告。
+
+修复部署后，使用相同验收条件启动新的 exploratory run：
+
+> BUG-123 已修复并部署。请在 Web 使用相同验收条件启动新的 exploratory run，验证有效登录会进入仪表板且没有错误。请取得操作后的新证据并生成报告。如果 run 通过，请准备将它提升为 regression case `bug-123-sign-in`，但先不要启用，等我审查。
+
+不要修改失败 run 的 verdict 来表示 Bug 已修好。保留彼此独立的失败与通过 run，接着审查通过的 run，并只提升该条具有有效证据的 run：
+
+```bash
+ai-qa case draft --from-run <passing-run-id> --stdin-json
+ai-qa case validate bug-123-sign-in --revision <revision>
+ai-qa case activate bug-123-sign-in --revision <revision> --stdin-json
+```
+
+失败的 run 会保留为问题重现记录。明确审查并启用后，即可重放固定的 regression case：
+
+```bash
+ai-qa run start --kind regression --case bug-123-sign-in --platform web --execution local --stdin-json
+```
+
+多平台 Bug 验证应在每个所选平台分别执行修复前与修复后的探索。只有后续的多平台回归重放才使用 RunGroup。
+
 ### 修复中断的 run
 
 如果 crash 留下孤立的 evidence 或损坏的 journal tail，请运行 `ai-qa run repair <run-id>`。该命令具有幂等性；它迁移的数据会保留在 `.ai-qa/recovery/<run-id>/`，并列在其 JSON 输出中。

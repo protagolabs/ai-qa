@@ -161,6 +161,34 @@ Before every controller interaction, observation, and screenshot, record `ai-qa 
 
 Set an evidence-linked verdict, finish the run, then generate and verify its report. Multi-platform exploratory QA uses independent runs, not a RunGroup.
 
+### Verify a bug fix
+
+There is no separate `bug start` command. Bug-fix QA uses two independent exploratory runs so the before-fix failure and after-fix result remain auditable. The example below uses Web; select iOS Simulator or Android Emulator instead when that configured platform is in scope.
+
+Before changing the application, ask the Agent to reproduce the bug and preserve an evidence-backed baseline:
+
+> On Web, start pre-fix QA for BUG-123. The precondition is an open sign-in page with a valid account. Reproduce the issue by submitting valid credentials. The expected result is navigation to the dashboard without an error; the actual result is that the sign-in page remains visible. Run exploratory QA, capture fresh post-action observation and screenshot evidence, record a fail verdict, and generate the report.
+
+After the fix is deployed, start a new exploratory run with the same acceptance criteria:
+
+> BUG-123 is fixed and deployed. On Web, start a new exploratory run with the same acceptance criteria and verify that valid sign-in reaches the dashboard without an error. Capture fresh post-action evidence and generate the report. If the run passes, prepare it for promotion to regression case `bug-123-sign-in`, but do not activate it until I review it.
+
+Do not revise the failed run to represent the fix. Keep the failed and passing runs separate, then review the passing run and promote only that evidence-valid run:
+
+```bash
+ai-qa case draft --from-run <passing-run-id> --stdin-json
+ai-qa case validate bug-123-sign-in --revision <revision>
+ai-qa case activate bug-123-sign-in --revision <revision> --stdin-json
+```
+
+The failed run remains the reproduction record. After explicit review and activation, replay the pinned regression case:
+
+```bash
+ai-qa run start --kind regression --case bug-123-sign-in --platform web --execution local --stdin-json
+```
+
+For multi-platform bug verification, run the before-fix and after-fix exploration independently on each selected platform. Use a RunGroup only for later multi-platform regression replay.
+
 ### Repair an interrupted run
 
 If a crash leaves orphaned evidence or a torn journal tail, run `ai-qa run repair <run-id>`. The command is idempotent; data it relocates is retained under `.ai-qa/recovery/<run-id>/` and reported in its JSON output.
