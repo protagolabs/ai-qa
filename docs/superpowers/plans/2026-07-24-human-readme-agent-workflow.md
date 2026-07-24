@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - `README.md`, `README.zh-TW.md`, and `README.zh-CN.md` must retain identical H2/H3 structure, prompt count, code-block count, technical facts, and links.
+- Each README must include a standalone project-setup section with the same six human-visible stages.
 - Human prompts must identify platform, goal, preconditions, acceptance criteria, test-data requirements, and result handling when those fields matter.
 - Human prompts must not require run IDs, event IDs, revisions, or CLI JSON.
 - `docs/agent-workflow.md` is an English navigation guide; `src/skills/global/SKILL.md` and its references remain authoritative.
@@ -158,7 +159,7 @@ Run a relative-link check and expect every linked repository file to exist.
 **Interfaces:**
 
 - Consumes: The Agent guide created in Task 1.
-- Produces: The canonical public heading order, seven prompt examples, and Agent-guide link mirrored by both translations.
+- Produces: The canonical public heading order, six-stage project-setup section, seven prompt examples, and Agent-guide link mirrored by both translations.
 
 - [ ] **Step 1: Replace Quick start and Usage with human-facing sections**
 
@@ -178,6 +179,19 @@ After configuration and readiness checks pass, ask for QA:
 > On Web, explore sign-in. Start from the sign-in page with a valid test account. A successful sign-in must open the dashboard without an error. Keep the report local and show me the verdict with its evidence.
 
 The Agent handles readiness, controller actions, evidence, verdicts, and report generation.
+
+## Project setup
+
+On first use, QA remains blocked until the Agent completes this setup with you:
+
+1. **Check the project:** the Agent resolves the exact project root and runs doctor.
+2. **Select deployed platforms:** choose at least one deployed Web, iOS Simulator, or Android Emulator target. Real devices are not supported.
+3. **Choose result handling:** explicitly select `local-only` or `project-skill`; neither mode is selected by default.
+4. **Collect safe configuration:** the Agent gathers the target and controller settings for every selected platform and keeps literal secrets out of config.
+5. **Review both proposals:** the Agent validates `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` together, then shows complete new-file content or complete existing-file diffs. One confirmation covers both files; cancellation writes neither.
+6. **Verify readiness:** after confirmation, the Agent writes both files once and runs doctor for every configured platform. QA starts only after every requested platform is ready.
+
+The Agent handles schema validation, path and symlink checks, directory creation, and controller-specific readiness details.
 
 ## How to prompt AI QA
 
@@ -231,7 +245,7 @@ Agents implementing these requests should read [AI QA Agent Workflow](docs/agent
 
 - [ ] **Step 2: Verify the English prompt contract**
 
-Run a check that asserts the README has the H2 headings `Quick start`, `How to prompt AI QA`, `Prompt cookbook`, and `Agent workflow guide`, plus exactly seven cookbook H3 headings and nine blockquotes total (two Quick start prompts plus seven cookbook prompts).
+Run a check that asserts the README has the H2 headings `Quick start`, `Project setup`, `How to prompt AI QA`, `Prompt cookbook`, and `Agent workflow guide`, exactly seven cookbook H3 headings, nine blockquotes total, and six ordered setup items.
 
 - [ ] **Step 3: Format-check the English README**
 
@@ -248,7 +262,7 @@ Expected: Prettier reports correct formatting.
 
 **Interfaces:**
 
-- Consumes: English heading order, seven cookbook prompts, two Quick start prompts, and Agent-guide link from Task 2.
+- Consumes: English heading order, six-stage setup flow, seven cookbook prompts, two Quick start prompts, and Agent-guide link from Task 2.
 - Produces: Natural Traditional and Simplified Chinese public documentation with identical technical tokens and structure.
 
 - [ ] **Step 1: Add the Traditional Chinese structure and prompts**
@@ -257,6 +271,7 @@ Use these exact H2/H3 translations:
 
 ```text
 ## 快速開始
+## 專案設定流程
 ## 如何向 AI QA 下指令
 ## Prompt 範例
 ### 設定專案
@@ -271,12 +286,24 @@ Use these exact H2/H3 translations:
 
 Translate all nine English prompts naturally. Preserve `BUG-123`, `bug-123-sign-in`, URLs, platform names, `local`, case identifiers, and the relative link `docs/agent-workflow.md`.
 
+Translate the six setup stages with these labels:
+
+```text
+1. **檢查專案：**
+2. **選擇已部署平台：**
+3. **選擇結果處理方式：**
+4. **收集安全的設定：**
+5. **審查兩份提案：**
+6. **驗證 readiness：**
+```
+
 - [ ] **Step 2: Add the Simplified Chinese structure and prompts**
 
 Use these exact H2/H3 translations:
 
 ```text
 ## 快速开始
+## 项目配置流程
 ## 如何向 AI QA 下指令
 ## Prompt 示例
 ### 配置项目
@@ -291,11 +318,24 @@ Use these exact H2/H3 translations:
 
 Translate all nine English prompts naturally. Preserve `BUG-123`, `bug-123-sign-in`, URLs, platform names, `local`, case identifiers, and the relative link `docs/agent-workflow.md`.
 
+Translate the six setup stages with these labels:
+
+```text
+1. **检查项目：**
+2. **选择已部署平台：**
+3. **选择结果处理方式：**
+4. **收集安全配置：**
+5. **审查两份提案：**
+6. **验证 readiness：**
+```
+
 - [ ] **Step 3: Verify three-language structural parity**
 
 Run a Node script that compares H2 count, H3 count, fenced code-block count, and blockquote count across all three README files.
 
 Expected: all four counts are identical.
+
+Also assert that each README has the localized project-setup H2 and six ordered setup items.
 
 - [ ] **Step 4: Format-check all public docs**
 
