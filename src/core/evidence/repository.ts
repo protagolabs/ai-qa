@@ -7,8 +7,8 @@ import { canonicalJson } from "../canonical-json.js";
 import {
   AiQaError,
   errorCauseCode,
-  extractErrorCause,
   toErrorCause,
+  toFilesystemOperationFailure,
 } from "../errors.js";
 import { syncDirectoryWhereSupported } from "../fs/atomic-write.js";
 import { readJsonLines, serializeJsonLines } from "../fs/json-lines.js";
@@ -343,11 +343,7 @@ export class EvidenceRepository {
   private classifyReadFailure(message: string, error: unknown): AiQaError {
     if (error instanceof AiQaError) return error;
     if (isEnvironmentalErrnoCode(errorCauseCode(error))) {
-      return new AiQaError(
-        "filesystem.operation_failed",
-        "A filesystem operation failed",
-        { cause: extractErrorCause(error) ?? toErrorCause(error) },
-      );
+      return toFilesystemOperationFailure(error);
     }
     return new AiQaError("evidence.integrity_error", message, {
       runId: this.runId,

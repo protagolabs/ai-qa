@@ -291,6 +291,47 @@ describe("immutable run groups", () => {
     ).rejects.toMatchObject(damaged);
   });
 
+  it("reports malformed slot children as damage from create and reads", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "slot-child", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["slot-child"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const damagedGroupId = "run-group-slot-child";
+    const damagedDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "run-groups",
+      damagedGroupId,
+    );
+    await mkdir(join(damagedDirectory, "group.json"), { recursive: true });
+    await writeFile(join(damagedDirectory, "events.jsonl"), "");
+    const manifest = structuredClone(started.manifest);
+    manifest.id = damagedGroupId;
+    for (const member of manifest.members) {
+      member.workOrder.runGroupId = damagedGroupId;
+    }
+
+    const damaged = {
+      code: "run_group.integrity_error",
+      details: { runGroupId: damagedGroupId, path: damagedDirectory },
+    };
+    await expect(
+      new RunGroupRepository(projectRoot, now).create(manifest),
+    ).rejects.toMatchObject(damaged);
+    await expect(
+      readGroupManifest(
+        new RunGroupRepository(projectRoot, now),
+        damagedGroupId,
+      ),
+    ).rejects.toMatchObject(damaged);
+  });
+
   it("reports a non-directory slot as damage instead of a raw OS error", async () => {
     const { projectRoot, cases } = await fixture(["web"]);
     await createActiveCase({ cases, caseId: "slot-file", platforms: ["web"] });
@@ -1419,7 +1460,7 @@ describe("immutable run groups", () => {
         new RunGroupRepository(projectRoot, now),
         started.manifest.id,
       ),
-    ).rejects.toMatchObject({ code: "storage.integrity_error" });
+    ).rejects.toMatchObject({ code: "run_group.integrity_error" });
   });
 
   it("exposes start, resume, cancel, and finish through the public CLI", async () => {

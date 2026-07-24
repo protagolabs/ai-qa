@@ -370,6 +370,13 @@ describe("RunJournal", () => {
 
         expect(error).toBeInstanceOf(AiQaError);
         expect((error as AiQaError).code).toBe("filesystem.operation_failed");
+        expect((error as AiQaError).details.cause).toEqual({
+          code: "EACCES",
+          message: "The filesystem reported EACCES",
+        });
+        expect(JSON.stringify((error as AiQaError).details)).not.toContain(
+          projectRoot,
+        );
       } finally {
         await chmod(eventsPath, 0o600);
       }

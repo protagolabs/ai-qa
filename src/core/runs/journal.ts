@@ -3,8 +3,8 @@ import { canonicalJson } from "../canonical-json.js";
 import {
   AiQaError,
   errorCauseCode,
-  extractErrorCause,
   toErrorCause,
+  toFilesystemOperationFailure,
 } from "../errors.js";
 import {
   assertNotCompromised,
@@ -91,11 +91,7 @@ export class RunJournal {
       );
     } catch (error: unknown) {
       if (isFilesystemOperationFailure(error)) {
-        throw new AiQaError(
-          "filesystem.operation_failed",
-          "A filesystem operation failed",
-          { cause: extractErrorCause(error) ?? toErrorCause(error) },
-        );
+        throw toFilesystemOperationFailure(error);
       }
       throw error;
     }

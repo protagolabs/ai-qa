@@ -514,47 +514,54 @@ describe("EvidenceRepository", () => {
     });
   });
 
-  it("surfaces an unreadable index as filesystem.operation_failed, not corruption", async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-fs-"));
-    const source = join(projectRoot, "screen.png");
-    await writeFile(source, Buffer.from("original-image"));
-    const repository = new EvidenceRepository(
-      projectRoot,
-      "run-1",
-      () => new Date("2026-07-13T00:00:00.000Z"),
-      "web",
-    );
-    await repository.registerRaw({
-      sourcePath: source,
-      mediaType: "image/png",
-      sourceTool: "chrome-devtools-mcp",
-      sensitivity: "internal",
-      evidenceKinds: ["post-action-screenshot"],
-      captureActionId: "event-capture-action",
-      idempotencyKey: "capture-home",
-    });
-    const indexPath = join(
-      projectRoot,
-      ".ai-qa",
-      "evidence",
-      "run-1",
-      "index.jsonl",
-    );
-    await chmod(indexPath, 0o000);
-    try {
-      const error = await repository
-        .readAll()
-        .catch((thrown: unknown) => thrown);
+  it.skipIf(process.getuid?.() === 0)(
+    "surfaces an unreadable index as filesystem.operation_failed, not corruption",
+    async () => {
+      const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-fs-"));
+      const source = join(projectRoot, "screen.png");
+      await writeFile(source, Buffer.from("original-image"));
+      const repository = new EvidenceRepository(
+        projectRoot,
+        "run-1",
+        () => new Date("2026-07-13T00:00:00.000Z"),
+        "web",
+      );
+      await repository.registerRaw({
+        sourcePath: source,
+        mediaType: "image/png",
+        sourceTool: "chrome-devtools-mcp",
+        sensitivity: "internal",
+        evidenceKinds: ["post-action-screenshot"],
+        captureActionId: "event-capture-action",
+        idempotencyKey: "capture-home",
+      });
+      const indexPath = join(
+        projectRoot,
+        ".ai-qa",
+        "evidence",
+        "run-1",
+        "index.jsonl",
+      );
+      await chmod(indexPath, 0o000);
+      try {
+        const error = await repository
+          .readAll()
+          .catch((thrown: unknown) => thrown);
 
-      expect(error).toBeInstanceOf(AiQaError);
-      expect((error as AiQaError).code).toBe("filesystem.operation_failed");
-      expect(
-        ((error as AiQaError).details.cause as { code: string }).code,
-      ).toBe("EACCES");
-    } finally {
-      await chmod(indexPath, 0o600);
-    }
-  });
+        expect(error).toBeInstanceOf(AiQaError);
+        expect((error as AiQaError).code).toBe("filesystem.operation_failed");
+        expect((error as AiQaError).details.cause).toEqual({
+          code: "EACCES",
+          message: "The filesystem reported EACCES during open",
+        });
+        expect(JSON.stringify((error as AiQaError).details)).not.toContain(
+          projectRoot,
+        );
+      } finally {
+        await chmod(indexPath, 0o600);
+      }
+    },
+  );
 
   it("classifies a run directory replaced by a file as corruption", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-shape-"));

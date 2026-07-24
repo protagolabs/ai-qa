@@ -89,6 +89,35 @@ export function toErrorCause(error: unknown): ErrorCause {
   };
 }
 
+/**
+ * The one shape a filesystem.operation_failed error takes, wherever it is
+ * produced. The origin is summarized from code and syscall only; the raw
+ * message may embed project paths and must not reach the error contract.
+ */
+export function toFilesystemOperationFailure(error: unknown): AiQaError {
+  const code = errorCauseCode(error) ?? toErrorCause(error).code;
+  const syscall =
+    error instanceof Error &&
+    "syscall" in error &&
+    typeof (error as NodeJS.ErrnoException).syscall === "string"
+      ? (error as NodeJS.ErrnoException).syscall
+      : undefined;
+  return new AiQaError(
+    "filesystem.operation_failed",
+    "A filesystem operation failed",
+    {
+      cause: {
+        code,
+        message:
+          syscall === undefined
+            ? `The filesystem reported ${code}`
+            : `The filesystem reported ${code} during ${syscall}`,
+      },
+      ...(syscall === undefined ? {} : { syscall }),
+    },
+  );
+}
+
 export function normalizeUnknownError(error: unknown): AiQaError {
   if (error instanceof AiQaError) return error;
   if (
@@ -96,25 +125,7 @@ export function normalizeUnknownError(error: unknown): AiQaError {
     "code" in error &&
     typeof (error as NodeJS.ErrnoException).code === "string"
   ) {
-    const nodeError = error as NodeJS.ErrnoException;
-    // The origin message is summarized from code and syscall only; the raw
-    // message may embed project paths and must not reach the error contract.
-    return new AiQaError(
-      "filesystem.operation_failed",
-      "A filesystem operation failed",
-      {
-        cause: {
-          code: nodeError.code,
-          message:
-            nodeError.syscall === undefined
-              ? `The filesystem reported ${nodeError.code}`
-              : `The filesystem reported ${nodeError.code} during ${nodeError.syscall}`,
-        },
-        ...(nodeError.syscall === undefined
-          ? {}
-          : { syscall: nodeError.syscall }),
-      },
-    );
+    return toFilesystemOperationFailure(error);
   }
   return new AiQaError(
     "internal.unexpected_error",

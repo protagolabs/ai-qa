@@ -273,14 +273,25 @@ export class RunGroupRepository {
       validateSnapshot(runGroupId, rawManifest, manifest, events);
       return { manifest: freezeManifest(manifest), events };
     } catch (error: unknown) {
-      if (isMissingStoragePath(error)) {
-        throw await classifyMissingGroupStorage(this.projectRoot, runGroupId);
+      const missing = isMissingStoragePath(error);
+      const storageIntegrity =
+        error instanceof AiQaError && error.code === "storage.integrity_error";
+      if (missing || storageIntegrity) {
+        const classified = await classifyMissingGroupStorage(
+          this.projectRoot,
+          runGroupId,
+        );
+        if (classified.code === "run_group.integrity_error" || missing) {
+          throw classified;
+        }
+        // A storage integrity failure that is not slot damage keeps its
+        // original report.
+        throw error;
       }
       if (
         error instanceof AiQaError &&
         (error.code === "run_group.not_found" ||
-          error.code === "run_group.integrity_error" ||
-          error.code === "storage.integrity_error")
+          error.code === "run_group.integrity_error")
       ) {
         throw error;
       }
@@ -340,9 +351,22 @@ async function inspectGroupSlot(
   }
   if (stats.isSymbolicLink() || !stats.isDirectory()) return "damaged";
   const complete =
-    (await pathExists(resolve(directory, "group.json"))) &&
-    (await pathExists(resolve(directory, "events.jsonl")));
+    (await isRealRegularFile(resolve(directory, "group.json"))) &&
+    (await isRealRegularFile(resolve(directory, "events.jsonl")));
   return complete ? "complete" : "damaged";
+}
+
+async function isRealRegularFile(path: string): Promise<boolean> {
+  let stats;
+  try {
+    stats = await lstat(path);
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
+      return false;
+    }
+    throw error;
+  }
+  return stats.isFile() && !stats.isSymbolicLink();
 }
 
 async function classifyMissingGroupStorage(
