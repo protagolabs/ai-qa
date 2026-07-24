@@ -301,28 +301,57 @@ export class RunGroupRepository {
         "events.jsonl",
       ]);
     } catch (error: unknown) {
-      if (!isMissingStoragePath(error)) throw error;
-      throw await classifyMissingGroupStorage(this.projectRoot, runGroupId);
+      const missing = isMissingStoragePath(error);
+      const storageIntegrity =
+        error instanceof AiQaError && error.code === "storage.integrity_error";
+      if (!missing && !storageIntegrity) throw error;
+      const classified = await classifyMissingGroupStorage(
+        this.projectRoot,
+        runGroupId,
+      );
+      if (classified.code === "run_group.integrity_error" || missing) {
+        throw classified;
+      }
+      // A storage integrity failure that is not slot damage (for example a
+      // symlinked ancestor) keeps its original report.
+      throw error;
     }
   }
 }
 
 /**
  * A named group directory only ever exists in complete form: publication is a
- * single rename of a fully staged directory. One that lacks its manifest or
- * journal is damage (a 0.1.0 crash or manual edits) and must not masquerade
- * as "not found" on reads while blocking creates as "already exists".
+ * single rename of a fully staged directory. A slot entry that is not a real
+ * directory, or one that lacks its manifest or journal, is damage (a 0.1.0
+ * crash or manual edits) and must not masquerade as "not found" on reads
+ * while blocking creates as "already exists".
  */
+async function inspectGroupSlot(
+  directory: string,
+): Promise<"vacant" | "complete" | "damaged"> {
+  let stats;
+  try {
+    stats = await lstat(directory);
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
+      return "vacant";
+    }
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) return "damaged";
+  const complete =
+    (await pathExists(resolve(directory, "group.json"))) &&
+    (await pathExists(resolve(directory, "events.jsonl")));
+  return complete ? "complete" : "damaged";
+}
+
 async function classifyMissingGroupStorage(
   projectRoot: string,
   runGroupId: string,
 ): Promise<AiQaError> {
   const paths = resolveRunGroupPaths(projectRoot, runGroupId);
-  if (await pathExists(paths.directory)) {
-    const complete =
-      (await pathExists(resolve(paths.directory, "group.json"))) &&
-      (await pathExists(resolve(paths.directory, "events.jsonl")));
-    if (!complete) return runGroupDamaged(runGroupId, paths.directory);
+  if ((await inspectGroupSlot(paths.directory)) === "damaged") {
+    return runGroupDamaged(runGroupId, paths.directory);
   }
   return new AiQaError("run_group.not_found", "Run group does not exist", {
     runGroupId,
@@ -333,18 +362,16 @@ async function requireVacantGroupSlot(
   runGroupId: string,
   directory: string,
 ): Promise<void> {
-  if (!(await pathExists(directory))) return;
-  const complete =
-    (await pathExists(resolve(directory, "group.json"))) &&
-    (await pathExists(resolve(directory, "events.jsonl")));
-  if (complete) throw runGroupAlreadyExists(runGroupId);
+  const slot = await inspectGroupSlot(directory);
+  if (slot === "vacant") return;
+  if (slot === "complete") throw runGroupAlreadyExists(runGroupId);
   throw runGroupDamaged(runGroupId, directory);
 }
 
 function runGroupDamaged(runGroupId: string, path: string): AiQaError {
   return new AiQaError(
     "run_group.integrity_error",
-    "Run-group directory exists without its manifest and journal; move the damaged directory out of .ai-qa/run-groups to recover",
+    "Run-group storage entry is not a complete run-group directory; move the damaged entry out of .ai-qa/run-groups to recover",
     { runGroupId, path },
   );
 }
@@ -354,7 +381,9 @@ async function pathExists(path: string): Promise<boolean> {
     await lstat(path);
     return true;
   } catch (error: unknown) {
-    if (isNodeError(error, "ENOENT")) return false;
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
+      return false;
+    }
     throw error;
   }
 }

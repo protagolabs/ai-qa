@@ -556,6 +556,32 @@ describe("EvidenceRepository", () => {
     }
   });
 
+  it("classifies a run directory replaced by a file as corruption", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-shape-"));
+    await mkdir(join(projectRoot, ".ai-qa", "evidence"), { recursive: true });
+    await writeFile(
+      join(projectRoot, ".ai-qa", "evidence", "run-1"),
+      "not a directory",
+    );
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+      "web",
+    );
+
+    const error = await repository.readAll().catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AiQaError);
+    expect(error).toMatchObject({
+      code: "evidence.integrity_error",
+      details: {
+        runId: "run-1",
+        cause: { code: "ENOTDIR" },
+      },
+    });
+  });
+
   it("attaches the parse cause when the index is corrupted", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-cause-"));
     const indexPath = join(

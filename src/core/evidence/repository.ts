@@ -20,7 +20,7 @@ import {
   synchronizeProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
-import { isErrnoCode, isNodeError } from "../node-errors.js";
+import { isEnvironmentalErrnoCode, isNodeError } from "../node-errors.js";
 import { controllerForPlatform } from "../platforms/registry.js";
 import {
   controllerSchema,
@@ -334,15 +334,15 @@ export class EvidenceRepository {
   }
 
   /**
-   * Domain errors pass through unchanged; non-ENOENT filesystem errors are
-   * environmental, not corruption. ENOENT stays an integrity failure here
-   * because a missing indexed file is corruption — only a missing index
-   * itself is handled by the caller.
+   * Domain errors pass through unchanged; environmental errno failures are
+   * not corruption. Shape errnos (ENOTDIR, EISDIR, ELOOP) and ENOENT stay
+   * integrity failures here: a path component of the wrong kind or a missing
+   * indexed file is damage — only a missing index itself is handled by the
+   * caller.
    */
   private classifyReadFailure(message: string, error: unknown): AiQaError {
     if (error instanceof AiQaError) return error;
-    const causeCode = errorCauseCode(error);
-    if (causeCode !== "ENOENT" && isErrnoCode(causeCode)) {
+    if (isEnvironmentalErrnoCode(errorCauseCode(error))) {
       return new AiQaError(
         "filesystem.operation_failed",
         "A filesystem operation failed",

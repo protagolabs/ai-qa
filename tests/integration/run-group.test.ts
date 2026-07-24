@@ -291,6 +291,49 @@ describe("immutable run groups", () => {
     ).rejects.toMatchObject(damaged);
   });
 
+  it("reports a non-directory slot as damage instead of a raw OS error", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "slot-file", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["slot-file"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const fileSlotId = "run-group-slot-file";
+    const fileSlotPath = join(projectRoot, ".ai-qa", "run-groups", fileSlotId);
+    await writeFile(fileSlotPath, "not a directory");
+    const linkSlotId = "run-group-slot-link";
+    const linkSlotPath = join(projectRoot, ".ai-qa", "run-groups", linkSlotId);
+    await symlink(
+      join(projectRoot, ".ai-qa", "run-groups", started.manifest.id),
+      linkSlotPath,
+    );
+
+    for (const [slotId, slotPath] of [
+      [fileSlotId, fileSlotPath],
+      [linkSlotId, linkSlotPath],
+    ] as const) {
+      const manifest = structuredClone(started.manifest);
+      manifest.id = slotId;
+      for (const member of manifest.members) {
+        member.workOrder.runGroupId = slotId;
+      }
+      const damaged = {
+        code: "run_group.integrity_error",
+        details: { runGroupId: slotId, path: slotPath },
+      };
+      await expect(
+        new RunGroupRepository(projectRoot, now).create(manifest),
+      ).rejects.toMatchObject(damaged);
+      await expect(
+        readGroupManifest(new RunGroupRepository(projectRoot, now), slotId),
+      ).rejects.toMatchObject(damaged);
+    }
+  });
+
   it("does not remove a replacement for failed group staging creation", async () => {
     const { projectRoot, cases } = await fixture(["web"]);
     await createActiveCase({

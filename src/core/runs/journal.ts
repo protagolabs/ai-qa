@@ -17,7 +17,7 @@ import {
   withProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
-import { isErrnoCode, isNodeError } from "../node-errors.js";
+import { isEnvironmentalErrnoCode, isNodeError } from "../node-errors.js";
 import { resolveRunPaths } from "./paths.js";
 import {
   runEventSchema,
@@ -324,6 +324,5 @@ function isMissingStoragePath(error: unknown): boolean {
 }
 
 function isFilesystemOperationFailure(error: unknown): boolean {
-  const code = errorCauseCode(error);
-  return code !== "ENOENT" && isErrnoCode(code);
+  return isEnvironmentalErrnoCode(errorCauseCode(error));
 }
