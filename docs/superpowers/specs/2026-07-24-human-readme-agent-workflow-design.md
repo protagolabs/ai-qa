@@ -44,10 +44,11 @@ Agent Workflow 負責：
 2. 系統需求。
 3. 安裝 CLI 與 Agent Skill。
 4. Quick start：在目標專案請 Agent 設定並執行第一個 QA 工作。
-5. Prompting AI QA：
+5. Project setup：以人類可見的六個階段說明初次設定流程。
+6. Prompting AI QA：
    - 一個 prompt 應包含的平台、目標、前置條件、驗收條件、測試資料與結果保存需求。
    - 說明不需要手動撰寫 work order、action、evidence 或 verdict 指令。
-6. Prompt cookbook：
+7. Prompt cookbook：
    - 設定專案。
    - 探索式 QA。
    - 修復前 Bug 重現。
@@ -55,12 +56,25 @@ Agent Workflow 負責：
    - 審查後啟用 regression case。
    - 單平台 regression replay。
    - 多平台 regression replay。
-7. Agent 操作指南：介紹 `docs/agent-workflow.md` 的受眾與用途並提供連結。
-8. 專案資料與權限邊界。
-9. 清除專案資料。
-10. 開發與 live acceptance。
+8. Agent 操作指南：介紹 `docs/agent-workflow.md` 的受眾與用途並提供連結。
+9. 專案資料與權限邊界。
+10. 清除專案資料。
+11. 開發與 live acceptance。
 
 既有 Usage 中的 schema YAML、doctor platform payload、two-phase action、fresh evidence、receipt 指令與 RunGroup manifest 細節移至 Agent Workflow 或改為連結，不在 README 重複。
+
+## 人類可見的專案設定流程
+
+三語 README 在 Quick start 之後新增獨立的 Project setup 對等章節。它不要求人類操作 CLI，而是說明設定期間會看到的六個階段：
+
+1. Agent 解析確切的目標專案並執行 doctor；缺少設定時，QA 保持阻擋。
+2. 人類選擇一組非空的已部署平台；不設定實體 iOS 或 Android 裝置。
+3. 人類明確選擇 `local-only` 或 `project-skill` recording mode，兩者都沒有預設值。
+4. Agent 收集每個平台的 target 與 controller 設定，並確認 config 不包含 literal secret。
+5. Agent 同時草擬與驗證 `.ai-qa/config.yaml` 及 `.agents/skills/ai-qa-project/SKILL.md`。新檔顯示完整內容；既有檔顯示完整 diff。人類只確認一次，取消則兩個檔案都不寫入。
+6. 確認後，Agent 一次寫入兩個檔案並對所有已設定平台執行 doctor。所有本次要求的平台 ready 後才開始 QA。
+
+README 說明上述使用者可見行為，但不展示 schema YAML、validator payload、symlink 檢查細節或 controller readiness JSON；這些仍由 Agent Workflow 與正式 Skill 管理。
 
 ## 人類 Prompt 模型
 
@@ -117,6 +131,7 @@ README 只解釋修復前後必須使用不同 run，以及只有有效的 pass 
 ## 一致性與驗證
 
 - 三份 README 的 H2／H3 順序、prompt blockquote 數量與 fenced code block 數量一致。
+- 三份 README 都包含獨立的 Project setup 對等章節及六個設定階段。
 - 三份 README 都介紹並連結 `docs/agent-workflow.md`。
 - Prompt cookbook 涵蓋設定、探索、Bug before/after、case activation、單平台 regression 與多平台 regression。
 - `docs/agent-workflow.md` 涵蓋設計指定的十一個章節，並明確標示正式 source of truth。
