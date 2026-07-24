@@ -36,236 +36,66 @@ Package installation never silently overwrites Agent instructions. If managed Sk
 
 ## Quick start
 
-### 1. Check the target project
+Run AI QA from the exact project you want to test. Humans normally describe the work to an Agent; the Agent uses the installed Skill, platform controller, and CLI.
 
-Run doctor from the exact project you want to test. `--project` is also available when you do not want to change directories.
+First ask the Agent to configure the project:
 
-```bash
-cd /path/to/your/project
-ai-qa doctor --json
-```
+> Configure AI QA for this project. The deployed platforms are Web and iOS Simulator. Keep reports local. Show me the complete proposed files before writing anything.
 
-On first use, doctor returns a blocking `configure-project` action because the project does not yet have `.ai-qa/config.yaml`.
+After configuration and readiness checks pass, ask for QA:
 
-### 2. Ask your Agent to configure AI QA
+> On Web, explore sign-in. Start from the sign-in page with a valid test account. A successful sign-in must open the dashboard without an error. Keep the report local and show me the verdict with its evidence.
 
-With the AI QA Skill installed, ask your Agent to configure the current project. For example:
+The Agent handles readiness, controller actions, evidence, verdicts, and report generation.
 
-> Configure AI QA for this project for Web and iOS Simulator. Keep reports local only.
+## How to prompt AI QA
 
-The Agent collects the deployed platform settings and an explicit recording policy. Before writing anything, it validates and shows the complete proposed `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md`. One confirmation applies both files; cancellation writes neither file.
+A useful request states:
 
-### 3. Ask your Agent to run QA
+- **Platform:** which configured Web, iOS Simulator, or Android Emulator targets to run now.
+- **Goal:** the user behavior or product result to verify.
+- **Preconditions:** starting screen, login state, feature flags, or required data.
+- **Acceptance criteria:** observable results that determine success or failure.
+- **Test data:** account or data requirements, using secret references instead of literal credentials.
+- **Result handling:** keep verified reports local or use an already approved project recording procedure.
 
-Choose a non-empty subset of the configured platforms for each request. For example:
+You do not need to provide work-order JSON, action IDs, evidence IDs, verdict payloads, or case revisions. Describe the outcome; the Agent manages the protocol.
 
-> Run exploratory QA on Web for sign-in. A valid user should reach the dashboard without an error.
-
-Or replay reviewed regression coverage:
-
-> Run the active sign-in regression cases on Web and iOS Simulator.
-
-The Agent invokes the platform controllers. The CLI does not click, type, launch apps, or capture screenshots itself; it records the Agent's planned and completed controller calls and validates the evidence chain.
-
-### 4. Generate a report
-
-The Agent normally generates and verifies the report at the end of a run. You can also regenerate and export it by ID:
-
-```bash
-ai-qa report generate <run-id>
-ai-qa report export <run-id> --adapter project-local
-```
-
-Verified run reports are stored under `.ai-qa/reports/runs/`. RunGroup reports are stored under `.ai-qa/reports/groups/`.
-
-## Usage
-
-Most users should describe the QA goal and acceptance criteria to an Agent with the AI QA Skill installed. The lower-level commands below document the workflow that the host Agent records through the CLI.
+## Prompt cookbook
 
 ### Configure a project
 
-Start with `ai-qa doctor --json`. A missing config is a blocking first-use gate. Setup must:
+> Configure AI QA for this project. Web is deployed at `https://example.test`, and reports should stay local. Inspect the project, show the complete configuration and project Skill proposal, and wait for my confirmation before writing.
 
-1. Select a non-empty set of deployed platforms.
-2. Collect every selected platform's target and controller configuration.
-3. Select `recordingPolicy.mode` explicitly; neither `local-only` nor `project-skill` is a default.
-4. Draft and validate schema-3 config and a project-owned Agent Skill.
-5. Display the complete proposed content or diff and obtain one confirmation.
-6. Write both files once and doctor every configured platform.
+### Explore a feature
 
-`targets` and `tools` must contain identical platform keys. The following are partial schema fragments, not complete project configs:
+> On iOS Simulator, explore password reset. Start from the sign-in screen with a test account that can receive a reset link. The user must be able to request a reset and reach the confirmation state without an error. Capture evidence and return the verified report.
 
-```yaml
-schemaVersion: 3
-targets:
-  web:
-    entryUrl: https://example.test
-    readinessUrl: https://example.test/health
-tools:
-  web:
-    controller: chrome-devtools-mcp
-```
+### Reproduce a bug before the fix
 
-```yaml
-schemaVersion: 3
-targets:
-  ios-simulator:
-    bundleId: com.example.app
-    simulator:
-      selection: device-name
-      deviceName: iPhone 17 Pro
-tools:
-  ios-simulator:
-    controller: pepper
-```
+> On Web, reproduce BUG-123 before the fix. Start on the sign-in page with a valid test account. Submitting valid credentials should open the dashboard, but the reported behavior stays on the sign-in page. Preserve an evidence-backed fail baseline and show me the report.
 
-```yaml
-schemaVersion: 3
-targets:
-  android-emulator:
-    appPackage: com.example.app
-    appActivity: .MainActivity
-    emulator:
-      selection: avd-name
-      avdName: Pixel_10_API_36
-tools:
-  android-emulator:
-    controller: appium
-    automationName: uiautomator2
-    endpoint: http://127.0.0.1:4723
-```
+### Verify a deployed bug fix
 
-A complete config also includes `project`, `environments`, `evidencePolicy`, `reportPolicy`, `recordingPolicy`, `storagePolicy`, `gitPolicy`, `ciPolicy`, and `secretReferences`. Config can name environment variables that contain secrets, but must never contain literal credentials.
+> BUG-123 is fixed and deployed. On Web, start a new run with the same preconditions and acceptance criteria. Verify that valid sign-in opens the dashboard without an error. Keep this result separate from the pre-fix run and show me the new report.
 
-### Check platform readiness
+### Create a regression case
 
-The host first uses the platform controller to inspect readiness, then supplies those recorded observations to doctor:
+> I reviewed the passing BUG-123 result. Prepare it as regression case `bug-123-sign-in`, show me the proposed case, and activate it only after I confirm.
 
-```bash
-ai-qa doctor --platform web --json --stdin-json
-ai-qa doctor --platform ios-simulator --json --stdin-json
-ai-qa doctor --platform android-emulator --json --stdin-json
-```
+### Replay regression on one platform
 
-Configuration defines which platforms are available. Each QA request separately selects which configured platform subset to execute.
+> On Web, replay the active `bug-123-sign-in` regression case and return the verified report.
 
-### Run exploratory QA
+### Replay regression on multiple platforms
 
-Start one platform-owned run for each selected platform:
+> On Web and iOS Simulator, replay all active sign-in regression cases. Report every case/platform result and any coverage gaps.
 
-```bash
-ai-qa run start --kind exploratory --platform ios-simulator --execution local --stdin-json
-```
+Bug verification uses separate before-fix and after-fix runs. The failed run remains the reproduction record; only an evidence-valid passing run can be activated as a regression case.
 
-Before every controller interaction, observation, and screenshot, record `ai-qa action plan`; afterward, record exactly one terminal result with `ai-qa action complete`. After an interaction, the same step must contain a fresh observation and newly registered evidence from the configured controller before an assertion can be satisfied.
+## Agent workflow guide
 
-Set an evidence-linked verdict, finish the run, then generate and verify its report. Multi-platform exploratory QA uses independent runs, not a RunGroup.
-
-### Verify a bug fix
-
-There is no separate `bug start` command. Bug-fix QA uses two independent exploratory runs so the before-fix failure and after-fix result remain auditable. The example below uses Web; select iOS Simulator or Android Emulator instead when that configured platform is in scope.
-
-Before changing the application, ask the Agent to reproduce the bug and preserve an evidence-backed baseline:
-
-> On Web, start pre-fix QA for BUG-123. The precondition is an open sign-in page with a valid account. Reproduce the issue by submitting valid credentials. The expected result is navigation to the dashboard without an error; the actual result is that the sign-in page remains visible. Run exploratory QA, capture fresh post-action observation and screenshot evidence, record a fail verdict, and generate the report.
-
-After the fix is deployed, start a new exploratory run with the same acceptance criteria:
-
-> BUG-123 is fixed and deployed. On Web, start a new exploratory run with the same acceptance criteria and verify that valid sign-in reaches the dashboard without an error. Capture fresh post-action evidence and generate the report. If the run passes, prepare it for promotion to regression case `bug-123-sign-in`, but do not activate it until I review it.
-
-Do not revise the failed run to represent the fix. Keep the failed and passing runs separate, then review the passing run and promote only that evidence-valid run:
-
-```bash
-ai-qa case draft --from-run <passing-run-id> --stdin-json
-ai-qa case validate bug-123-sign-in --revision <revision>
-ai-qa case activate bug-123-sign-in --revision <revision> --stdin-json
-```
-
-The failed run remains the reproduction record. After explicit review and activation, replay the pinned regression case:
-
-```bash
-ai-qa run start --kind regression --case bug-123-sign-in --platform web --execution local --stdin-json
-```
-
-For multi-platform bug verification, run the before-fix and after-fix exploration independently on each selected platform. Use a RunGroup only for later multi-platform regression replay.
-
-### Repair an interrupted run
-
-If a crash leaves orphaned evidence or a torn journal tail, run `ai-qa run repair <run-id>`. The command is idempotent; data it relocates is retained under `.ai-qa/recovery/<run-id>/` and reported in its JSON output.
-
-### Promote an exploratory run to a regression case
-
-After reviewing a complete exploratory run, draft and activate its immutable platform variant:
-
-```bash
-ai-qa case draft --from-run <run-id> --stdin-json
-ai-qa case validate login --revision <revision>
-ai-qa case activate login --revision <revision> --stdin-json
-```
-
-Drafting adds or replaces only the source run's platform variant and retains variants for other platforms.
-
-### Replay regression cases
-
-Run one active case variant on one configured platform:
-
-```bash
-ai-qa run start --kind regression --case login --platform ios-simulator --execution local --stdin-json
-```
-
-The Agent follows the pinned variant steps in order and uses the same fresh post-action evidence requirements as exploratory QA.
-
-### Run multi-platform regression with a RunGroup
-
-RunGroups are for regression only. Select explicit cases or all active cases, and list the exact platform subset:
-
-```bash
-ai-qa run-group start --case login \
-  --platform ios-simulator android-emulator \
-  --execution local --stdin-json
-
-ai-qa run-group start --all-active \
-  --platform web ios-simulator android-emulator \
-  --execution ci --stdin-json
-
-ai-qa run-group finish <group-id>
-```
-
-The manifest freezes case revisions, platform variants, selection, and budgets. A missing selected platform variant becomes a `coverage_gap`, not a child run. The aggregate matrix retains every case/platform cell and does not synthesize a QA verdict.
-
-### Generate reports and record results
-
-Generate, export, and inspect recording status for one run:
-
-```bash
-ai-qa report generate <run-id>
-ai-qa report export <run-id> --adapter project-local
-ai-qa report recording-status <run-id>
-```
-
-For a RunGroup:
-
-```bash
-ai-qa report group-generate <group-id>
-ai-qa report group-export <group-id> --adapter project-local
-ai-qa report group-recording-status <group-id>
-```
-
-With `local-only`, report the verified local paths and stop. With `project-skill`, the host runs the project's frozen recording procedure only after report verification, then submits a neutral receipt with opaque references:
-
-```bash
-printf '%s\n' '{"status":"recorded","references":["docs/qa.md#run"]}' \
-  | ai-qa report receipt <run-id> --stdin-json
-
-printf '%s\n' '{"status":"recorded","references":["docs/qa.md#group"]}' \
-  | ai-qa report group-receipt <group-id> --stdin-json
-```
-
-Receipt status is `recorded`, `not_recorded`, or `unknown`. Never retry an external recording operation whose outcome is `unknown`. Recording never changes run verdicts or aggregate matrix cells.
-
-### Errors
-
-CLI failures are written to stderr as a JSON `error` envelope. It always includes `code` and `message`; `retryable` appears only when true, while `details` and `issues` appear when available.
+Agents implementing these requests should read [AI QA Agent Workflow](docs/agent-workflow.md). It maps human requests to project setup, controller work, CLI lifecycles, evidence, cases, RunGroups, reports, recording, repair, and cleanup. The installed AI QA Agent Skill remains the source of truth.
 
 ## Project data and authority
 

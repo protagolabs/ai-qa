@@ -36,236 +36,66 @@ AI_QA_AGENTS_HOME=/custom/agents/home ai-qa skill check --global
 
 ## 快速開始
 
-### 1. 檢查目標專案
+請在你要測試的確切專案中執行 AI QA。一般情況下，人類只需向代理程式描述工作；代理程式會使用已安裝的 Skill、平台 controller 與 CLI。
 
-在你要測試的確切專案中執行 doctor。若不想切換目錄，也可以使用 `--project`。
+先請代理程式設定專案：
 
-```bash
-cd /path/to/your/project
-ai-qa doctor --json
-```
+> 請為這個專案設定 AI QA。已部署的平台是 Web 與 iOS Simulator。報告只保留在本機。寫入任何內容前，先向我顯示完整的檔案提案。
 
-第一次使用時，doctor 會回傳阻擋流程的 `configure-project` action，因為專案尚未建立 `.ai-qa/config.yaml`。
+設定完成且 readiness 檢查通過後，再要求執行 QA：
 
-### 2. 請代理程式設定 AI QA
+> 請在 Web 探索登入功能。從登入頁開始，並使用有效的測試帳號。成功登入後必須進入儀表板，且不能出現錯誤。報告只保留在本機，並向我顯示 verdict 與其證據。
 
-安裝 AI QA Skill 後，請代理程式設定目前專案。例如：
+代理程式會處理 readiness、controller 操作、evidence、verdict 與報告產生。
 
-> 請為這個專案設定 AI QA，平台使用 Web 與 iOS Simulator，報告只保留在本機。
+## 如何向 AI QA 下指令
 
-代理程式會蒐集已部署平台的設定，並要求明確選擇 recording policy。寫入任何內容前，它會驗證並顯示完整的 `.ai-qa/config.yaml` 與 `.agents/skills/ai-qa-project/SKILL.md` 提案。一次確認會同時套用兩個檔案；取消則完全不寫入。
+一個實用的請求會說明：
 
-### 3. 請代理程式執行 QA
+- **平台：** 本次要執行哪些已設定的 Web、iOS Simulator 或 Android Emulator。
+- **目標：** 想驗證的使用者行為或產品結果。
+- **前置條件：** 起始畫面、登入狀態、功能旗標或必要資料。
+- **驗收條件：** 能夠觀察並判定成功或失敗的結果。
+- **測試資料：** 帳號或資料需求；請引用 secret，而不要提供實際憑證。
+- **結果處理：** 將驗證過的報告保留在本機，或使用已核准的專案記錄流程。
 
-每次請求都要從已設定的平台中選擇非空白的子集。例如：
+你不需要提供 work-order JSON、action ID、evidence ID、verdict payload 或 case revision。描述想要的結果即可，代理程式會管理協定細節。
 
-> 請在 Web 執行登入功能的探索式 QA。有效使用者應該在沒有錯誤的情況下進入儀表板。
-
-也可以重播已審查的迴歸測試範圍：
-
-> 請在 Web 與 iOS Simulator 執行所有已啟用的登入迴歸測試 case。
-
-代理程式會呼叫各平台的 controller。CLI 本身不會點擊、輸入、啟動 App 或擷取畫面；它會記錄代理程式規劃及完成的 controller 呼叫，並驗證 evidence chain。
-
-### 4. 產生報告
-
-代理程式通常會在 run 結束時產生並驗證報告。你也可以使用 ID 重新產生及匯出報告：
-
-```bash
-ai-qa report generate <run-id>
-ai-qa report export <run-id> --adapter project-local
-```
-
-通過驗證的 run report 儲存在 `.ai-qa/reports/runs/`，RunGroup report 則儲存在 `.ai-qa/reports/groups/`。
-
-## 使用方式
-
-一般使用者只需要向已安裝 AI QA Skill 的代理程式描述 QA 目標與驗收條件。以下較底層的指令說明主機端代理程式透過 CLI 記錄的工作流程。
+## Prompt 範例
 
 ### 設定專案
 
-先執行 `ai-qa doctor --json`。缺少 config 是第一次使用時的阻擋條件。設定流程必須：
+> 請為這個專案設定 AI QA。Web 已部署在 `https://example.test`，報告應只保留在本機。請檢查專案、顯示完整的 config 與 project Skill 提案，並在寫入前等待我確認。
 
-1. 選擇一組非空白的已部署平台。
-2. 蒐集每個所選平台的 target 與 controller 設定。
-3. 明確選擇 `recordingPolicy.mode`；`local-only` 與 `project-skill` 都不是預設值。
-4. 草擬並驗證 schema-3 config 與專案所擁有的 Agent Skill。
-5. 顯示完整提案內容或差異，並取得一次確認。
-6. 一次寫入兩個檔案，並對所有已設定平台執行 doctor。
+### 探索功能
 
-`targets` 與 `tools` 必須包含完全相同的平台 key。以下是部分 schema 片段，不是完整的專案 config：
+> 請在 iOS Simulator 探索重設密碼功能。從登入畫面開始，使用能接收重設連結的測試帳號。使用者必須能要求重設密碼並在沒有錯誤的情況下進入確認狀態。請擷取證據並回傳驗證過的報告。
 
-```yaml
-schemaVersion: 3
-targets:
-  web:
-    entryUrl: https://example.test
-    readinessUrl: https://example.test/health
-tools:
-  web:
-    controller: chrome-devtools-mcp
-```
+### 修復前重現 Bug
 
-```yaml
-schemaVersion: 3
-targets:
-  ios-simulator:
-    bundleId: com.example.app
-    simulator:
-      selection: device-name
-      deviceName: iPhone 17 Pro
-tools:
-  ios-simulator:
-    controller: pepper
-```
+> 請在 Web 重現修復前的 BUG-123。從登入頁開始，並使用有效的測試帳號。送出有效帳密後應進入儀表板，但回報的實際行為是仍停留在登入頁。請保留有證據支持的 fail baseline，並向我顯示報告。
 
-```yaml
-schemaVersion: 3
-targets:
-  android-emulator:
-    appPackage: com.example.app
-    appActivity: .MainActivity
-    emulator:
-      selection: avd-name
-      avdName: Pixel_10_API_36
-tools:
-  android-emulator:
-    controller: appium
-    automationName: uiautomator2
-    endpoint: http://127.0.0.1:4723
-```
+### 驗證已部署的 Bug 修復
 
-完整 config 還包含 `project`、`environments`、`evidencePolicy`、`reportPolicy`、`recordingPolicy`、`storagePolicy`、`gitPolicy`、`ciPolicy` 與 `secretReferences`。Config 可以指定存放 secret 的環境變數名稱，但絕不能包含實際憑證。
+> BUG-123 已修復並部署。請在 Web 使用相同的前置條件與驗收條件建立新的 run。驗證有效登入會在沒有錯誤的情況下進入儀表板。請將此結果與修復前的 run 分開保存，並向我顯示新報告。
 
-### 檢查平台就緒狀態
+### 建立迴歸測試 case
 
-主機端先使用平台 controller 檢查 readiness，再將記錄到的 observation 提供給 doctor：
+> 我已審查通過的 BUG-123 結果。請將它準備成 regression case `bug-123-sign-in`，向我顯示 case 提案，並只在我確認後啟用。
 
-```bash
-ai-qa doctor --platform web --json --stdin-json
-ai-qa doctor --platform ios-simulator --json --stdin-json
-ai-qa doctor --platform android-emulator --json --stdin-json
-```
+### 在單一平台重播迴歸測試
 
-設定決定哪些平台可用；每個 QA 請求則另外選擇要執行的已設定平台子集。
+> 請在 Web 重播已啟用的 `bug-123-sign-in` regression case，並回傳驗證過的報告。
 
-### 執行探索式 QA
+### 在多平台重播迴歸測試
 
-為每個所選平台啟動一個該平台專屬的 run：
+> 請在 Web 與 iOS Simulator 重播所有已啟用的登入 regression case。回報每個 case／platform 結果與所有 coverage gap。
 
-```bash
-ai-qa run start --kind exploratory --platform ios-simulator --execution local --stdin-json
-```
+Bug 驗證會分別使用修復前與修復後的 run。失敗的 run 會保留為重現紀錄；只有具有有效證據且通過的 run 能啟用為 regression case。
 
-每次 controller 互動、observation 與截圖前，都要記錄 `ai-qa action plan`；完成後則使用 `ai-qa action complete` 記錄唯一一個終止結果。互動後，同一個 step 必須包含新的 observation，以及由已設定 controller 新註冊的 evidence，才能將 assertion 記為已滿足。
+## Agent 操作指南
 
-設定有 evidence 連結的 verdict、完成 run，再產生並驗證報告。多平台探索式 QA 使用彼此獨立的 run，不使用 RunGroup。
-
-### 驗證 Bug 修復
-
-沒有獨立的 `bug start` 指令。Bug 修復 QA 使用兩個彼此獨立的 exploratory run，讓修復前的失敗與修復後的結果都保有可稽核紀錄。以下使用 Web 作為範例；若測試範圍是已設定的 iOS Simulator 或 Android Emulator，請改選對應平台。
-
-修改應用程式前，請代理程式重現 Bug，並保留有證據支持的基準：
-
-> 請在 Web 啟動 BUG-123 的修復前 QA。前置條件是已開啟登入頁，並備有有效帳號。使用有效帳密送出登入以重現問題。預期結果是進入儀表板且沒有錯誤；實際結果是仍停留在登入頁。請執行探索式 QA、取得操作後的新 observation 與截圖證據、記錄 fail verdict，並產生報告。
-
-修復部署後，使用相同驗收條件啟動新的 exploratory run：
-
-> BUG-123 已修復並部署。請在 Web 使用相同驗收條件啟動新的 exploratory run，驗證有效登入會進入儀表板且沒有錯誤。請取得操作後的新證據並產生報告。如果 run 通過，請準備將它提升為 regression case `bug-123-sign-in`，但先不要啟用，等我審查。
-
-不要修改失敗 run 的 verdict 來表示 Bug 已修好。保留彼此獨立的失敗與通過 run，接著審查通過的 run，並只提升該筆具有有效證據的 run：
-
-```bash
-ai-qa case draft --from-run <passing-run-id> --stdin-json
-ai-qa case validate bug-123-sign-in --revision <revision>
-ai-qa case activate bug-123-sign-in --revision <revision> --stdin-json
-```
-
-失敗的 run 會保留為問題重現紀錄。明確審查並啟用後，即可重播釘選的 regression case：
-
-```bash
-ai-qa run start --kind regression --case bug-123-sign-in --platform web --execution local --stdin-json
-```
-
-多平台 Bug 驗證應在每個所選平台分別執行修復前與修復後的探索。只有後續的多平台迴歸重播才使用 RunGroup。
-
-### 修復中斷的 run
-
-若 crash 留下孤立的 evidence 或損毀的 journal tail，請執行 `ai-qa run repair <run-id>`。此指令具冪等性；它搬移的資料會保留在 `.ai-qa/recovery/<run-id>/`，並列在其 JSON 輸出中。
-
-### 將探索式 run 提升為迴歸測試 case
-
-審查完整的探索式 run 後，建立並啟用其不可變的平台 variant：
-
-```bash
-ai-qa case draft --from-run <run-id> --stdin-json
-ai-qa case validate login --revision <revision>
-ai-qa case activate login --revision <revision> --stdin-json
-```
-
-Draft 只會新增或取代來源 run 的平台 variant，並保留其他平台的 variant。
-
-### 重播迴歸測試 case
-
-在一個已設定的平台執行一個已啟用的 case variant：
-
-```bash
-ai-qa run start --kind regression --case login --platform ios-simulator --execution local --stdin-json
-```
-
-代理程式會依序執行釘選 variant 的 step，並遵守與探索式 QA 相同的互動後新鮮 evidence 要求。
-
-### 使用 RunGroup 執行多平台迴歸測試
-
-執行群組（RunGroup）只用於迴歸測試。選擇明確的 case 或所有已啟用 case，並列出確切的平台子集：
-
-```bash
-ai-qa run-group start --case login \
-  --platform ios-simulator android-emulator \
-  --execution local --stdin-json
-
-ai-qa run-group start --all-active \
-  --platform web ios-simulator android-emulator \
-  --execution ci --stdin-json
-
-ai-qa run-group finish <group-id>
-```
-
-Manifest 會凍結 case revision、platform variant、selection 與 budget。所選平台缺少 variant 時會成為 `coverage_gap`，而不是 child run。彙總 matrix 會保留每個 case/platform cell，且不會合成 QA verdict。
-
-### 產生報告並記錄結果
-
-針對單一 run 產生、匯出報告，並檢查 recording status：
-
-```bash
-ai-qa report generate <run-id>
-ai-qa report export <run-id> --adapter project-local
-ai-qa report recording-status <run-id>
-```
-
-針對 RunGroup：
-
-```bash
-ai-qa report group-generate <group-id>
-ai-qa report group-export <group-id> --adapter project-local
-ai-qa report group-recording-status <group-id>
-```
-
-使用 `local-only` 時，回報通過驗證的本機路徑後即停止。使用 `project-skill` 時，主機端只有在報告驗證完成後，才會執行專案凍結的 recording procedure，接著提交包含 opaque reference 的中性 receipt：
-
-```bash
-printf '%s\n' '{"status":"recorded","references":["docs/qa.md#run"]}' \
-  | ai-qa report receipt <run-id> --stdin-json
-
-printf '%s\n' '{"status":"recorded","references":["docs/qa.md#group"]}' \
-  | ai-qa report group-receipt <group-id> --stdin-json
-```
-
-Receipt status 可以是 `recorded`、`not_recorded` 或 `unknown`。外部記錄操作結果為 `unknown` 時，絕不能重試。Recording 不會變更 run verdict 或彙總 matrix cell。
-
-### 錯誤
-
-CLI 失敗會以 JSON `error` envelope 寫入 stderr。它一律包含 `code` 與 `message`；`retryable` 僅在值為 true 時出現，`details` 與 `issues` 則在有內容時出現。
+負責執行上述請求的 Agent 應閱讀 [AI QA Agent Workflow](docs/agent-workflow.md)。該文件會將人類請求對應至專案設定、controller 操作、CLI lifecycle、evidence、case、RunGroup、report、recording、repair 與 cleanup。已安裝的 AI QA Agent Skill 仍是正式規則來源。
 
 ## 專案資料與權限邊界
 
