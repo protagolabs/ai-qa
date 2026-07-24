@@ -164,7 +164,7 @@ describe("project-local storage", () => {
         details: {
           cause: {
             code: "EACCES",
-            message: "injected unreadable root",
+            message: "The filesystem reported EACCES",
           },
         },
       });
@@ -611,9 +611,12 @@ describe("project-local storage", () => {
     expect(firstError.details).toMatchObject({
       cause: {
         code: "EIO",
-        message: "injected post-claim failure",
+        message: "The filesystem reported EIO",
       },
     });
+    expect(JSON.stringify(firstError.details)).not.toContain(
+      "injected post-claim failure",
+    );
     const recoveryPath = firstError.details.recoveryPath;
     expect(recoveryPath).toMatch(/^\.ai-qa-removal-claim-.+\/entry$/u);
     if (typeof recoveryPath !== "string") {

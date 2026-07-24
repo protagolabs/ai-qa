@@ -1,3 +1,5 @@
+import { isErrnoCode } from "./node-errors.js";
+
 export interface ErrorIssue {
   readonly path: readonly (string | number)[];
   readonly code: string;
@@ -20,6 +22,54 @@ function isErrorCause(value: unknown): value is ErrorCause {
   );
 }
 
+interface FilesystemErrorOrigin {
+  readonly code: string;
+  readonly syscall?: string;
+}
+
+interface CodedErrorOrigin extends FilesystemErrorOrigin {
+  readonly message: string;
+}
+
+function extractCodedErrorOrigin(error: unknown): CodedErrorOrigin | undefined {
+  if (
+    !(error instanceof Error) ||
+    !("code" in error) ||
+    typeof (error as NodeJS.ErrnoException).code !== "string"
+  ) {
+    return undefined;
+  }
+
+  const filesystemError = error as NodeJS.ErrnoException & { code: string };
+  return {
+    code: filesystemError.code,
+    message: filesystemError.message,
+    ...(typeof filesystemError.syscall === "string"
+      ? { syscall: filesystemError.syscall }
+      : {}),
+  };
+}
+
+function extractFilesystemErrorOrigin(
+  error: unknown,
+): CodedErrorOrigin | undefined {
+  const origin = extractCodedErrorOrigin(error);
+  return origin !== undefined && isErrnoCode(origin.code) ? origin : undefined;
+}
+
+function toFilesystemErrorCause({
+  code,
+  syscall,
+}: FilesystemErrorOrigin): ErrorCause {
+  return {
+    code,
+    message:
+      syscall === undefined
+        ? `The filesystem reported ${code}`
+        : `The filesystem reported ${code} during ${syscall}`,
+  };
+}
+
 export function extractErrorCause(error: unknown): ErrorCause | undefined {
   if (error instanceof AiQaError) {
     const cause = error.details.cause;
@@ -27,18 +77,11 @@ export function extractErrorCause(error: unknown): ErrorCause | undefined {
       ? { code: cause.code, message: cause.message }
       : undefined;
   }
-  if (
-    error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-  ) {
-    const code = (error as NodeJS.ErrnoException & { code: string }).code;
-    return {
-      code,
-      message: error.message,
-    };
-  }
-  return undefined;
+  const codedError = extractCodedErrorOrigin(error);
+  if (codedError === undefined) return undefined;
+  return isErrnoCode(codedError.code)
+    ? toFilesystemErrorCause(codedError)
+    : { code: codedError.code, message: codedError.message };
 }
 
 export function errorCauseCode(error: unknown): string | undefined {
@@ -70,15 +113,11 @@ export function toErrorCause(error: unknown): ErrorCause {
   if (error instanceof AiQaError) {
     return { code: error.code, message: error.message };
   }
-  if (
-    error instanceof Error &&
-    "code" in error &&
-    typeof (error as NodeJS.ErrnoException).code === "string"
-  ) {
-    return {
-      code: (error as NodeJS.ErrnoException).code as string,
-      message: error.message,
-    };
+  const codedError = extractCodedErrorOrigin(error);
+  if (codedError !== undefined) {
+    return isErrnoCode(codedError.code)
+      ? toFilesystemErrorCause(codedError)
+      : { code: codedError.code, message: codedError.message };
   }
   if (error instanceof SyntaxError) {
     return { code: "json.parse_error", message: error.message };
@@ -96,23 +135,15 @@ export function toErrorCause(error: unknown): ErrorCause {
  */
 export function toFilesystemOperationFailure(error: unknown): AiQaError {
   const code = errorCauseCode(error) ?? toErrorCause(error).code;
-  const syscall =
-    error instanceof Error &&
-    "syscall" in error &&
-    typeof (error as NodeJS.ErrnoException).syscall === "string"
-      ? (error as NodeJS.ErrnoException).syscall
-      : undefined;
+  const syscall = extractFilesystemErrorOrigin(error)?.syscall;
   return new AiQaError(
     "filesystem.operation_failed",
     "A filesystem operation failed",
     {
-      cause: {
+      cause: toFilesystemErrorCause({
         code,
-        message:
-          syscall === undefined
-            ? `The filesystem reported ${code}`
-            : `The filesystem reported ${code} during ${syscall}`,
-      },
+        ...(syscall === undefined ? {} : { syscall }),
+      }),
       ...(syscall === undefined ? {} : { syscall }),
     },
   );

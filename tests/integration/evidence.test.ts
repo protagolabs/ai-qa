@@ -584,9 +584,15 @@ describe("EvidenceRepository", () => {
       code: "evidence.integrity_error",
       details: {
         runId: "run-1",
-        cause: { code: "ENOTDIR" },
+        cause: {
+          code: "ENOTDIR",
+          message: "The filesystem reported ENOTDIR during lstat",
+        },
       },
     });
+    expect(JSON.stringify((error as AiQaError).details)).not.toContain(
+      projectRoot,
+    );
   });
 
   it("attaches the parse cause when the index is corrupted", async () => {

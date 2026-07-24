@@ -1,5 +1,67 @@
 import { describe, expect, it } from "vitest";
-import { AiQaError, normalizeUnknownError } from "../../src/core/errors.js";
+import {
+  AiQaError,
+  extractErrorCause,
+  normalizeUnknownError,
+  toErrorCause,
+} from "../../src/core/errors.js";
+
+describe("toErrorCause", () => {
+  it.each([
+    {
+      code: "EACCES",
+      syscall: "open",
+      expectedMessage: "The filesystem reported EACCES during open",
+    },
+    {
+      code: "ENOTDIR",
+      syscall: "lstat",
+      expectedMessage: "The filesystem reported ENOTDIR during lstat",
+    },
+  ])(
+    "sanitizes a $code filesystem cause",
+    ({ code, syscall, expectedMessage }) => {
+      const error = Object.assign(
+        new Error(
+          `${code}: operation failed, ${syscall} '/private/project/index.jsonl'`,
+        ),
+        {
+          code,
+          syscall,
+          path: "/private/project/index.jsonl",
+        },
+      );
+
+      const cause = toErrorCause(error);
+
+      expect(cause).toEqual({ code, message: expectedMessage });
+      expect(JSON.stringify(cause)).not.toContain("/private/project");
+    },
+  );
+
+  it("preserves syntax error diagnostics", () => {
+    expect(
+      toErrorCause(new SyntaxError("Unexpected token at position 3")),
+    ).toEqual({
+      code: "json.parse_error",
+      message: "Unexpected token at position 3",
+    });
+  });
+
+  it("preserves non-errno coded error diagnostics", () => {
+    const error = Object.assign(
+      new TypeError("The encoded data was not valid for encoding utf-8"),
+      { code: "ERR_ENCODING_INVALID_ENCODED_DATA" },
+    );
+    const expected = {
+      code: "ERR_ENCODING_INVALID_ENCODED_DATA",
+      message: "The encoded data was not valid for encoding utf-8",
+    };
+
+    expect(extractErrorCause(error)).toEqual(expected);
+    expect(toErrorCause(error)).toEqual(expected);
+  });
+});
 
 describe("normalizeUnknownError", () => {
   it("preserves an existing AiQaError", () => {

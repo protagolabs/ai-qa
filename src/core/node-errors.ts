@@ -10,6 +10,10 @@ export function isNodeError(error: unknown, code: string): boolean {
 // error codes (ERR_*), which carry underscores.
 const errnoCodePattern = /^E[A-Z0-9]{2,}$/;
 
+export function isErrnoCode(code: string | undefined): code is string {
+  return code !== undefined && errnoCodePattern.test(code);
+}
+
 // These errnos describe the shape of a path — a component that is not the
 // directory or file it must be — which for project-local storage is damage,
 // not an environmental condition. ENOENT is excluded because callers give
@@ -19,11 +23,7 @@ const shapeErrnoCodes = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ELOOP"]);
 export function isEnvironmentalErrnoCode(
   code: string | undefined,
 ): code is string {
-  return (
-    code !== undefined &&
-    errnoCodePattern.test(code) &&
-    !shapeErrnoCodes.has(code)
-  );
+  return isErrnoCode(code) && !shapeErrnoCodes.has(code);
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
