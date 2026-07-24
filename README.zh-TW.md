@@ -48,6 +48,19 @@ AI_QA_AGENTS_HOME=/custom/agents/home ai-qa skill check --global
 
 代理程式會處理 readiness、controller 操作、evidence、verdict 與報告產生。
 
+## 專案設定流程
+
+第一次使用時，在代理程式與你完成以下設定前，QA 會保持阻擋：
+
+1. **檢查專案：** 代理程式解析確切的專案根目錄並執行 doctor。
+2. **選擇已部署平台：** 至少選擇一個已部署的 Web、iOS Simulator 或 Android Emulator；不支援實體裝置。
+3. **選擇結果處理方式：** 明確選擇 `local-only` 或 `project-skill`，兩種模式都不會預先選定。
+4. **收集安全的設定：** 代理程式蒐集每個所選平台的 target 與 controller 設定，並確保 config 不包含實際 secret。
+5. **審查兩份提案：** 代理程式同時驗證 `.ai-qa/config.yaml` 與 `.agents/skills/ai-qa-project/SKILL.md`，接著顯示新檔的完整內容或既有檔案的完整 diff。一次確認會涵蓋兩個檔案；取消則兩個檔案都不寫入。
+6. **驗證 readiness：** 確認後，代理程式只寫入兩個檔案一次，並對所有已設定平台執行 doctor。所有本次要求的平台 ready 後才開始 QA。
+
+代理程式會處理 schema validation、路徑與 symlink 檢查、目錄建立，以及 controller-specific readiness 細節。
+
 ## 如何向 AI QA 下指令
 
 一個實用的請求會說明：

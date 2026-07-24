@@ -48,6 +48,19 @@ After configuration and readiness checks pass, ask for QA:
 
 The Agent handles readiness, controller actions, evidence, verdicts, and report generation.
 
+## Project setup
+
+On first use, QA remains blocked until the Agent completes this setup with you:
+
+1. **Check the project:** the Agent resolves the exact project root and runs doctor.
+2. **Select deployed platforms:** choose at least one deployed Web, iOS Simulator, or Android Emulator target. Real devices are not supported.
+3. **Choose result handling:** explicitly select `local-only` or `project-skill`; neither mode is selected by default.
+4. **Collect safe configuration:** the Agent gathers the target and controller settings for every selected platform and keeps literal secrets out of config.
+5. **Review both proposals:** the Agent validates `.ai-qa/config.yaml` and `.agents/skills/ai-qa-project/SKILL.md` together, then shows complete new-file content or complete existing-file diffs. One confirmation covers both files; cancellation writes neither.
+6. **Verify readiness:** after confirmation, the Agent writes both files once and runs doctor for every configured platform. QA starts only after every requested platform is ready.
+
+The Agent handles schema validation, path and symlink checks, directory creation, and controller-specific readiness details.
+
 ## How to prompt AI QA
 
 A useful request states:
