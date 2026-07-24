@@ -97,13 +97,18 @@ export function normalizeUnknownError(error: unknown): AiQaError {
     typeof (error as NodeJS.ErrnoException).code === "string"
   ) {
     const nodeError = error as NodeJS.ErrnoException;
+    // The origin message is summarized from code and syscall only; the raw
+    // message may embed project paths and must not reach the error contract.
     return new AiQaError(
       "filesystem.operation_failed",
       "A filesystem operation failed",
       {
         cause: {
           code: nodeError.code,
-          message: "A filesystem operation failed",
+          message:
+            nodeError.syscall === undefined
+              ? `The filesystem reported ${nodeError.code}`
+              : `The filesystem reported ${nodeError.code} during ${nodeError.syscall}`,
         },
         ...(nodeError.syscall === undefined
           ? {}

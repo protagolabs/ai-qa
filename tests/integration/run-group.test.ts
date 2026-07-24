@@ -244,7 +244,51 @@ describe("immutable run groups", () => {
         new RunGroupRepository(projectRoot, now),
         crashedGroupId,
       ),
-    ).rejects.toMatchObject({ code: "run_group.not_found" });
+    ).rejects.toMatchObject({
+      code: "run_group.integrity_error",
+      details: { runGroupId: crashedGroupId, path: crashedDirectory },
+    });
+  });
+
+  it("reports a damaged directory consistently from create and reads", async () => {
+    const { projectRoot, cases } = await fixture(["web"]);
+    await createActiveCase({ cases, caseId: "damaged", platforms: ["web"] });
+    const started = await startRunGroup({
+      projectRoot,
+      selection: { mode: "explicit", caseIds: ["damaged"] },
+      platforms: ["web"],
+      execution: "local",
+      readiness: readinessByPlatform(["web"]),
+      now,
+    });
+    const damagedGroupId = "run-group-legacy-damage";
+    const damagedDirectory = join(
+      projectRoot,
+      ".ai-qa",
+      "run-groups",
+      damagedGroupId,
+    );
+    await mkdir(damagedDirectory, { recursive: true });
+    await writeFile(join(damagedDirectory, "group.json"), "{}");
+    const manifest = structuredClone(started.manifest);
+    manifest.id = damagedGroupId;
+    for (const member of manifest.members) {
+      member.workOrder.runGroupId = damagedGroupId;
+    }
+
+    const damaged = {
+      code: "run_group.integrity_error",
+      details: { runGroupId: damagedGroupId, path: damagedDirectory },
+    };
+    await expect(
+      new RunGroupRepository(projectRoot, now).create(manifest),
+    ).rejects.toMatchObject(damaged);
+    await expect(
+      readGroupManifest(
+        new RunGroupRepository(projectRoot, now),
+        damagedGroupId,
+      ),
+    ).rejects.toMatchObject(damaged);
   });
 
   it("does not remove a replacement for failed group staging creation", async () => {

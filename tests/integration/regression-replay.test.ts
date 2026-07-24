@@ -15,6 +15,7 @@ import type { PlatformReadiness } from "../../src/core/readiness/schema.js";
 import { RunRepository } from "../../src/core/runs/repository.js";
 import { createPreflightResultRun } from "../../src/services/run-protocol/create-preflight-result-run.js";
 import { finalizeRun } from "../../src/services/run-protocol/finalize-run.js";
+import { cancelRun } from "../../src/services/run-protocol/run-lifecycle.js";
 import { validatePinnedRegressionCase } from "../../src/services/run-protocol/pinned-case.js";
 import { registerEvidence } from "../../src/services/run-protocol/register-evidence.js";
 import { RunProtocolService } from "../helpers/run-protocol-service.js";
@@ -1582,5 +1583,83 @@ describe("pinned regression replay", () => {
         captured.context,
       ),
     ).toBe(0);
+  });
+});
+
+describe("single-run CI exit codes end-to-end", () => {
+  const notReady = {
+    ...ready,
+    status: "not_ready" as const,
+    checks: ready.checks.map((check) =>
+      check.code === "web.chrome_devtools_mcp"
+        ? { ...check, status: "fail" as const, message: "MCP missing" }
+        : check,
+    ),
+  };
+
+  it("exits non-zero for a real blocked CI run and zero for the local twin", async () => {
+    const fixture = await createActiveCase();
+    const ciResult = await createPreflightResultRun({
+      projectRoot: fixture.projectRoot,
+      kind: "regression",
+      caseId: "login-success",
+      execution: "ci",
+      readiness: notReady,
+      now,
+    });
+
+    const generated = createCapturedCli({ cwd: fixture.projectRoot });
+    expect(
+      await runCli(["report", "generate", ciResult.runId], generated.context),
+    ).toBe(1);
+    const paths: unknown = JSON.parse(generated.stdout.join(""));
+    expect(paths).toMatchObject({
+      jsonPath: `.ai-qa/reports/runs/${ciResult.runId}/report.json`,
+      markdownPath: `.ai-qa/reports/runs/${ciResult.runId}/report.md`,
+    });
+
+    const exported = createCapturedCli({ cwd: fixture.projectRoot });
+    expect(
+      await runCli(
+        ["report", "export", ciResult.runId, "--adapter", "project-local"],
+        exported.context,
+      ),
+    ).toBe(1);
+
+    const localResult = await createPreflightResultRun({
+      projectRoot: fixture.projectRoot,
+      kind: "regression",
+      caseId: "login-success",
+      execution: "local",
+      readiness: notReady,
+      now,
+    });
+    const local = createCapturedCli({ cwd: fixture.projectRoot });
+    expect(
+      await runCli(["report", "generate", localResult.runId], local.context),
+    ).toBe(0);
+  });
+
+  it("exits non-zero for a really cancelled CI run", async () => {
+    const fixture = await createActiveCase();
+    const workOrder = await startRegressionRun({
+      projectRoot: fixture.projectRoot,
+      caseId: "login-success",
+      platform: "web",
+      execution: "ci",
+      readiness: ready,
+      now: () => startedAt,
+    });
+    await cancelRun({
+      projectRoot: fixture.projectRoot,
+      runId: workOrder.runId,
+      reason: "CI aborted the replay",
+      now,
+    });
+
+    const generated = createCapturedCli({ cwd: fixture.projectRoot });
+    expect(
+      await runCli(["report", "generate", workOrder.runId], generated.context),
+    ).toBe(1);
   });
 });

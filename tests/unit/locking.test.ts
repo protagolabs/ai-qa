@@ -73,6 +73,16 @@ describe("withLock", () => {
     expect((error as AiQaError).retryable).toBe(false);
   }, 30_000);
 
+  it("propagates the callback failure when release also fails without compromise", async () => {
+    const callbackError = new Error("callback failed before release");
+    const error = await withLock(target, "cold", async () => {
+      await rm(`${target}.lock`, { recursive: true, force: true });
+      throw callbackError;
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBe(callbackError);
+  });
+
   it("blocks a write after compromise is observed", async () => {
     const original = await readFile(target);
     const error = await withLock(target, "hot", async (signal) => {

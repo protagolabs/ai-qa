@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -16,6 +17,7 @@ import lockfile from "proper-lockfile";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram, runCli } from "../../src/cli/program.js";
 import { sha256Canonical } from "../../src/core/canonical-json.js";
+import { AiQaError } from "../../src/core/errors.js";
 import {
   EvidenceRepository,
   registerRawEvidenceInputSchema,
@@ -508,6 +510,78 @@ describe("EvidenceRepository", () => {
         actualHash: `sha256:${createHash("sha256")
           .update("tampered")
           .digest("hex")}`,
+      },
+    });
+  });
+
+  it("surfaces an unreadable index as filesystem.operation_failed, not corruption", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-fs-"));
+    const source = join(projectRoot, "screen.png");
+    await writeFile(source, Buffer.from("original-image"));
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+      "web",
+    );
+    await repository.registerRaw({
+      sourcePath: source,
+      mediaType: "image/png",
+      sourceTool: "chrome-devtools-mcp",
+      sensitivity: "internal",
+      evidenceKinds: ["post-action-screenshot"],
+      captureActionId: "event-capture-action",
+      idempotencyKey: "capture-home",
+    });
+    const indexPath = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    await chmod(indexPath, 0o000);
+    try {
+      const error = await repository
+        .readAll()
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(AiQaError);
+      expect((error as AiQaError).code).toBe("filesystem.operation_failed");
+      expect(
+        ((error as AiQaError).details.cause as { code: string }).code,
+      ).toBe("EACCES");
+    } finally {
+      await chmod(indexPath, 0o600);
+    }
+  });
+
+  it("attaches the parse cause when the index is corrupted", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "ai-qa-evidence-cause-"));
+    const indexPath = join(
+      projectRoot,
+      ".ai-qa",
+      "evidence",
+      "run-1",
+      "index.jsonl",
+    );
+    await mkdir(join(dirname(indexPath), "files"), { recursive: true });
+    await writeFile(indexPath, "not json\n");
+    const repository = new EvidenceRepository(
+      projectRoot,
+      "run-1",
+      () => new Date("2026-07-13T00:00:00.000Z"),
+      "web",
+    );
+
+    const error = await repository.readAll().catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AiQaError);
+    expect(error).toMatchObject({
+      code: "evidence.integrity_error",
+      details: {
+        runId: "run-1",
+        cause: { code: "json.parse_error" },
       },
     });
   });

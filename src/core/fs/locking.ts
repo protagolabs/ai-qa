@@ -53,10 +53,11 @@ export async function withLock<T>(
     outcome = { ok: false, error };
   }
 
+  let releaseFailure: { error: unknown } | undefined;
   try {
     await release();
   } catch (error: unknown) {
-    if (!compromised) throw error;
+    releaseFailure = { error };
   }
 
   if (compromised) {
@@ -67,6 +68,7 @@ export async function withLock<T>(
     );
   }
   if (!outcome.ok) throw outcome.error;
+  if (releaseFailure !== undefined) throw releaseFailure.error;
   return outcome.value;
 }
 

@@ -4,7 +4,12 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { EVIDENCE_SCHEMA_VERSION } from "../../schemas/versions.js";
 import { canonicalJson } from "../canonical-json.js";
-import { AiQaError } from "../errors.js";
+import {
+  AiQaError,
+  errorCauseCode,
+  extractErrorCause,
+  toErrorCause,
+} from "../errors.js";
 import { syncDirectoryWhereSupported } from "../fs/atomic-write.js";
 import { readJsonLines, serializeJsonLines } from "../fs/json-lines.js";
 import { assertNotCompromised, withLock } from "../fs/locking.js";
@@ -15,7 +20,7 @@ import {
   synchronizeProjectLocalRegularFile,
 } from "../fs/project-storage.js";
 import { createId } from "../ids.js";
-import { isNodeError } from "../node-errors.js";
+import { isErrnoCode, isNodeError } from "../node-errors.js";
 import { controllerForPlatform } from "../platforms/registry.js";
 import {
   controllerSchema,
@@ -305,16 +310,9 @@ export class EvidenceRepository {
       return records;
     } catch (error: unknown) {
       if (isNodeError(error, "ENOENT")) return [];
-      if (
-        error instanceof AiQaError &&
-        error.code === "evidence.integrity_error"
-      ) {
-        throw error;
-      }
-      throw new AiQaError(
-        "evidence.integrity_error",
+      throw this.classifyReadFailure(
         "Evidence index integrity verification failed",
-        { runId: this.runId },
+        error,
       );
     }
   }
@@ -328,18 +326,33 @@ export class EvidenceRepository {
       }
       return records;
     } catch (error: unknown) {
-      if (
-        error instanceof AiQaError &&
-        error.code === "evidence.integrity_error"
-      ) {
-        throw error;
-      }
-      throw new AiQaError(
-        "evidence.integrity_error",
+      throw this.classifyReadFailure(
         "Evidence integrity verification failed",
-        { runId: this.runId },
+        error,
       );
     }
+  }
+
+  /**
+   * Domain errors pass through unchanged; non-ENOENT filesystem errors are
+   * environmental, not corruption. ENOENT stays an integrity failure here
+   * because a missing indexed file is corruption — only a missing index
+   * itself is handled by the caller.
+   */
+  private classifyReadFailure(message: string, error: unknown): AiQaError {
+    if (error instanceof AiQaError) return error;
+    const causeCode = errorCauseCode(error);
+    if (causeCode !== "ENOENT" && isErrnoCode(causeCode)) {
+      return new AiQaError(
+        "filesystem.operation_failed",
+        "A filesystem operation failed",
+        { cause: extractErrorCause(error) ?? toErrorCause(error) },
+      );
+    }
+    return new AiQaError("evidence.integrity_error", message, {
+      runId: this.runId,
+      cause: toErrorCause(error),
+    });
   }
 
   private async verifyRecord(record: EvidenceRecord): Promise<void> {

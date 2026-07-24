@@ -1747,7 +1747,7 @@ describe("verdict and lifecycle CLI", () => {
         details: {
           cause: {
             code: "EIO",
-            message: "A filesystem operation failed",
+            message: "The filesystem reported EIO during write",
           },
           syscall: "write",
         },

@@ -49,8 +49,7 @@ export class RunGroupRepository {
       ".ai-qa",
       "run-groups",
     ]);
-    if (await pathExists(paths.directory))
-      throw runGroupAlreadyExists(manifest.id);
+    await requireVacantGroupSlot(manifest.id, paths.directory);
     const stagingDirectory = await mkdtemp(
       resolve(root, `${runGroupStagingPrefix}${manifest.id}-`),
     );
@@ -83,9 +82,7 @@ export class RunGroupRepository {
       });
       await syncDirectoryWhereSupported(stagingDirectory);
       await withLock(root, "cold", async (signal) => {
-        if (await pathExists(paths.directory)) {
-          throw runGroupAlreadyExists(manifest.id);
-        }
+        await requireVacantGroupSlot(manifest.id, paths.directory);
         try {
           assertNotCompromised(signal, root);
           await rename(stagingDirectory, paths.directory);
@@ -117,12 +114,7 @@ export class RunGroupRepository {
   ): Promise<T> {
     const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
     const paths = resolveRunGroupPaths(this.projectRoot, runGroupId);
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "run-groups",
-      runGroupId,
-      "events.jsonl",
-    ]);
+    await this.requireGroupJournal(runGroupId);
     return withLock(paths.events, "cold", async () =>
       operation(await this.readVerifiedSnapshot(runGroupId)),
     );
@@ -138,12 +130,7 @@ export class RunGroupRepository {
   ): Promise<RunGroupTransitionResult> {
     const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
     const paths = resolveRunGroupPaths(this.projectRoot, runGroupId);
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "run-groups",
-      runGroupId,
-      "events.jsonl",
-    ]);
+    await this.requireGroupJournal(runGroupId);
     return withLock(paths.events, "cold", async (signal) => {
       const snapshot = await this.readVerifiedSnapshot(runGroupId);
       const terminal = snapshot.events.at(-1);
@@ -223,12 +210,7 @@ export class RunGroupRepository {
   ): Promise<RunGroupTransitionResult> {
     const runGroupId = runGroupIdSchema.parse(runGroupIdInput);
     const paths = resolveRunGroupPaths(this.projectRoot, runGroupId);
-    await requireProjectLocalRegularFile(this.projectRoot, [
-      ".ai-qa",
-      "run-groups",
-      runGroupId,
-      "events.jsonl",
-    ]);
+    await this.requireGroupJournal(runGroupId);
     return withLock(paths.events, "cold", async (signal) => {
       const snapshot = await this.readVerifiedSnapshot(runGroupId);
       const latest = snapshot.events.at(-1);
@@ -292,13 +274,12 @@ export class RunGroupRepository {
       return { manifest: freezeManifest(manifest), events };
     } catch (error: unknown) {
       if (isMissingStoragePath(error)) {
-        throw new AiQaError("run_group.not_found", "Run group does not exist", {
-          runGroupId,
-        });
+        throw await classifyMissingGroupStorage(this.projectRoot, runGroupId);
       }
       if (
         error instanceof AiQaError &&
         (error.code === "run_group.not_found" ||
+          error.code === "run_group.integrity_error" ||
           error.code === "storage.integrity_error")
       ) {
         throw error;
@@ -310,6 +291,62 @@ export class RunGroupRepository {
       );
     }
   }
+
+  private async requireGroupJournal(runGroupId: string): Promise<void> {
+    try {
+      await requireProjectLocalRegularFile(this.projectRoot, [
+        ".ai-qa",
+        "run-groups",
+        runGroupId,
+        "events.jsonl",
+      ]);
+    } catch (error: unknown) {
+      if (!isMissingStoragePath(error)) throw error;
+      throw await classifyMissingGroupStorage(this.projectRoot, runGroupId);
+    }
+  }
+}
+
+/**
+ * A named group directory only ever exists in complete form: publication is a
+ * single rename of a fully staged directory. One that lacks its manifest or
+ * journal is damage (a 0.1.0 crash or manual edits) and must not masquerade
+ * as "not found" on reads while blocking creates as "already exists".
+ */
+async function classifyMissingGroupStorage(
+  projectRoot: string,
+  runGroupId: string,
+): Promise<AiQaError> {
+  const paths = resolveRunGroupPaths(projectRoot, runGroupId);
+  if (await pathExists(paths.directory)) {
+    const complete =
+      (await pathExists(resolve(paths.directory, "group.json"))) &&
+      (await pathExists(resolve(paths.directory, "events.jsonl")));
+    if (!complete) return runGroupDamaged(runGroupId, paths.directory);
+  }
+  return new AiQaError("run_group.not_found", "Run group does not exist", {
+    runGroupId,
+  });
+}
+
+async function requireVacantGroupSlot(
+  runGroupId: string,
+  directory: string,
+): Promise<void> {
+  if (!(await pathExists(directory))) return;
+  const complete =
+    (await pathExists(resolve(directory, "group.json"))) &&
+    (await pathExists(resolve(directory, "events.jsonl")));
+  if (complete) throw runGroupAlreadyExists(runGroupId);
+  throw runGroupDamaged(runGroupId, directory);
+}
+
+function runGroupDamaged(runGroupId: string, path: string): AiQaError {
+  return new AiQaError(
+    "run_group.integrity_error",
+    "Run-group directory exists without its manifest and journal; move the damaged directory out of .ai-qa/run-groups to recover",
+    { runGroupId, path },
+  );
 }
 
 async function pathExists(path: string): Promise<boolean> {
